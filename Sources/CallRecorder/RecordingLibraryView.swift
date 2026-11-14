@@ -349,7 +349,7 @@ private struct RecordingDetail: View {
     }
 }
 
-private struct ReadableTranscript: View {
+struct ReadableTranscript: View {
     let paragraphs: [TranscriptParagraph]
     let edited: Bool
     let query: String
@@ -374,7 +374,9 @@ private struct ReadableTranscript: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 26) {
+                    // macOS 15 can loop in LazySubviewPlacements while playback
+                    // updates selectable paragraphs. Keep their geometry stable.
+                    VStack(alignment: .leading, spacing: 26) {
                         ForEach(paragraphs) { paragraph in
                             VStack(alignment: .leading, spacing: 9) {
                                 HStack(spacing: 10) {

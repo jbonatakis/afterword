@@ -198,7 +198,11 @@ import RecorderCore
         let renameWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 940, height: 660), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         renameWindow.appearance = NSAppearance(named: .aqua); renameView.appearance = renameWindow.appearance
         renameWindow.contentView = renameView; renameWindow.makeKeyAndOrderFront(nil); await pump()
-        library.beginRenaming(updated); await pump(0.1)
+        library.beginRenaming(updated)
+        for _ in 0..<40 {
+            if renameWindow.firstResponder is NSTextView { break }
+            await pump(0.05)
+        }
         require(library.renamingID == updated.id, "Row rename editor dismissed immediately")
         guard let titleEditor = renameWindow.firstResponder as? NSTextView else { throw RecorderError.message("Inline title did not receive keyboard focus") }
         renameView.layoutSubtreeIfNeeded(); renameView.displayIfNeeded()
@@ -214,6 +218,31 @@ import RecorderCore
         require(library.renamingID == nil && library.recordings[0].name == "Title saved with Return", "Return did not save the inline title")
         renameWindow.orderOut(nil)
         print("PASS inline title keyboard focus, typing, Return to save, and minimum-width rendering")
+
+        var stressSegments: [TranscriptSegment] = []
+        for index in 0..<80 {
+            let source: TranscriptSource = index.isMultiple(of: 2) ? .microphone : .system
+            let text = "Passage \(index). " + String(repeating: "A longer paragraph exercises wrapping and selection. ", count: index % 10 + 1)
+            stressSegments.append(TranscriptSegment(source: source, start: Double(index), end: Double(index + 1), text: text, timing: "segment"))
+        }
+        let stressParagraphs = TranscriptParagraph.make(from: stressSegments)
+        func reader(_ query: String) -> ReadableTranscript {
+            ReadableTranscript(paragraphs: stressParagraphs, edited: false, query: query, playback: playback, playbackDisabled: false,
+                               draft: nil, canEdit: false, editParagraph: { _ in }, participants: ["Alex", "Sam"], automaticParticipant: "Alex",
+                               assignParticipant: { _, _ in }, editParticipants: {})
+        }
+        let stressHost = NSHostingView(rootView: reader(""))
+        let stressWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 420, height: 500), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        stressWindow.contentView = stressHost; stressWindow.orderFront(nil); playback.play()
+        for index in 0..<20 {
+            stressWindow.setContentSize(NSSize(width: index.isMultiple(of: 2) ? 420 : 700, height: 500))
+            stressHost.rootView = reader("Passage \(index * 3).")
+            playback.seek(Double(index * 3))
+            playback.changeTrack(index.isMultiple(of: 2) ? .microphone : .system, in: updated)
+            await pump(0.06)
+        }
+        playback.pause(); stressWindow.orderOut(nil)
+        print("PASS 80-paragraph reader resize/search/playback stress check")
 
         let fixtureTrash = root.appendingPathComponent(".fixture-trash")
         try FileManager.default.createDirectory(at: fixtureTrash, withIntermediateDirectories: true)
