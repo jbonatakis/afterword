@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 import RecorderCore
 
+private enum LibraryFocus: Hashable { case callList, title(String) }
+
 struct RecordingLibraryView: View {
     @ObservedObject var library: RecordingLibraryModel
     @ObservedObject var recorder: RecordingCoordinator
@@ -10,9 +12,10 @@ struct RecordingLibraryView: View {
     @State private var detailsEditor: LibraryRecording?
     @State private var trashTarget: TrashTarget?
     @State private var managementError: String?
-    @FocusState private var callListFocused: Bool
+    @State private var discardTranscriptEdits: LibraryRecording?
+    @FocusState private var focus: LibraryFocus?
 
-    var body: some View {
+    private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
                 List(selection: $library.filter) {
@@ -53,7 +56,7 @@ struct RecordingLibraryView: View {
                 } else {
                     List(selection: $library.selection) {
                         ForEach(library.visibleRecordings) { recording in
-                            RecordingRow(recording: recording, library: library).tag(recording.id)
+                            RecordingRow(recording: recording, library: library, focus: $focus).tag(recording.id)
                                 .contextMenu {
                                     Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
                                     Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
@@ -63,7 +66,7 @@ struct RecordingLibraryView: View {
                                         .disabled(library.managing || recorder.locked || recorder.transcription.busy || library.transcriptDrafts[recording.id] != nil || library.renamingID == recording.id)
                                 }
                         }
-                    }.listStyle(.inset).focused($callListFocused)
+                    }.listStyle(.inset).focused($focus, equals: .callList)
                         .accessibilityIdentifier("recording-list")
                 }
                 Divider()
@@ -78,7 +81,7 @@ struct RecordingLibraryView: View {
         } detail: {
             if let recording = library.selectedRecording {
                 RecordingDetail(recording: recording, query: library.search, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
-                                editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) })
+                                editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) }, cancelEditing: cancelInlineEditing)
                     .id(recording.id)
             } else {
                 ContentUnavailableView("Select a recording", systemImage: "waveform", description: Text("Your audio and transcripts, together in one place."))
@@ -134,7 +137,13 @@ struct RecordingLibraryView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(LibraryCommandScope(bindings: keyboardBindings).frame(width: 0, height: 0))
+    }
+
+    var body: some View {
+        libraryContent
+        .background(LibraryCommandScope(bindings: keyboardBindings, cancelEditing: .init(enabled: {
+            library.renamingID != nil || library.selectedRecording.map { library.transcriptDrafts[$0.id] != nil } == true
+        }, perform: cancelInlineEditing)).frame(width: 0, height: 0))
         .frame(minWidth: 940, minHeight: 600)
         .sheet(item: $detailsEditor) { recording in
             CallDetailsEditor(recording: recording, library: library)
@@ -148,6 +157,10 @@ struct RecordingLibraryView: View {
             }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
         } message: { target in Text(target.message) }
+        .confirmationDialog("Discard transcript edits?", isPresented: Binding(get: { discardTranscriptEdits != nil }, set: { if !$0 { discardTranscriptEdits = nil } }), titleVisibility: .visible, presenting: discardTranscriptEdits) { recording in
+            Button("Discard Edits", role: .destructive) { library.cancelTranscriptEditing(recording) }.keyboardShortcut(.defaultAction)
+            Button("Keep Editing", role: .cancel) {}.keyboardShortcut(.cancelAction)
+        } message: { _ in Text("Your unsaved text and speaker changes will be discarded. The saved transcript will stay as it is.") }
         .alert("Couldn’t move to Trash", isPresented: Binding(get: { managementError != nil }, set: { if !$0 { managementError = nil } })) {
             Button("OK", role: .cancel) { managementError = nil }
         } message: { Text(managementError ?? "") }
@@ -157,10 +170,23 @@ struct RecordingLibraryView: View {
         }
         .onChange(of: library.search) { _, _ in reconcileSelection() }
         .onChange(of: library.filter) { _, _ in reconcileSelection() }
+        .onChange(of: library.renamingID) { previous, current in
+            if previous != nil && current == nil { focus = .callList }
+        }
+        .onChange(of: library.selectedRecording.flatMap { library.transcriptDrafts[$0.id]?.version.id }) { previous, current in
+            if previous != nil && current == nil { focus = .callList }
+        }
     }
 
     private func reconcileSelection() {
         if library.selectedRecording == nil { library.selection = library.visibleRecordings.first?.id }
+    }
+
+    private func cancelInlineEditing() {
+        if library.renamingID != nil { library.cancelRename(); return }
+        guard let recording = library.selectedRecording, let draft = library.transcriptDrafts[recording.id], !draft.saving else { return }
+        if draft.changed { discardTranscriptEdits = recording }
+        else { library.cancelTranscriptEditing(recording) }
     }
 
     private var keyboardBindings: [LibraryCommand: LibraryCommandBinding] {
@@ -169,7 +195,7 @@ struct RecordingLibraryView: View {
                 if let recording = library.selectedRecording { library.beginRenaming(recording) }
             }),
             .trash: .init(enabled: {
-                callListFocused && library.selectedRecording != nil && !library.managing && !recorder.locked && !recorder.transcription.busy && library.renamingID == nil && library.selectedRecording.map { library.transcriptDrafts[$0.id] == nil } == true
+                focus == .callList && library.selectedRecording != nil && !library.managing && !recorder.locked && !recorder.transcription.busy && library.renamingID == nil && library.selectedRecording.map { library.transcriptDrafts[$0.id] == nil } == true
             }, perform: {
                 if let recording = library.selectedRecording { trashTarget = .init(recording: recording) }
             }),
@@ -202,16 +228,19 @@ private struct TrashTarget {
 private struct RecordingRow: View {
     let recording: LibraryRecording
     @ObservedObject var library: RecordingLibraryModel
-    @FocusState private var titleFocused: Bool
+    @FocusState.Binding var focus: LibraryFocus?
     private var isRenaming: Bool { library.renamingID == recording.id }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 if isRenaming {
                     TextField("Call title", text: $library.renameText).font(.headline).textFieldStyle(.roundedBorder)
-                        .focused($titleFocused).onSubmit { Task { await library.saveRename() } }
+                        .focused($focus, equals: .title(recording.id)).onSubmit { Task { await library.saveRename() } }
                         .onExitCommand { library.cancelRename() }.disabled(library.renaming)
-                        .task { await Task.yield(); titleFocused = true }
+                        .task {
+                            await Task.yield()
+                            if !Task.isCancelled && isRenaming { focus = .title(recording.id) }
+                        }
                     Button { Task { await library.saveRename() } } label: { Image(systemName: "checkmark") }
                         .help("Save title (Return)").accessibilityLabel("Save title").disabled(library.managing)
                     Button { library.cancelRename() } label: { Image(systemName: "xmark") }
@@ -239,7 +268,6 @@ private struct RecordingRow: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.padding(.vertical, 8)
-            .onChange(of: isRenaming) { _, editing in if !editing { titleFocused = false } }
     }
 }
 
@@ -252,6 +280,7 @@ private struct RecordingDetail: View {
     let playback: RecordingPlayback
     let editDetails: () -> Void
     let trash: (LibraryTranscript?) -> Void
+    let cancelEditing: () -> Void
     @State private var versionID: String?
     @State private var showingAttendance = false
     private var draft: TranscriptDraft? { library.transcriptDrafts[recording.id] }
@@ -308,7 +337,7 @@ private struct RecordingDetail: View {
                     Text("Transcript").font(.headline)
                     Spacer()
                     if let draft {
-                        InlineTranscriptActions(recording: recording, draft: draft, library: library)
+                        InlineTranscriptActions(recording: recording, draft: draft, library: library, cancel: cancelEditing)
                     } else {
                         if let document = version?.document {
                             Button(action: copyTranscript) { Label("Copy", systemImage: "doc.on.doc") }

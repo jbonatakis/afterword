@@ -37,7 +37,7 @@ public struct SessionManifest: Codable {
     /// Absent in older sessions, which retain the original fixed-gain mix.
     public var balanceMix: Bool?
     public var operatingSystem = ProcessInfo.processInfo.operatingSystemVersionString
-    public var applicationVersion = "0.11.0"
+    public var applicationVersion = "0.11.1"
     public var clippedSamples: UInt64 = 0
     public var invalidSamples: UInt64 = 0
     public var droppedFrames: UInt64 = 0

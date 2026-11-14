@@ -70,12 +70,16 @@ struct LibraryCommandBinding {
 /// version. AppKit asks for availability at the moment a key/menu is used.
 struct LibraryCommandScope: NSViewRepresentable {
     var bindings: [LibraryCommand: LibraryCommandBinding]
+    var cancelEditing: LibraryCommandBinding? = nil
     func makeNSView(context: Context) -> LibraryCommandView { LibraryCommandView() }
-    func updateNSView(_ view: LibraryCommandView, context: Context) { view.bindings = bindings }
+    func updateNSView(_ view: LibraryCommandView, context: Context) {
+        view.bindings = bindings; view.cancelEditing = cancelEditing
+    }
 }
 
 final class LibraryCommandView: NSView {
     var bindings: [LibraryCommand: LibraryCommandBinding] = [:]
+    var cancelEditing: LibraryCommandBinding?
 }
 
 @MainActor final class LibraryCommandWindow: NSWindow {
@@ -124,6 +128,8 @@ final class LibraryCommandView: NSView {
         return canPerform(command)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.isARepeat && handledKeys.contains(event.keyCode) { return true }
+        if cancelEditing(with: event) { return true }
         if let command = LibraryCommand.matching(event), canPerform(command) {
             if !event.isARepeat { perform(command); handledKeys.insert(event.keyCode) }
             return true
@@ -134,12 +140,25 @@ final class LibraryCommandView: NSView {
         if event.type == .keyUp { handledKeys.remove(event.keyCode) }
         if event.type == .keyDown {
             if event.isARepeat && handledKeys.contains(event.keyCode) { return }
+            if cancelEditing(with: event) { return }
             if let command = LibraryCommand.matching(event), canPerform(command) {
                 if !event.isARepeat { perform(command); handledKeys.insert(event.keyCode) }
                 return
             }
         }
         super.sendEvent(event)
+    }
+    private func cancelEditing(with event: NSEvent) -> Bool {
+        guard event.type == .keyDown, event.keyCode == 53,
+              event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty,
+              NSApp.keyWindow === self, attachedSheet == nil, NSApp.modalWindow == nil,
+              (firstResponder as? NSTextView)?.hasMarkedText() != true, let contentView,
+              let action = descendants(contentView).compactMap({ ($0 as? LibraryCommandView)?.cancelEditing }).first(where: { $0.enabled() }) else { return false }
+        if let searchField, firstResponder === searchField || firstResponder === searchField.currentEditor() { return false }
+        // Consume this Escape before removing the field editor so it cannot
+        // continue through AppKit's window-level cancellation handling.
+        if !event.isARepeat { action.perform(); handledKeys.insert(event.keyCode) }
+        return true
     }
     override func resignKey() { handledKeys.removeAll(); super.resignKey() }
 }
@@ -186,9 +205,12 @@ struct LibraryKeyboardHelpView: View {
                 }
                 Divider()
                 GridRow { Text("Show Recordings / Upcoming Calls"); Text("⌘1 / ⌘2").foregroundStyle(.secondary) }
-                GridRow { Text("Confirm / Cancel dialog or rename"); Text("Return / Escape").foregroundStyle(.secondary) }
+                GridRow { Text("Confirm / Cancel dialog"); Text("Return / Escape").foregroundStyle(.secondary) }
+                GridRow { Text("Exit rename or transcript editing"); Text("Escape").foregroundStyle(.secondary) }
             }.font(.callout)
             Text("Delete requires focus in the call list and asks for confirmation. Letter and playback shortcuts stay inactive while typing or using a dialog.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Escape returns to the call list. Unsaved transcript edits require confirmation before discarding.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Your global start/stop recording shortcut is configured in Settings → Recording.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

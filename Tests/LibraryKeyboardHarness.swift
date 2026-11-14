@@ -30,7 +30,7 @@ import RecorderCore
             require(false, "Could not focus the target window for keyboard delivery")
         }
         func key(_ text: String, code: UInt16, flags: NSEvent.ModifierFlags = [], repeatKey: Bool = false, window: NSWindow) async {
-            await focusWindow(window)
+            require(NSApp.isActive && NSApp.keyWindow === window, "Keyboard target lost focus before key \(code)")
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
                                         context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: repeatKey, keyCode: code)!
             NSApp.sendEvent(event)
@@ -110,12 +110,42 @@ import RecorderCore
         titleEditor.selectAll(nil); titleEditor.insertText("Renamed r e call", replacementRange: titleEditor.selectedRange())
         await key("\r", code: 36, window: window); await pump(0.7)
         require(library.selectedRecording?.name == "Renamed r e call" && library.renamingID == nil, "Return did not save rename")
-        await focusList(); await key("r", code: 15, window: window); await pump()
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Return lost library/list focus")
+        await key("r", code: 15, window: window); await pump()
         await key("\u{1b}", code: 53, window: window); await pump()
         require(library.renamingID == nil, "Escape did not cancel rename")
-        print("PASS R, typing protection, Return save, and Escape cancel")
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list,
+                "Escape lost library/list focus (active: \(NSApp.isActive), key: \(NSApp.keyWindow === window), visible: \(window.isVisible), responder: \(String(describing: window.firstResponder)))")
+        await key("r", code: 15, window: window); await pump()
+        require(library.renamingID == library.selection, "R stopped working after Escape")
+        await key("\u{1b}", code: 53, window: window); await pump()
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Repeated rename/cancel lost focus")
+        print("PASS R, typing protection, Return save, and repeated Escape cancellation with focus preserved")
 
-        await focusList(); await key("f", code: 3, flags: .command, window: window); await pump()
+        let originalRecording = library.selectedRecording!
+        let originalTranscript = try Data(contentsOf: originalRecording.transcripts[0].url)
+        await key("e", code: 14, window: window); await pump()
+        require(library.transcriptDrafts[originalRecording.id]?.changed == false, "E did not open a clean draft")
+        await key("\u{1b}", code: 53, window: window); await pump()
+        require(library.transcriptDrafts[originalRecording.id] == nil && window.attachedSheet == nil, "Escape did not exit an unchanged transcript")
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Exiting transcript editing lost list focus")
+        await key("e", code: 14, window: window); await pump()
+        guard let unsavedEditor = window.firstResponder as? NSTextView else { fatalError("Transcript did not regain edit focus") }
+        unsavedEditor.selectAll(nil); unsavedEditor.insertText("Unsaved correction", replacementRange: unsavedEditor.selectedRange()); await pump()
+        await key("\u{1b}", code: 53, window: window); await pump()
+        require(window.attachedSheet != nil && library.transcriptDrafts[originalRecording.id]?.text == ["Unsaved correction"], "Escape discarded edits without confirmation")
+        await key("\u{1b}", code: 53, window: window.attachedSheet!); await pump()
+        require(window.attachedSheet == nil && library.transcriptDrafts[originalRecording.id]?.text == ["Unsaved correction"], "Escape in discard confirmation did not keep the draft")
+        await key("\u{1b}", code: 53, window: window); await pump()
+        require(window.attachedSheet != nil, "Escape could not reopen discard confirmation")
+        await key("\r", code: 36, window: window.attachedSheet!); await pump()
+        require(library.transcriptDrafts[originalRecording.id] == nil, "Return did not confirm discarding the draft")
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Discarding transcript edits lost list focus")
+        let savedTranscript = try Data(contentsOf: originalRecording.transcripts[0].url)
+        require(savedTranscript == originalTranscript && library.selectedRecording?.transcripts.count == 1, "Cancelling changed a saved transcript")
+        print("PASS transcript Escape, unsaved-change confirmation, keep/discard, and focus without reactivation")
+
+        await key("f", code: 3, flags: .command, window: window); await pump()
         require((window.firstResponder as? NSTextView)?.isEditable == true, "Command-F did not focus search (key: \(NSApp.keyWindow === window), available: \(window.canPerform(.search)), responder: \(String(describing: window.firstResponder)))")
         require(!window.canPerform(.rename) && !window.canPerform(.trash) && !window.canPerform(.playPause) && !window.canPerform(.backward), "Search input leaked shortcuts")
         await key("r", code: 15, window: window)
@@ -144,13 +174,13 @@ import RecorderCore
         guard let draft = library.transcriptDrafts[recording.id], let editor = window.firstResponder as? NSTextView else { fatalError("E did not focus transcript editing") }
         require(editor.isEditable && !window.canPerform(.trash) && !window.canPerform(.editTranscript), "Transcript editor leaked shortcuts")
         editor.selectAll(nil); editor.insertText("Corrected transcript", replacementRange: editor.selectedRange()); await pump()
-        await focusWindow(window)
         require(draft.changed && window.canPerform(.save), "Transcript save unavailable (key: \(NSApp.keyWindow === window), text: \(draft.text))")
         await key("s", code: 1, flags: .command, window: window)
         for _ in 0..<40 { await pump(0.1); if library.transcriptDrafts[recording.id] == nil { break } }
         require(library.transcriptDrafts[recording.id] == nil && library.selectedRecording?.transcripts.count == 2,
                 "Command-S did not save a transcript version (key: \(NSApp.keyWindow === window), saving: \(draft.saving), error: \(draft.error ?? "none"), versions: \(library.selectedRecording?.transcripts.count ?? -1))")
         require(draft.text == ["Corrected transcript"], "Editor contents were not saved")
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Saving transcript edits lost list focus")
         await focusList()
         let pasteboard = NSPasteboard.general
         let previousItems = pasteboard.pasteboardItems?.map { item -> NSPasteboardItem in

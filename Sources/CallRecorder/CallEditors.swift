@@ -121,10 +121,11 @@ struct InlineTranscriptActions: View {
     let recording: LibraryRecording
     @ObservedObject var draft: TranscriptDraft
     @ObservedObject var library: RecordingLibraryModel
+    let cancel: () -> Void
     var body: some View {
         HStack(spacing: 8) {
             if draft.saving { ProgressView().controlSize(.small) }
-            Button("Cancel") { library.cancelTranscriptEditing(recording) }.disabled(draft.saving)
+            Button("Cancel", action: cancel).disabled(draft.saving).help("Exit transcript editing (Escape)")
             Button("Save") { Task { await library.saveTranscriptDraft(for: recording) } }
                 .buttonStyle(.borderedProminent)
                 .disabled(!draft.changed || draft.saving || library.managing)
