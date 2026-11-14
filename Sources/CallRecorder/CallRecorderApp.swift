@@ -5,16 +5,28 @@ import RecorderCore
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     let recorder = RecordingCoordinator()
+    lazy var library = RecordingLibraryModel(recorder: recorder)
+    lazy var playback = RecordingPlayback(recorder: recorder)
     private var statusItem: RecorderStatusItem?
+    private lazy var libraryWindow = RecordingLibraryWindow(
+        library: library, recorder: recorder, playback: playback,
+        showControls: { [weak self] in self?.showRecordingControls() })
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = RecorderStatusItem(recorder: recorder)
+        statusItem = RecorderStatusItem(recorder: recorder, showLibrary: { [weak self] in self?.showLibrary() })
+        DispatchQueue.main.async { [weak self] in self?.showLibrary() }
     }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        recorder.shouldQuit()
+    func showLibrary() { libraryWindow.present() }
+    func showRecordingControls() { statusItem?.showPopover() }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showLibrary(); return false
     }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { recorder.shouldQuit() }
     func applicationWillTerminate(_ notification: Notification) {
         recorder.transcription.shutdown()
         recorder.shortcut.shutdown()
+        playback.shutdown()
         statusItem?.shutdown()
     }
 }
@@ -27,6 +39,15 @@ import RecorderCore
                 RecorderSettings(recorder: delegate.recorder).tabItem { Label("Recording", systemImage: "waveform") }
                 TranscriptionSettings(transcription: delegate.recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }
             }.padding(12).frame(width: 560, height: 640)
+        }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Show Recordings") { delegate.showLibrary() }.keyboardShortcut("1", modifiers: .command)
+            }
+            CommandGroup(replacing: .sidebar) {
+                Button("Toggle Sidebar") { delegate.library.sidebarVisible.toggle() }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+            }
         }
     }
 }
@@ -43,6 +64,7 @@ private struct Notices: View {
 
 struct RecorderView: View {
     @ObservedObject var recorder: RecordingCoordinator
+    var showLibrary: () -> Void = {}
     @State private var transcriptionExpanded = false
     var body: some View {
         ViewThatFits(in: .vertical) {
@@ -143,6 +165,7 @@ struct RecorderView: View {
             TranscriptionPanel(transcription: recorder.transcription, recordingActive: recorder.locked, isExpanded: $transcriptionExpanded)
             Divider()
             HStack {
+                Button(action: showLibrary) { Label("Library", systemImage: "rectangle.stack") }
                 SettingsLink { Label("Settings", systemImage: "gearshape") }
                 Spacer()
                 Menu {

@@ -14,10 +14,14 @@ import RecorderCore
     private var previousSymbol = ""
     private var previousLabel = ""
 
-    init(recorder: RecordingCoordinator) {
+    init(recorder: RecordingCoordinator, showLibrary: @escaping () -> Void) {
         self.recorder = recorder
         hosting = NSHostingController(rootView: RecorderView(recorder: recorder))
         super.init()
+        hosting.rootView = RecorderView(recorder: recorder, showLibrary: { [weak self] in
+            self?.popover.performClose(nil)
+            showLibrary()
+        })
         hosting.sizingOptions = [.preferredContentSize]
         popover.animates = false
         popover.behavior = .transient
@@ -37,7 +41,12 @@ import RecorderCore
     @objc private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
-        } else if let button = item.button {
+        } else { showPopover() }
+    }
+
+    func showPopover() {
+        guard !popover.isShown else { return }
+        if let button = item.button {
             hosting.view.layoutSubtreeIfNeeded()
             popover.contentSize = hosting.sizeThatFits(in: NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude))
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)

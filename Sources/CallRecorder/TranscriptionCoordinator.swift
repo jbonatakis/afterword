@@ -137,6 +137,11 @@ import RecorderCore
             }
         }
     }
+    func transcribe(recording url: URL) {
+        guard !busy, !recordingActive else { return }
+        setRecording(url)
+        transcribe()
+    }
     func cancel(reason: String = "Cancelling transcription…") {
         guard busy else { return }
         cancellationMessage = reason == "Cancelling transcription…" ? "Transcription cancelled. Your recording is saved." : reason
