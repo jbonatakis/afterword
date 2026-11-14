@@ -33,21 +33,23 @@ public struct SessionManifest: Codable {
     public var status = "recording"
     public var deliveredPath: String?
     public var retainRecoveryFiles: Bool?
+    public var callDetails: CallDetails?
     public var operatingSystem = ProcessInfo.processInfo.operatingSystemVersionString
-    public var applicationVersion = "0.8.2"
+    public var applicationVersion = "0.9.0"
     public var clippedSamples: UInt64 = 0
     public var invalidSamples: UInt64 = 0
     public var droppedFrames: UInt64 = 0
     public var totalFrames: Int64 { chunks.reduce(0) { $0 + $1.frames } }
     public var hasSeparateTracks: Bool { version == 2 }
     public var pcmChannels: AVAudioChannelCount { hasSeparateTracks ? 3 : 2 }
-    public init(id: UUID = UUID(), startDate: Date = Date(), input: ResolvedInput, formats: [SourceFormat], destination: URL, separateTracks: Bool = true) {
+    public init(id: UUID = UUID(), startDate: Date = Date(), input: ResolvedInput, formats: [SourceFormat], destination: URL, separateTracks: Bool = true, callDetails: CallDetails? = nil) {
         version = separateTracks ? 2 : 1
         self.id = id; self.startDate = startDate
         timeZone = TimeZone.current.identifier; utcOffsetSeconds = TimeZone.current.secondsFromGMT(for: startDate)
         monotonicStart = mach_absolute_time(); microphoneSelection = input.selection
         deviceUID = input.device.uid; channel = input.channel; self.formats = formats
         self.destination = destination.path
+        self.callDetails = callDetails
     }
 }
 
@@ -195,6 +197,12 @@ public final class SessionStore {
                   properties.isDirectory == true, properties.isSymbolicLink != true,
                   RecordingTrack.allCases.allSatisfy({ PrivateFiles.isRegular(folder.appendingPathComponent($0.filename)) }) else {
                 throw RecorderError.message("Recovery files were retained because one or more separate tracks are missing.")
+            }
+            if manifest.callDetails != nil {
+                guard PrivateFiles.isRegular(CallDetailsStore.url(for: folder, isDirectory: true)) else {
+                    throw RecorderError.message("Recovery files were retained because meeting details are missing.")
+                }
+                _ = try CallDetailsStore.load(for: folder, isDirectory: true)
             }
         }
         let expected = Set(manifest.chunks.map(\.filename) + ["manifest.json"])

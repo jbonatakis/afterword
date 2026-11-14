@@ -52,6 +52,9 @@ public enum Exporter {
                 if manifest.hasSeparateTracks { try PrivateFiles.create(url) }
                 try (encoder ?? encode)(store, track, url)
             }
+            if manifest.hasSeparateTracks, let details = manifest.callDetails {
+                try CallDetailsStore.writeInitial(details, to: temporary.appendingPathComponent("CallDetails.json"))
+            }
             let stagedMix = manifest.hasSeparateTracks ? temporary.appendingPathComponent(RecordingTrack.mixed.filename) : temporary
             try validateDelivery(stagedMix, manifest: manifest)
             for track in tracks {
@@ -130,6 +133,12 @@ public enum Exporter {
             throw RecorderError.message("Invalid recording track folder.")
         }
         var lengths: [Int64] = []
+        if manifest.callDetails != nil {
+            guard PrivateFiles.isRegular(CallDetailsStore.url(for: directory, isDirectory: true)) else {
+                throw RecorderError.message("The meeting details were not delivered. Original PCM has been retained.")
+            }
+            _ = try CallDetailsStore.load(for: directory, isDirectory: true)
+        }
         for track in RecordingTrack.allCases {
             lengths.append(try validate(directory.appendingPathComponent(track.filename), expectedFrames: manifest.totalFrames, channels: track.channels))
         }

@@ -88,7 +88,7 @@ final class ParticipantTests: XCTestCase {
         let updated = try call()
         XCTAssertEqual(updated.automaticParticipant(for: updated.transcripts[0]), "Alex")
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        XCTAssertEqual(json["version"] as? Int, 3)
+        XCTAssertEqual(json["version"] as? Int, 4)
         // Removing the participant clears the default without reviving the embedded name.
         try CallDetailsStore.save(.init(title: "Renamed"), for: updated)
         XCTAssertNil(try call().automaticParticipant(for: updated.transcripts[0]))
@@ -269,4 +269,46 @@ final class ParticipantTests: XCTestCase {
         XCTAssertEqual(current.speakerLabel(for: named.document!.paragraphs[3], version: named), "Sam")
         XCTAssertThrowsError(try CallDetailsStore.save(.init(participants: ["Sam"]), for: current, participantRenames: ["Missing": "Sam"]))
     }
+    func testAttendanceRemovalClearsAutomaticAndManualLabelsWithoutAssigningRemainingPerson() throws {
+        let initial = try prepare(["Alex"]), original = initial.transcripts[0]
+        try CallDetailsStore.save(.init(participants: ["Alex", "Sam"]), for: initial)
+        let two = try call()
+        _ = try CallFileOperations.saveTranscriptEdits(original.document!.paragraphs.map(\.text), version: original, recording: two,
+                                                      participants: [nil, "Alex", nil, "Sam"])
+        let annotated = try call().transcripts.first { $0.document?.editing != nil }!
+        let bytes = try Data(contentsOf: annotated.url)
+        var rows = two.details.callAttendees; rows[0].attendance = .absent
+        try CallDetailsStore.save(two.details.updatingAttendance(rows), for: call())
+        let removed = try call()
+        XCTAssertNil(removed.automaticParticipant(for: original))
+        XCTAssertEqual(removed.speakerLabel(for: annotated.document!.paragraphs[1], version: annotated), "Other participants")
+        XCTAssertEqual(removed.speakerLabel(for: annotated.document!.paragraphs[3], version: annotated), "Sam")
+        XCTAssertEqual(try Data(contentsOf: annotated.url), bytes)
+        rows[0].attendance = .expected
+        try CallDetailsStore.save(removed.details.updatingAttendance(rows), for: removed)
+        let restored = try call()
+        XCTAssertNil(restored.automaticParticipant(for: original))
+        XCTAssertEqual(restored.speakerLabel(for: annotated.document!.paragraphs[1], version: annotated), "Other participants")
+        XCTAssertEqual(restored.details.participants, ["Alex", "Sam"])
+    }
+    func testCalendarIdentityLinksSurviveDetailsEditorRenameRemovalAndRestore() throws {
+        let initial = try prepare(["Alex"])
+        let alex = CallAttendee(name: "Alex", email: "alex@example.com")
+        try CallDetailsStore.save(.init(participants: ["Alex"], attendees: [alex], allowSingleParticipantInference: true), for: initial)
+        try CallDetailsStore.save(.init(participants: ["Alexander"]), for: call(), participantRenames: ["Alex": "Alexander"])
+        let renamed = try call()
+        XCTAssertEqual(renamed.details.callAttendees.first?.id, alex.id)
+        XCTAssertEqual(renamed.details.callAttendees.first?.email, "alex@example.com")
+        XCTAssertEqual(renamed.details.callAttendees.first?.name, "Alexander")
+        try CallDetailsStore.save(.init(participants: []), for: renamed)
+        let removed = try call()
+        XCTAssertEqual(removed.details.callAttendees.first?.attendance, .absent)
+        XCTAssertNil(removed.details.inferredParticipant)
+        try CallDetailsStore.save(.init(participants: ["Alexander"]), for: removed)
+        let restored = try call()
+        XCTAssertEqual(restored.details.callAttendees.first?.id, alex.id)
+        XCTAssertNil(restored.details.inferredParticipant)
+        XCTAssertNil(restored.automaticParticipant(for: restored.transcripts[0]))
+    }
+
 }

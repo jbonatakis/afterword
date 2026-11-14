@@ -13,9 +13,9 @@ final class SplitTrackTests: XCTestCase {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
-    func makeStore(separateTracks: Bool = true) throws -> SessionStore {
+    func makeStore(separateTracks: Bool = true, callDetails: CallDetails? = nil) throws -> SessionStore {
         let device = InputDevice(objectID: 1, uid: "fixture", name: "Fixture", channels: ["Mic"], bufferChannels: [1], sampleRate: 48_000)
-        var manifest = SessionManifest(input: ResolvedInput(device: device, channel: 0, selection: .systemDefault), formats: [], destination: destination, separateTracks: separateTracks)
+        var manifest = SessionManifest(input: ResolvedInput(device: device, channel: 0, selection: .systemDefault), formats: [], destination: destination, separateTracks: separateTracks, callDetails: callDetails)
         if !separateTracks { manifest.applicationVersion = "0.1.0" }
         return try SessionStore(root: root.appendingPathComponent("sessions"), manifest: manifest)
     }
@@ -166,4 +166,36 @@ final class SplitTrackTests: XCTestCase {
         XCTAssertTrue((0..<Int(mic.frameLength)).allSatisfy { abs(mic.floatChannelData![0][$0]) < 0.0001 })
         XCTAssertEqual(amplitude(system, channel: 0, frequency: 880), 0.4, accuracy: 0.015)
     }
+    func testRecoveredCalendarRecordingPublishesDetailsWithAudioBeforeTranscription() throws {
+        let meeting = MeetingReference(occurrenceID: "fixture", title: "One to one", start: Date(timeIntervalSince1970: 1800000000),
+                                       end: Date(timeIntervalSince1970: 1800001800), calendar: "Work", joinURL: URL(string: "https://meet.google.com/abc-defg-hij")!)
+        let details = CallDetails(title: meeting.title, participants: ["Avery"], attendees: [.init(name: "Avery", email: "avery@example.com")],
+                                  allowSingleParticipantInference: true, meeting: meeting)
+        let store = try makeStore(callDetails: details); try fill(store)
+        let recovered = try Recovery.load(directory: store.directory)
+        XCTAssertEqual(recovered.manifest.callDetails, details)
+        let mix = try Exporter.export(recovered), folder = mix.deletingLastPathComponent()
+        XCTAssertEqual(try CallDetailsStore.load(for: folder, isDirectory: true), details)
+        let input = TranscriptionInput(tracks: [.init(source: .system, url: folder.appendingPathComponent("System.m4a"))], outputDirectory: folder, name: "Call")
+        XCTAssertEqual(CallDetailsStore.singleParticipant(for: input), "Avery")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path))
+    }
+    func testMissingDeliveredMeetingDetailsRetainsRecoveryPCM() throws {
+        let details = CallDetails(title: "Calendar call", participants: ["Avery"])
+        let store = try makeStore(callDetails: details); try fill(store)
+        let old = destination.appendingPathComponent("IncompleteMeeting", isDirectory: true)
+        try PrivateFiles.directory(old)
+        for track in RecordingTrack.allCases {
+            let url = old.appendingPathComponent(track.filename)
+            try PrivateFiles.create(url); try Exporter.encode(store, track: track, to: url)
+        }
+        let mixed = old.appendingPathComponent("Mixed.m4a")
+        try store.delivered(to: mixed)
+        XCTAssertThrowsError(try store.removeAfterDelivery())
+        let recovered = try Recovery.load(directory: store.directory)
+        let repaired = try Exporter.export(recovered)
+        XCTAssertNotEqual(repaired, mixed)
+        XCTAssertEqual(try CallDetailsStore.load(for: repaired.deletingLastPathComponent(), isDirectory: true), details)
+    }
+
 }

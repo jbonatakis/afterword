@@ -1,7 +1,7 @@
 import Foundation
 
 public struct CallDetails: Codable, Equatable, Sendable {
-    public var version = 3
+    public var version = 4
     public var title: String?
     public var participants: [String]
     public var tags: [String]
@@ -12,11 +12,16 @@ public struct CallDetails: Codable, Equatable, Sendable {
     /// Per-version corrections to names stored in immutable transcript files.
     /// An empty value removes an assignment, including if that name is later reused.
     public var participantOverrides: [String: [String: String]]?
+    public var attendees: [CallAttendee]?
+    public var allowSingleParticipantInference: Bool?
+    public var meeting: MeetingReference?
     public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "", automaticParticipants: [String: String]? = nil,
-                participantOverrides: [String: [String: String]]? = nil) {
+                participantOverrides: [String: [String: String]]? = nil, attendees: [CallAttendee]? = nil,
+                allowSingleParticipantInference: Bool? = nil, meeting: MeetingReference? = nil) {
         self.title = title; self.participants = participants; self.tags = tags; self.description = description
         self.automaticParticipants = automaticParticipants
         self.participantOverrides = participantOverrides
+        self.attendees = attendees; self.allowSingleParticipantInference = allowSingleParticipantInference; self.meeting = meeting
     }
     public var normalized: CallDetails {
         func unique(_ values: [String]) -> [String] {
@@ -26,10 +31,29 @@ public struct CallDetails: Codable, Equatable, Sendable {
         }
         let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         return .init(title: title?.isEmpty == false ? title : nil, participants: unique(participants), tags: unique(tags),
-                     description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants, participantOverrides: participantOverrides)
+                     description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants, participantOverrides: participantOverrides,
+                     attendees: attendees, allowSingleParticipantInference: allowSingleParticipantInference, meeting: meeting)
+    }
+    public var callAttendees: [CallAttendee] { attendees ?? participants.map { .init(id: "legacy:" + $0, name: $0) } }
+    public var hasActiveGroups: Bool { callAttendees.contains { $0.kind == .group && $0.attendance != .absent } }
+    public var inferredParticipant: String? { allowSingleParticipantInference != false && !hasActiveGroups && participants.count == 1 ? participants.first : nil }
+    public func updatingAttendance(_ attendees: [CallAttendee], confirmOnly personID: String? = nil) throws -> Self {
+        var result = self
+        result.attendees = attendees; result.participants = attendees.filter(\.active).map(\.name)
+        guard Set(attendees.map(\.id)).count == attendees.count,
+              Set(result.participants).count == result.participants.count else { throw RecorderError.message("Use distinct names for each participant.") }
+        if Set(attendees.filter { $0.attendance != .absent }.map(\.id)) != Set(callAttendees.filter { $0.attendance != .absent }.map(\.id)) {
+            result.allowSingleParticipantInference = false
+        }
+        if let personID {
+            guard !result.hasActiveGroups, attendees.filter(\.active).count == 1,
+                  attendees.first(where: { $0.id == personID })?.active == true else { throw RecorderError.message("Confirm a single attendee and exclude any groups first.") }
+            result.allowSingleParticipantInference = true
+        }
+        return result
     }
     public func automaticParticipant(for transcript: LibraryTranscript) -> String? {
-        if participants.count == 1 { return participants.first }
+        if let inferredParticipant { return inferredParticipant }
         let name = automaticParticipants?[transcript.runName] ?? transcript.document?.automaticParticipant
         return name.flatMap { participants.contains($0) ? $0 : nil }
     }
@@ -50,8 +74,8 @@ public enum CallDetailsStore {
         guard let track = input.tracks.first else { return nil }
         let audio = URL(fileURLWithPath: track.path)
         let directory = RecordingTrack.allCases.contains { $0.filename == audio.lastPathComponent }
-        guard let details = try? load(for: directory ? input.outputDirectory : audio, isDirectory: directory), details.participants.count == 1 else { return nil }
-        return details.participants.first
+        guard let details = try? load(for: directory ? input.outputDirectory : audio, isDirectory: directory) else { return nil }
+        return details.inferredParticipant
     }
     public static func url(for recording: URL, isDirectory: Bool) -> URL {
         isDirectory ? recording.appendingPathComponent("CallDetails.json") : recording.appendingPathExtension("call.json")
@@ -60,15 +84,37 @@ public enum CallDetailsStore {
         let file = url(for: recording, isDirectory: isDirectory)
         guard FileManager.default.fileExists(atPath: file.path) else { return .init() }
         guard PrivateFiles.isRegular(file) else { throw RecorderError.message("Call details must be stored in a regular file.") }
-        let details = try JSONDecoder().decode(CallDetails.self, from: Data(contentsOf: file))
-        guard (1...3).contains(details.version) else { throw RecorderError.message("These call details use a newer format. They have not been changed.") }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let details = try decoder.decode(CallDetails.self, from: Data(contentsOf: file))
+        guard (1...4).contains(details.version) else { throw RecorderError.message("These call details use a newer format. They have not been changed.") }
         return details.normalized
+    }
+    static func writeInitial(_ details: CallDetails, to url: URL) throws {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        try PrivateFiles.atomicWrite(encoder.encode(details.normalized), to: url)
     }
     @discardableResult public static func save(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String] = [:]) throws -> CallDetails {
         try CallFileOperations.validateRecording(recording)
         // Do not silently replace an unreadable or newer details file.
         let previous = try load(for: recording.url, isDirectory: recording.isDirectory)
         var saved = details.normalized
+        if saved.meeting == nil { saved.meeting = previous.meeting }
+        if saved.allowSingleParticipantInference == nil { saved.allowSingleParticipantInference = previous.allowSingleParticipantInference }
+        // The existing details editor edits names. Keep identity/attendance
+        // links when those names change, and retain excluded people for Restore.
+        if saved.attendees == nil, previous.attendees != nil {
+            var people = previous.callAttendees
+            for index in people.indices where people[index].kind == .person {
+                people[index].name = participantRenames[people[index].name] ?? people[index].name
+                if !saved.participants.contains(people[index].name) { people[index].attendance = .absent }
+            }
+            for name in saved.participants where !people.contains(where: { $0.name == name && $0.active }) {
+                if let index = people.firstIndex(where: { $0.name == name && $0.kind == .person }) { people[index].attendance = .expected }
+                else { people.append(.init(name: name)) }
+            }
+            saved.attendees = people
+            if !Set(previous.participants.map { participantRenames[$0] ?? $0 }).isSubset(of: saved.participants) { saved.allowSingleParticipantInference = false }
+        }
         guard participantRenames.allSatisfy({ previous.participants.contains($0.key) && saved.participants.contains($0.value) }) else {
             throw RecorderError.message("The participant list changed. Reopen call details and try again.")
         }
@@ -85,14 +131,13 @@ public enum CallDetailsStore {
         for transcript in RecordingLibraryScanner.transcripts(in: folder) {
             guard recording.isDirectory || (transcript.document?.recording == recording.sourceName && transcript.document?.sources[TranscriptSource.mixed.rawValue] == recording.url.lastPathComponent) else { continue }
             let key = transcript.runName
-            assignments[key] = saved.participants.count == 1 ? saved.participants[0] : updatedName(previous.automaticParticipant(for: transcript) ?? "")
+            assignments[key] = saved.inferredParticipant ?? updatedName(previous.automaticParticipant(for: transcript) ?? "")
             let names = previous.participantNames(for: transcript).mapValues(updatedName)
             if !names.isEmpty { overrides[key] = names }
         }
         saved.automaticParticipants = assignments.isEmpty ? nil : assignments
         saved.participantOverrides = overrides.isEmpty ? nil : overrides
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try PrivateFiles.atomicWrite(encoder.encode(saved), to: url(for: recording.url, isDirectory: recording.isDirectory))
+        try writeInitial(saved, to: url(for: recording.url, isDirectory: recording.isDirectory))
         return saved
     }
 }
