@@ -18,7 +18,7 @@ PLIST
 xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     -module-cache-path "$PWD/.build/module-cache" -I "$binary_dir/Modules" \
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation -framework Carbon -framework IOKit -framework EventKit \
-    Tests/CalendarIntegrationHarness.swift Sources/CallRecorder/RecordingLibraryModel.swift Sources/CallRecorder/RecordingLibraryView.swift Sources/CallRecorder/RecordingLibraryWindow.swift Sources/CallRecorder/CallEditors.swift Sources/CallRecorder/AttendanceEditor.swift Sources/CallRecorder/CalendarCoordinator.swift Sources/CallRecorder/CalendarViews.swift \
+    Tests/CalendarIntegrationHarness.swift Sources/CallRecorder/RecordingLibraryModel.swift Sources/CallRecorder/RecordingLibraryView.swift Sources/CallRecorder/RecordingLibraryWindow.swift Sources/CallRecorder/LibraryKeyboard.swift Sources/CallRecorder/CallEditors.swift Sources/CallRecorder/AttendanceEditor.swift Sources/CallRecorder/CalendarCoordinator.swift Sources/CallRecorder/CalendarViews.swift \
     Sources/CallRecorder/RecordingCoordinator.swift Sources/CallRecorder/RecordingShortcut.swift Sources/CallRecorder/TranscriptionCoordinator.swift \
     "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
     "$binary_dir"/KeyboardShortcuts.build/*.swift.o -o "$app/Contents/MacOS/CalendarIntegrationCheck"

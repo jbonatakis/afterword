@@ -9,7 +9,7 @@ import SwiftUI
 
     init(library: RecordingLibraryModel, recorder: RecordingCoordinator, playback: RecordingPlayback, showControls: @escaping () -> Void) {
         self.library = library; self.playback = playback
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 740),
+        let window = LibraryCommandWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Call Recorder"
         window.isReleasedWhenClosed = false

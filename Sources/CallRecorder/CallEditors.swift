@@ -126,9 +126,9 @@ struct InlineTranscriptActions: View {
             if draft.saving { ProgressView().controlSize(.small) }
             Button("Cancel") { library.cancelTranscriptEditing(recording) }.disabled(draft.saving)
             Button("Save") { Task { await library.saveTranscriptDraft(for: recording) } }
-                .keyboardShortcut("s", modifiers: .command).buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent)
                 .disabled(!draft.changed || draft.saving || library.managing)
-                .help("Save edits as a new version; keep the original")
+                .help("Save edits as a new version; keep the original (⌘S)")
         }
     }
 }

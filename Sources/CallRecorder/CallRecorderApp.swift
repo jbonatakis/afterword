@@ -15,7 +15,10 @@ import RecorderCore
     func applicationDidFinishLaunching(_ notification: Notification) {
         recorder.calendar.startMonitoring()
         statusItem = RecorderStatusItem(recorder: recorder, showLibrary: { [weak self] in self?.showLibrary() })
-        DispatchQueue.main.async { [weak self] in self?.showLibrary() }
+        DispatchQueue.main.async { [weak self] in
+            self?.showLibrary()
+            LibraryKeyboardMenus.install()
+        }
     }
     func showLibrary() { libraryWindow.present() }
     func showRecordingControls() { statusItem?.showPopover() }
@@ -67,6 +70,9 @@ import RecorderCore
             CommandGroup(replacing: .sidebar) {
                 Button("Toggle Sidebar") { delegate.library.sidebarVisible.toggle() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
+            }
+            CommandGroup(replacing: .help) {
+                Button("Keyboard Shortcuts") { LibraryKeyboardMenus.showHelp() }
             }
         }
     }

@@ -54,6 +54,26 @@ The library refreshes after recording/transcription saves and edits, when the ap
 
 Call-details schema 4 adds meeting references, identity-linked attendance, and explicit inference policy. It also stores current automatic defaults and manual-name corrections per transcript version. Renames and removals update the library, search, copied text, and future edited versions while leaving original transcript files intact. Schema 1–3 call details remain readable; old stuck automatic names use the current sole participant on load. Newly generated or edited transcripts with participant information use transcript schema 3; versions 1 and 2 remain readable. A manual name is stored separately from the audio source; an explicitly unassigned passage overrides the automatic default. Original transcript files are not rewritten when participants are added.
 
+## Library keyboard controls (version 0.11)
+
+The **Call** and **Playback** menus list the shortcuts. **Help → Keyboard Shortcuts** opens a quick reference.
+
+| Shortcut | Action |
+|---|---|
+| R | Rename the selected call inline; Return saves and Escape cancels. |
+| Delete / Backspace | Move the selected call to Trash when the call list has focus. Return confirms the dialog; Escape cancels. |
+| Space | Play or pause the selected recording. |
+| Option–Left / Right | Seek backward or forward 10 seconds. |
+| Command–F | Focus and select the library search text. |
+| Command–I | Edit the selected call’s details. |
+| E | Edit the displayed transcript, focusing its first paragraph. |
+| Command–S | Save an inline rename or transcript edit. |
+| Command–Shift–C | Copy the displayed saved transcript in its readable format. |
+
+Letter, deletion, and playback shortcuts leave text inputs alone and are inactive while a dialog or another window is focused. Playback remains disabled during capture and saving. Command–1 (library), Command–2 (upcoming calls), and the configurable global recording shortcut remain available.
+
+Run `Scripts/check-library.sh Tests/LibraryKeyboardHarness.swift` for the isolated native keyboard check. It uses generated silent audio, temporary preferences, and a uniquely named fixture for the Trash confirmation.
+
 ## Balanced listening volume (version 0.10)
 
 **Balance voice volume in the saved mix** is on by default in **Settings → Recording**. New recordings measure the microphone and system tracks independently after capture, bring their active audio to similar levels, and apply gentle stereo-linked compression and peak protection to **Mixed.m4a**. The library plays that saved mix normally. There is no extra playback cache or migration of existing calls.

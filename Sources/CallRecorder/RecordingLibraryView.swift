@@ -10,6 +10,7 @@ struct RecordingLibraryView: View {
     @State private var detailsEditor: LibraryRecording?
     @State private var trashTarget: TrashTarget?
     @State private var managementError: String?
+    @FocusState private var callListFocused: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
@@ -59,10 +60,11 @@ struct RecordingLibraryView: View {
                                     Button("Show in Finder") { recorder.reveal(recording.url) }
                                     Divider()
                                     Button("Move to Trash…", role: .destructive) { trashTarget = .init(recording: recording) }
-                                        .disabled(library.managing || recorder.locked || library.transcriptDrafts[recording.id] != nil || library.renamingID == recording.id)
+                                        .disabled(library.managing || recorder.locked || recorder.transcription.busy || library.transcriptDrafts[recording.id] != nil || library.renamingID == recording.id)
                                 }
                         }
-                    }.listStyle(.inset)
+                    }.listStyle(.inset).focused($callListFocused)
+                        .accessibilityIdentifier("recording-list")
                 }
                 Divider()
                 HStack {
@@ -132,6 +134,7 @@ struct RecordingLibraryView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(LibraryCommandScope(bindings: keyboardBindings).frame(width: 0, height: 0))
         .frame(minWidth: 940, minHeight: 600)
         .sheet(item: $detailsEditor) { recording in
             CallDetailsEditor(recording: recording, library: library)
@@ -142,8 +145,8 @@ struct RecordingLibraryView: View {
                     do { try await library.moveToTrash(target.recording, version: target.version, playback: playback) }
                     catch { managementError = error.localizedDescription }
                 }
-            }
-            Button("Cancel", role: .cancel) {}
+            }.keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
         } message: { target in Text(target.message) }
         .alert("Couldn’t move to Trash", isPresented: Binding(get: { managementError != nil }, set: { if !$0 { managementError = nil } })) {
             Button("OK", role: .cancel) { managementError = nil }
@@ -158,6 +161,31 @@ struct RecordingLibraryView: View {
 
     private func reconcileSelection() {
         if library.selectedRecording == nil { library.selection = library.visibleRecordings.first?.id }
+    }
+
+    private var keyboardBindings: [LibraryCommand: LibraryCommandBinding] {
+        [
+            .rename: .init(enabled: { library.selectedRecording != nil && !library.managing && library.renamingID == nil }, perform: {
+                if let recording = library.selectedRecording { library.beginRenaming(recording) }
+            }),
+            .trash: .init(enabled: {
+                callListFocused && library.selectedRecording != nil && !library.managing && !recorder.locked && !recorder.transcription.busy && library.renamingID == nil && library.selectedRecording.map { library.transcriptDrafts[$0.id] == nil } == true
+            }, perform: {
+                if let recording = library.selectedRecording { trashTarget = .init(recording: recording) }
+            }),
+            .details: .init(enabled: { library.selectedRecording != nil && !library.managing && library.renamingID == nil }, perform: {
+                detailsEditor = library.selectedRecording
+            }),
+            .save: .init(enabled: {
+                guard !library.managing else { return false }
+                if library.renamingID != nil { return !library.renaming }
+                guard let recording = library.selectedRecording, let draft = library.transcriptDrafts[recording.id] else { return false }
+                return draft.changed && !draft.saving
+            }, perform: {
+                if library.renamingID != nil { Task { await library.saveRename() } }
+                else if let recording = library.selectedRecording { Task { await library.saveTranscriptDraft(for: recording) } }
+            })
+        ]
     }
 }
 
@@ -192,7 +220,7 @@ private struct RecordingRow: View {
                     Text(recording.name).font(.headline).lineLimit(2).truncationMode(.middle)
                     Spacer(minLength: 0)
                     Button { library.beginRenaming(recording) } label: { Image(systemName: "pencil").font(.caption) }
-                        .foregroundStyle(.secondary).help("Rename call").accessibilityLabel("Rename \(recording.name)")
+                        .foregroundStyle(.secondary).help("Rename call (R)").accessibilityLabel("Rename \(recording.name)")
                         .disabled(library.managing || library.renamingID != nil)
                 }
             }.buttonStyle(.borderless)
@@ -250,6 +278,7 @@ private struct RecordingDetail: View {
                     Text(recording.date, format: .dateTime.weekday().month().day().year().hour().minute())
                     Spacer()
                     Button(action: editDetails) { Label("Edit details", systemImage: "pencil") }.disabled(library.managing || library.renamingID != nil)
+                        .help("Edit call details (⌘I)")
                 }.font(.callout).foregroundStyle(.secondary)
                 if !recording.details.callAttendees.isEmpty {
                     HStack {
@@ -282,13 +311,10 @@ private struct RecordingDetail: View {
                         InlineTranscriptActions(recording: recording, draft: draft, library: library)
                     } else {
                         if let document = version?.document {
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(version.flatMap { recording.readableText(for: $0) } ?? "", forType: .string)
-                            } label: { Label("Copy", systemImage: "doc.on.doc") }
-                            .help("Copy readable transcript")
+                            Button(action: copyTranscript) { Label("Copy", systemImage: "doc.on.doc") }
+                            .help("Copy readable transcript (⌘⇧C)")
                             Button { beginEditing() } label: { Image(systemName: "pencil") }
-                                .buttonStyle(.plain).help("Edit transcript").accessibilityLabel("Edit transcript")
+                                .buttonStyle(.plain).help("Edit transcript (E)").accessibilityLabel("Edit transcript")
                                 .disabled(library.managing || document.paragraphs.isEmpty)
                         }
                         Button(recording.transcripts.isEmpty ? "Transcribe" : "Transcribe again") {
@@ -353,6 +379,13 @@ private struct RecordingDetail: View {
             Divider()
             PlaybackBar(recording: recording, playback: playback, disabled: recorder.locked)
         }
+        .background(LibraryCommandScope(bindings: [
+            .editTranscript: .init(enabled: { draft == nil && !library.managing && library.renamingID == nil && version?.document?.paragraphs.isEmpty == false }, perform: { beginEditing(paragraph: 0) }),
+            .copyTranscript: .init(enabled: { draft == nil && version?.document != nil }, perform: copyTranscript),
+            .playPause: .init(enabled: { !recorder.locked && playback.ready }, perform: playback.toggle),
+            .backward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position - 10) }),
+            .forward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position + 10) })
+        ]).frame(width: 0, height: 0))
         .onAppear { playback.select(recording); selectMatchingVersion() }
         .sheet(isPresented: $showingAttendance) { AttendanceEditor(recording: recording, version: version, library: library) }
         .onChange(of: query) { _, _ in selectMatchingVersion() }
@@ -361,6 +394,11 @@ private struct RecordingDetail: View {
     }
     private func beginEditing(paragraph: Int? = nil) {
         if let version { library.beginTranscriptEditing(recording, version: version, paragraph: paragraph) }
+    }
+    private func copyTranscript() {
+        guard let version, let text = recording.readableText(for: version) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
     private func selectMatchingVersion() {
         guard draft == nil else { return }
@@ -487,6 +525,7 @@ private struct PlaybackBar: View {
                 Button { playback.toggle() } label: {
                     Image(systemName: playback.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30))
                 }.buttonStyle(.plain).accessibilityLabel(playback.playing ? "Pause playback" : "Play recording")
+                    .help("Play / pause (Space)")
                     .disabled(disabled || !playback.ready)
                 Text(Transcript.timestamp(playback.position)).font(.caption.monospacedDigit()).frame(width: 60)
                 Slider(value: Binding(get: { playback.position }, set: playback.seek), in: 0...max(0.01, playback.duration))
