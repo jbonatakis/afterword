@@ -257,6 +257,9 @@ struct RecorderSettings: View {
             }
             Text("Each recording gets a dated folder with Microphone.m4a, System.m4a, and Mixed.m4a. The tracks share the same start time and duration.").font(.caption).foregroundStyle(.secondary)
             Text("Audio stays local. Your selected folder may be synced or backed up by another service.").font(.caption).foregroundStyle(.secondary)
+            Toggle("Balance voice volume in the saved mix", isOn: $recorder.balanceMix).disabled(recorder.locked)
+            Text("Brings quiet microphone speech and louder call audio to similar listening levels, with gentle compression and peak protection. The separate tracks keep their original levels for transcription.")
+                .font(.caption).foregroundStyle(.secondary)
             RecordingShortcutSettings(shortcut: recorder.shortcut)
             Divider()
             Notices()

@@ -2,7 +2,7 @@
 
 A native SwiftUI recorder for macOS 14.2+ with a searchable recording library and menu-bar controls, built from [the recording specification, version 1.1](docs/spec-v1.1.md), with separate source tracks and selectable local transcription added. Each recording folder contains **Microphone.m4a** (selected mono mic, 64 kbps target), **System.m4a** (stereo playback, 128 kbps), and **Mixed.m4a** (stereo playback mix, 128 kbps). All use 48 kHz AAC-LC and share the same start and duration. No virtual audio driver, server, or audio uploads. Transcription uses a bundled, pinned build of Handy's [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp).
 
-**Qualification status:** 75 audio/export/recovery/transcription/library tests pass, along with native echo-stream checks. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
+**Qualification status:** 98 core audio/export/recovery/transcription/library/calendar tests pass, along with native echo-stream checks. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
 
 ## Build and run
 
@@ -14,7 +14,7 @@ cd /path/to/call-recorder
 open 'build/Call Recorder.app'
 ```
 
-The first build downloads pinned transcription sources and CMake 3.31.6 into `build/`, then builds a native helper with embedded Metal shaders. Subsequent builds reuse this cache. The finished app needs no Python, uv, compiler, or network connection to transcribe with an installed model. The script signs the helper and app with the hardened runtime; only the app receives the audio-input entitlement. It is outside App Sandbox and uses local ad-hoc signing by default. You can copy the completed app to a stable location before granting permissions. Quit a previous running build before opening a new one. Apple silicon is the tested transcription platform; Intel's CPU path has not been qualified.
+The first build downloads pinned transcription sources and CMake 3.31.6 into `build/`, then builds a native helper with embedded Metal shaders. Subsequent builds reuse this cache. The finished app needs no Python, uv, compiler, or network connection to transcribe with an installed model. The script signs the helper and app with the hardened runtime; only the app receives the audio-input and Calendar entitlements. It is outside App Sandbox and uses local ad-hoc signing by default. You can copy the completed app to a stable location before granting permissions. Quit a previous running build before opening a new one. Apple silicon is the tested transcription platform; Intel's CPU path has not been qualified.
 
 If you have a development signing identity, use it consistently:
 
@@ -53,6 +53,14 @@ The app opens a regular Mac window and appears in the Dock and app switcher. The
 The library refreshes after recording/transcription saves and edits, when the app becomes active, and with the toolbar refresh button. It indexes direct recording folders and audio files inside the chosen locations, not arbitrary nested folder trees. It uses an in-memory index; notes generation and individual remote speaker identification are future work.
 
 Call-details schema 4 adds meeting references, identity-linked attendance, and explicit inference policy. It also stores current automatic defaults and manual-name corrections per transcript version. Renames and removals update the library, search, copied text, and future edited versions while leaving original transcript files intact. Schema 1–3 call details remain readable; old stuck automatic names use the current sole participant on load. Newly generated or edited transcripts with participant information use transcript schema 3; versions 1 and 2 remain readable. A manual name is stored separately from the audio source; an explicitly unassigned passage overrides the automatic default. Original transcript files are not rewritten when participants are added.
+
+## Balanced listening volume (version 0.10)
+
+**Balance voice volume in the saved mix** is on by default in **Settings → Recording**. New recordings measure the microphone and system tracks independently after capture, bring their active audio to similar levels, and apply gentle stereo-linked compression and peak protection to **Mixed.m4a**. The library plays that saved mix normally. There is no extra playback cache or migration of existing calls.
+
+**Microphone.m4a** and **System.m4a** keep their original levels, sample counts, mute intervals, and timing. Transcription and speaker-bleed reduction continue using those separate tracks. The recording level meters also show the original input levels. Disabling balancing restores the original half-gain mix for subsequent recordings; the setting is checkpointed in the session so recovery uses the same choice. Sessions from older versions keep their original mix behavior.
+
+The balance measurement uses gated 100 ms RMS windows and a percentile reference so pauses and isolated bumps do not determine the whole call's gain. Gain is fixed per source for the call, with a maximum 36 dB boost and a guard against boosting steady low-level noise. A soft-knee compressor reduces remaining phrase-to-phrase differences, followed by a stereo-linked peak limiter. This is a listening treatment, not voice isolation: boosting a very quiet microphone can also make its background noise or speaker bleed more audible. No live microphone gain, system volume, or meeting-app setting is changed.
 
 ## Calendar calls and attendance (version 0.9)
 

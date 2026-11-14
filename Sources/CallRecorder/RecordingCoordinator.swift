@@ -17,6 +17,7 @@ import RecorderCore
     @Published var selectedUID: String?
     @Published var selectedChannel = -1
     @Published var destination: URL
+    @Published var balanceMix = UserDefaults.standard.object(forKey: "balanceMix") as? Bool ?? true { didSet { defaults.set(balanceMix, forKey: "balanceMix") } }
     @Published var recordMicrophone = true { didSet { engine?.setMicrophoneEnabled(recordMicrophone) } }
     @Published var resolved: InputDevice?
     @Published var snapshot = PipelineSnapshot()
@@ -140,7 +141,7 @@ import RecorderCore
                 }
                 self.resolved = current
                 engineStarted = true
-                engine?.start(input: ResolvedInput(device: current, channel: channel, selection: selection), destination: destination, preview: preview, microphoneEnabled: recordMicrophone, callDetails: callDetails)
+                engine?.start(input: ResolvedInput(device: current, channel: channel, selection: selection), destination: destination, preview: preview, microphoneEnabled: recordMicrophone, callDetails: callDetails, balanceMix: balanceMix)
             } catch {
                 let permission = (error as? RecorderError).map { if case .microphonePermission = $0 { return true }; return false } ?? false
                 message = error.localizedDescription

@@ -13,9 +13,9 @@ final class SplitTrackTests: XCTestCase {
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
-    func makeStore(separateTracks: Bool = true, callDetails: CallDetails? = nil) throws -> SessionStore {
+    func makeStore(separateTracks: Bool = true, callDetails: CallDetails? = nil, balanceMix: Bool = false) throws -> SessionStore {
         let device = InputDevice(objectID: 1, uid: "fixture", name: "Fixture", channels: ["Mic"], bufferChannels: [1], sampleRate: 48_000)
-        var manifest = SessionManifest(input: ResolvedInput(device: device, channel: 0, selection: .systemDefault), formats: [], destination: destination, separateTracks: separateTracks, callDetails: callDetails)
+        var manifest = SessionManifest(input: ResolvedInput(device: device, channel: 0, selection: .systemDefault), formats: [], destination: destination, separateTracks: separateTracks, callDetails: callDetails, balanceMix: balanceMix)
         if !separateTracks { manifest.applicationVersion = "0.1.0" }
         return try SessionStore(root: root.appendingPathComponent("sessions"), manifest: manifest)
     }

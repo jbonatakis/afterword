@@ -31,7 +31,7 @@ public final class RecordingEngine {
     private var permissionFailure = false
     private var lastPermissionCheck: TimeInterval = 0
     public init(onEvent: @escaping (EngineEvent) -> Void) { self.onEvent = onEvent }
-    public func start(input: ResolvedInput, destination: URL, preview: Bool, microphoneEnabled: Bool, callDetails: CallDetails? = nil) {
+    public func start(input: ResolvedInput, destination: URL, preview: Bool, microphoneEnabled: Bool, callDetails: CallDetails? = nil, balanceMix: Bool = true) {
         controlLock.lock(); desiredMicrophoneEnabled = microphoneEnabled; controlLock.unlock()
         queue.async { [self] in
             guard !active else { return }
@@ -50,7 +50,7 @@ public final class RecordingEngine {
                 guard let layout = capture.layout, let ring = capture.ring else { throw RecorderError.message("Capture layout is unavailable.") }
                 onEvent(.prepared(formats: capture.formats, layout: layout))
                 if !preview {
-                    store = try SessionStore(manifest: SessionManifest(input: input, formats: capture.formats, destination: destination, callDetails: callDetails))
+                    store = try SessionStore(manifest: SessionManifest(input: input, formats: capture.formats, destination: destination, callDetails: callDetails, balanceMix: balanceMix))
                 }
                 pipeline = try AudioPipeline(sampleRate: layout.sampleRate, store: store)
                 controlLock.lock()

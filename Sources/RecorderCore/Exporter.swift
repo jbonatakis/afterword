@@ -46,11 +46,13 @@ public enum Exporter {
         defer { try? FileManager.default.removeItem(at: temporary) }
         do {
             try store.setStatus("exporting")
+            let balance = manifest.hasSeparateTracks && manifest.balanceMix == true ? try MixBalance.analyze(store) : nil
             let tracks: [RecordingTrack] = manifest.hasSeparateTracks ? RecordingTrack.allCases : [.mixed]
             for track in tracks {
                 let url = manifest.hasSeparateTracks ? temporary.appendingPathComponent(track.filename) : temporary
                 if manifest.hasSeparateTracks { try PrivateFiles.create(url) }
-                try (encoder ?? encode)(store, track, url)
+                if let encoder { try encoder(store, track, url) }
+                else { try encode(store, track: track, to: url, balance: balance) }
             }
             if manifest.hasSeparateTracks, let details = manifest.callDetails {
                 try CallDetailsStore.writeInitial(details, to: temporary.appendingPathComponent("CallDetails.json"))
@@ -80,7 +82,7 @@ public enum Exporter {
             throw error
         }
     }
-    static func encode(_ store: SessionStore, track: RecordingTrack, to url: URL) throws {
+    static func encode(_ store: SessionStore, track: RecordingTrack, to url: URL, balance: MixBalancePlan? = nil) throws {
         guard store.manifest.hasSeparateTracks || track == .mixed else { throw RecorderError.message("This older recording contains only a mixed track.") }
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -91,8 +93,33 @@ public enum Exporter {
         // Each writer closes before validation. Every file begins at source frame
         // zero and includes silence and exactly the same uninterrupted prefix.
         let writer = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-        let input = AVAudioPCMBuffer(pcmFormat: store.format, frameCapacity: 32_768)!
         let output = AVAudioPCMBuffer(pcmFormat: writer.processingFormat, frameCapacity: 32_768)!
+        var balanced = balance.map(BalancedMixRenderer.init)
+        try readPCM(store) { input in
+            output.frameLength = input.frameLength
+            for frame in 0..<Int(input.frameLength) {
+                if !store.manifest.hasSeparateTracks {
+                    output.floatChannelData![0][frame] = input.floatChannelData![0][frame]
+                    output.floatChannelData![1][frame] = input.floatChannelData![1][frame]
+                } else {
+                    switch track {
+                    case .mixed:
+                        let mic = input.floatChannelData![0][frame], left = input.floatChannelData![1][frame], right = input.floatChannelData![2][frame]
+                        let pair = balanced != nil ? balanced!.sample(microphone: mic, left: left, right: right) : FixedMix.sample(microphone: mic, left: left, right: right)
+                        output.floatChannelData![0][frame] = pair.0; output.floatChannelData![1][frame] = pair.1
+                    case .microphone:
+                        output.floatChannelData![0][frame] = FixedMix.safe(input.floatChannelData![0][frame])
+                    case .system:
+                        output.floatChannelData![0][frame] = FixedMix.safe(input.floatChannelData![1][frame])
+                        output.floatChannelData![1][frame] = FixedMix.safe(input.floatChannelData![2][frame])
+                    }
+                }
+            }
+            try writer.write(from: output)
+        }
+    }
+    static func readPCM(_ store: SessionStore, body: (AVAudioPCMBuffer) throws -> Void) throws {
+        let input = AVAudioPCMBuffer(pcmFormat: store.format, frameCapacity: 32_768)!
         for (index, chunk) in store.manifest.chunks.enumerated() {
             guard chunk.sequence == index, Recovery.safeChunkName(chunk.filename, sequence: index) else { throw RecorderError.message("Invalid chunk ordering.") }
             let chunkURL = store.directory.appendingPathComponent(chunk.filename)
@@ -103,25 +130,7 @@ public enum Exporter {
             while remaining > 0 {
                 try reader.read(into: input, frameCount: AVAudioFrameCount(min(Int64(input.frameCapacity), remaining)))
                 guard input.frameLength > 0 else { throw RecorderError.message("Unexpected end of recovery chunk.") }
-                output.frameLength = input.frameLength
-                for frame in 0..<Int(input.frameLength) {
-                    if !store.manifest.hasSeparateTracks {
-                        output.floatChannelData![0][frame] = input.floatChannelData![0][frame]
-                        output.floatChannelData![1][frame] = input.floatChannelData![1][frame]
-                    } else {
-                        switch track {
-                        case .mixed:
-                            let pair = FixedMix.sample(microphone: input.floatChannelData![0][frame], left: input.floatChannelData![1][frame], right: input.floatChannelData![2][frame])
-                            output.floatChannelData![0][frame] = pair.0; output.floatChannelData![1][frame] = pair.1
-                        case .microphone:
-                            output.floatChannelData![0][frame] = FixedMix.safe(input.floatChannelData![0][frame])
-                        case .system:
-                            output.floatChannelData![0][frame] = FixedMix.safe(input.floatChannelData![1][frame])
-                            output.floatChannelData![1][frame] = FixedMix.safe(input.floatChannelData![2][frame])
-                        }
-                    }
-                }
-                try writer.write(from: output); remaining -= Int64(input.frameLength)
+                try body(input); remaining -= Int64(input.frameLength)
             }
         }
     }

@@ -34,15 +34,17 @@ public struct SessionManifest: Codable {
     public var deliveredPath: String?
     public var retainRecoveryFiles: Bool?
     public var callDetails: CallDetails?
+    /// Absent in older sessions, which retain the original fixed-gain mix.
+    public var balanceMix: Bool?
     public var operatingSystem = ProcessInfo.processInfo.operatingSystemVersionString
-    public var applicationVersion = "0.9.0"
+    public var applicationVersion = "0.10.0"
     public var clippedSamples: UInt64 = 0
     public var invalidSamples: UInt64 = 0
     public var droppedFrames: UInt64 = 0
     public var totalFrames: Int64 { chunks.reduce(0) { $0 + $1.frames } }
     public var hasSeparateTracks: Bool { version == 2 }
     public var pcmChannels: AVAudioChannelCount { hasSeparateTracks ? 3 : 2 }
-    public init(id: UUID = UUID(), startDate: Date = Date(), input: ResolvedInput, formats: [SourceFormat], destination: URL, separateTracks: Bool = true, callDetails: CallDetails? = nil) {
+    public init(id: UUID = UUID(), startDate: Date = Date(), input: ResolvedInput, formats: [SourceFormat], destination: URL, separateTracks: Bool = true, callDetails: CallDetails? = nil, balanceMix: Bool = true) {
         version = separateTracks ? 2 : 1
         self.id = id; self.startDate = startDate
         timeZone = TimeZone.current.identifier; utcOffsetSeconds = TimeZone.current.secondsFromGMT(for: startDate)
@@ -50,6 +52,7 @@ public struct SessionManifest: Codable {
         deviceUID = input.device.uid; channel = input.channel; self.formats = formats
         self.destination = destination.path
         self.callDetails = callDetails
+        self.balanceMix = separateTracks && balanceMix
     }
 }
 
