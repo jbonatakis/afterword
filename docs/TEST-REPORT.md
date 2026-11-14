@@ -113,6 +113,10 @@ The popover uses a persistent native `NSPopover` with animations disabled to avo
 - The native fixture verifies persisted assignments, no editor or unsaved draft, original-file/text/timestamp preservation, unchanged search/selection/playback, no duplicate version for a repeated choice, and recovery after a deliberately missing fixture file prevents saving. Existing text drafts retain their Save/Cancel behavior and do not publish text when their speaker dropdown is used.
 - The existing title-field focus check needed reruns before passing; this change does not claim to resolve that intermittent fixture-focus issue. The completed harness also passes participant rename/removal, text editing, playback, reader stress, and fixture deletion checks.
 
+### Read-only calendar feasibility spike (November 14)
+
+The read-only EventKit probe requires the calendar entitlement. Meeting URLs can appear outside the dedicated URL field. Calendar copies and recurring events need occurrence-level deduplication. Attendee metadata can be incomplete, so group membership and speaker identity require confirmation. The probe stores diagnostics locally in the ignored build directory.
+
 ## Failed / limitations observed
 
 ### Local transcription checks (version 0.3)

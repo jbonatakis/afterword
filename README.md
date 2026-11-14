@@ -120,6 +120,15 @@ Sleep/shutdown checkpoints and stops best-effort. Recording never resumes automa
 
 `test.sh` uses XCTest when full Xcode is installed. With Command Line Tools only, it runs the **same test bodies** through a small assertion adapter. This machine lacks XCTest, so the adapter is included rather than skipping tests. AAC encoding needs access to Apple's local audio codec service; a restrictive development sandbox can return `fmt?` even for a valid encoder configuration. Run these commands normally in Terminal if that happens. The commands above do not capture live microphone/system audio.
 
+The optional calendar feasibility probe is a separate signed app with its own normal macOS calendar permission prompt. It does not change events, launch meeting links, capture audio, or alter the production app. List calendar IDs first, then explicitly select calendars and event/attendee search terms:
+
+```sh
+./Scripts/check-calendar.sh --list --output "$PWD/build/calendar-spike/calendars.json"
+./Scripts/check-calendar.sh --scan --calendar '<selected-calendar-id>' --match '<person or group>' --output "$PWD/build/calendar-spike/events.json"
+```
+
+The default scan covers the previous 7 and next 14 days; `--days-before`/`--days-after` can change that up to 31 days. Multiple `--calendar` and `--match` options are supported. The JSON report's `status` indicates success or a permission/read error. It includes matching event titles, dates, attendee names/emails/types, self-identification, and meeting-link hosts/fields. It omits event notes, join paths/tokens, and raw event identifiers. Reports are private files under Git-ignored `build/calendar-spike/`; do not commit them. This is diagnostic code, not the calendar integration or a qualified meeting-link parser.
+
 After building the app, exercise the actual downloader and ASR worker with a copy of the engine's public speech sample:
 
 ```sh
