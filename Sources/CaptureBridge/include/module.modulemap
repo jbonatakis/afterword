@@ -1,0 +1,4 @@
+module CaptureBridge {
+    header "CaptureBridge.h"
+    export *
+}
