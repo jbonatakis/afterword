@@ -94,19 +94,28 @@ struct RecordingLibraryView: View {
                     if !recorder.noticesAccepted { showControls() }
                     else { recorder.toggleRecording() }
                 } label: {
-                    Label(recorder.locked ? recorder.state == .finalizing ? "Saving…" : "Stop" : "Record",
-                          systemImage: recorder.locked ? "stop.fill" : "record.circle")
+                    HStack(spacing: 6) {
+                        Image(systemName: recorder.locked ? "stop.fill" : "record.circle").accessibilityHidden(true)
+                        Text(recorder.locked ? recorder.state == .finalizing ? "Saving…" : "Stop" : "Record")
+                    }.frame(minWidth: 66).fixedSize()
                 }
                 .tint(recorder.locked ? .red : .accentColor)
+                .help(recorder.state == .finalizing ? "Saving recording…" : recorder.state == .preparing ? "Cancel preparation" : recorder.isPreview ? "End audio test" : recorder.locked ? "Stop recording and save" : "Start recording")
                 .disabled(recorder.state == .finalizing || (!recorder.locked && (recorder.resolved == nil || recorder.selectedChannel < 0)))
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if recorder.locked || recorder.message != nil {
                 HStack {
-                    Label(recorder.title, systemImage: recorder.locked ? "record.circle" : "exclamationmark.circle")
-                        .foregroundStyle(recorder.locked ? .red : .orange)
-                    if recorder.locked { Text(recorder.elapsed).monospacedDigit() }
+                    if recorder.locked {
+                        HStack(spacing: 6) {
+                            Circle().fill(recorder.state == .recording ? Color.red : Color.secondary)
+                                .frame(width: 7, height: 7).accessibilityHidden(true)
+                            Text("\(recorder.title) · \(recorder.elapsed)").monospacedDigit()
+                        }.accessibilityElement(children: .combine)
+                    } else {
+                        Label(recorder.title, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+                    }
                     if let message = recorder.message { Text(message).lineLimit(2) }
                     Spacer()
                 }.font(.callout).padding(10).background(.bar)
