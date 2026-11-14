@@ -1,0 +1,25 @@
+Call Recorder includes transcribe.cpp 0.4.2, revision
+275cd50d2c4104c204009a197ac091b9687668e5, by Handy and contributors:
+https://github.com/handy-computer/transcribe.cpp
+It incorporates GGML. Their MIT licenses are included in this directory.
+
+The engine also incorporates miniz (third_party/miniz in its source tree).
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+See miniz.txt in this directory for its license.
+
+Speech models are separate optional downloads, not bundled with the app.
+The model details links in Settings point to their model cards and licenses:
+Parakeet Unified EN: NVIDIA Open Model License
+Nemotron 3.5 ASR: OpenMDW-1.1
+Whisper: MIT
+
+Speaker bleed reduction includes WebRTC AEC3 and its supporting native DSP
+from strands-labs/pywebrtc-audio 0.2.0, revision
+1bc860a2051c2b9b3c10b8c778770794b9321d84:
+https://github.com/strands-labs/pywebrtc-audio
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+The AudioProcessor sequence was adapted into a bounded C++ file stream.
+The Python bindings/runtime are not bundled. Apache-2.0 license and NOTICE,
+WebRTC BSD license, AUTHORS and PATENTS, and supporting third-party notices
+(Abseil, JsonCpp, Ooura, PFFFT, RNNoise) are included in this directory.
