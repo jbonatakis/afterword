@@ -22,7 +22,22 @@ import RecorderCore
         showLibrary(); return false
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { recorder.shouldQuit() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if library.managing {
+            showLibrary()
+            let alert = NSAlert(); alert.messageText = "A change is still saving"
+            alert.informativeText = "Wait for it to finish, then quit Call Recorder."; alert.runModal()
+            return .terminateCancel
+        }
+        if library.hasUnsavedEdits {
+            showLibrary()
+            let alert = NSAlert(); alert.messageText = "Discard unsaved edits and quit?"
+            alert.informativeText = "There are unsaved call or transcript edits in the library."
+            alert.addButton(withTitle: "Keep Editing"); alert.addButton(withTitle: "Discard Edits and Quit")
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        }
+        return recorder.shouldQuit()
+    }
     func applicationWillTerminate(_ notification: Notification) {
         recorder.transcription.shutdown()
         recorder.shortcut.shutdown()

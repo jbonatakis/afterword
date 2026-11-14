@@ -1,15 +1,6 @@
 import SwiftUI
 import RecorderCore
 
-enum CallEditor: Identifiable {
-    case details(LibraryRecording)
-    case transcript(LibraryRecording, LibraryTranscript)
-    var id: String {
-        switch self { case .details(let call): return "details:" + call.id
-        case .transcript(_, let version): return "transcript:" + version.id }
-    }
-}
-
 struct CallDetailsEditor: View {
     let recording: LibraryRecording
     @ObservedObject var library: RecordingLibraryModel
@@ -66,68 +57,64 @@ struct CallDetailsEditor: View {
     }
 }
 
-struct TranscriptEditor: View {
-    let recording: LibraryRecording
+@MainActor final class TranscriptDraft: ObservableObject {
     let version: LibraryTranscript
-    @ObservedObject var library: RecordingLibraryModel
-    @Environment(\.dismiss) private var dismiss
-    private let paragraphs: [TranscriptParagraph]
-    @State private var text: [String]
-    @State private var saving = false
-    @State private var error: String?
-
-    init(recording: LibraryRecording, version: LibraryTranscript, library: RecordingLibraryModel) {
-        self.recording = recording; self.version = version; self.library = library
+    let paragraphs: [TranscriptParagraph]
+    let focusedParagraph: Int?
+    @Published var text: [String]
+    @Published var saving = false
+    @Published var error: String?
+    init(version: LibraryTranscript, focusedParagraph: Int?) {
+        self.version = version; self.focusedParagraph = focusedParagraph
         paragraphs = version.document?.paragraphs ?? []
-        _text = State(initialValue: paragraphs.map(\.text))
+        text = paragraphs.map(\.text)
     }
-    private var changed: Bool {
+    var changed: Bool {
         zip(text, paragraphs).contains { $0.0.trimmingCharacters(in: .whitespacesAndNewlines) != $0.1.text }
     }
+}
+
+struct InlineTranscriptActions: View {
+    let recording: LibraryRecording
+    @ObservedObject var draft: TranscriptDraft
+    @ObservedObject var library: RecordingLibraryModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Edit transcript").font(.title2.weight(.semibold))
-                Text(recording.name).font(.headline).lineLimit(2)
-                Text("Save a new version while keeping the original. Each paragraph stays linked to its audio interval; clear its text to remove it from the new version.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }.padding(24)
-            Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(paragraphs.indices, id: \.self) { index in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(paragraphs[index].source.label).fontWeight(.semibold)
-                                Spacer()
-                                Text(Transcript.timestamp(paragraphs[index].start) + " – " + Transcript.timestamp(paragraphs[index].end)).monospacedDigit().foregroundStyle(.secondary)
-                            }.font(.caption)
-                            TextEditor(text: $text[index]).font(.body).frame(minHeight: 90, idealHeight: 110)
-                                .editorBorder().accessibilityLabel("\(paragraphs[index].source.label) at \(Transcript.timestamp(paragraphs[index].start))")
-                        }
-                    }
-                }.padding(24)
-            }.disabled(saving)
-            Divider()
-            VStack(alignment: .leading, spacing: 12) {
-                if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
-                HStack {
-                    if saving { ProgressView().controlSize(.small) }
-                    Spacer()
-                    Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
-                    Button("Save new version") { save() }.keyboardShortcut("s", modifiers: .command)
-                        .buttonStyle(.borderedProminent).disabled(!changed || saving || library.managing)
-                }
-            }.padding(20)
-        }.frame(width: 660, height: 580).background(Color(nsColor: .windowBackgroundColor)).interactiveDismissDisabled(saving)
-    }
-    private func save() {
-        saving = true; error = nil
-        Task {
-            do { try await library.saveTranscript(text, version: version, recording: recording); dismiss() }
-            catch { self.error = error.localizedDescription }
-            saving = false
+        HStack(spacing: 8) {
+            if draft.saving { ProgressView().controlSize(.small) }
+            Button("Cancel") { library.cancelTranscriptEditing(recording) }.disabled(draft.saving)
+            Button("Save") { Task { await library.saveTranscriptDraft(for: recording) } }
+                .keyboardShortcut("s", modifiers: .command).buttonStyle(.borderedProminent)
+                .disabled(!draft.changed || draft.saving || library.managing)
+                .help("Save edits as a new version; keep the original")
         }
+    }
+}
+
+struct InlineTranscriptNotice: View {
+    @ObservedObject var draft: TranscriptDraft
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Editing transcript · Save keeps the original version").foregroundStyle(.secondary)
+            if let error = draft.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+        }.font(.caption)
+    }
+}
+
+struct InlineParagraphEditor: View {
+    let paragraph: TranscriptParagraph
+    @ObservedObject var draft: TranscriptDraft
+    @FocusState private var focused: Bool
+    var body: some View {
+        TextField("Paragraph text", text: $draft.text[paragraph.id], axis: .vertical)
+            .textFieldStyle(.plain).font(.system(size: 15)).lineSpacing(5)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(6).background(Color.accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.accentColor.opacity(focused ? 0.5 : 0.15)))
+            .padding(-6).focused($focused).disabled(draft.saving)
+            .accessibilityLabel("Edit \(paragraph.source.label) at \(Transcript.timestamp(paragraph.start))")
+            .onAppear {
+                if draft.focusedParagraph == paragraph.id { focused = true }
+            }
     }
 }
 

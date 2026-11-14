@@ -14,6 +14,11 @@ import RecorderCore
     @Published private(set) var roots: [URL] = []
     @Published private(set) var managing = false
     @Published var preferredTranscriptID: String?
+    @Published private(set) var transcriptDrafts: [String: TranscriptDraft] = [:]
+    @Published private(set) var renamingID: String?
+    @Published var renameText = ""
+    @Published private(set) var renameError: String?
+    @Published private(set) var renaming = false
     private weak var recorder: RecordingCoordinator?
     private var currentDestination: URL
     private var scan: Task<LibraryScan, Never>?
@@ -42,14 +47,14 @@ import RecorderCore
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
     }
-    func refresh() {
-        guard !managing else { return }
+    @discardableResult func refresh() -> Task<Void, Never>? {
+        guard !managing else { return nil }
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots
         let task = Task.detached(priority: .utility) { RecordingLibraryScanner.scan(roots: roots) }
         scan = task
-        Task { [weak self] in
+        return Task { [weak self] in
             let result = await task.value
             guard let self, self.generation == id else { return }
             self.recordings = result.recordings; self.issues = result.issues
@@ -62,24 +67,74 @@ import RecorderCore
         guard !managing else { throw RecorderError.message("Another change is still saving. Try again in a moment.") }
         managing = true; scan?.cancel(); scan = nil; generation = UUID(); refreshing = false
     }
-    private func finishManagement() { managing = false; refresh() }
-    func saveDetails(_ details: CallDetails, for recording: LibraryRecording) async throws {
+    @discardableResult private func finishManagement() -> Task<Void, Never>? { managing = false; return refresh() }
+    func saveDetails(_ details: CallDetails, for recording: LibraryRecording, reveal: Bool = true) async throws {
         try beginManagement()
-        defer { finishManagement() }
-        try await Task.detached(priority: .userInitiated) { try CallDetailsStore.save(details, for: recording) }.value
-        search = ""; selection = recording.id
+        do {
+            try await Task.detached(priority: .userInitiated) { try CallDetailsStore.save(details, for: recording) }.value
+            if reveal { search = ""; selection = recording.id }
+            await finishManagement()?.value
+        } catch { finishManagement(); throw error }
     }
     func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording) async throws {
         try beginManagement()
-        defer { finishManagement() }
-        let file = try await Task.detached(priority: .userInitiated) {
-            try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording)
-        }.value
-        preferredTranscriptID = file.deletingLastPathComponent().appendingPathComponent("Transcript.json").path
-        search = ""; selection = recording.id
+        do {
+            let file = try await Task.detached(priority: .userInitiated) {
+                try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording)
+            }.value
+            preferredTranscriptID = file.deletingLastPathComponent().appendingPathComponent("Transcript.json").path
+            if selection == recording.id { search = "" }
+            await finishManagement()?.value
+        } catch { finishManagement(); throw error }
+    }
+    func beginRenaming(_ recording: LibraryRecording) {
+        guard !managing, renamingID == nil || renamingID == recording.id else { return }
+        selection = recording.id; renameText = recording.name; renameError = nil; renamingID = recording.id
+    }
+    func cancelRename() {
+        guard !renaming else { return }
+        renamingID = nil; renameError = nil
+    }
+    func saveRename() async {
+        guard !renaming, let id = renamingID, let recording = recordings.first(where: { $0.id == id }) else { return }
+        let title = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { renameError = "Enter a title."; return }
+        guard title != recording.name else { cancelRename(); return }
+        renaming = true; renameError = nil
+        do {
+            // Re-read details so changing just the title cannot overwrite an updated participant list.
+            var details = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
+            details.title = title
+            try await saveDetails(details, for: recording, reveal: false)
+            renamingID = nil
+        } catch { renameError = error.localizedDescription }
+        renaming = false
+    }
+    func beginTranscriptEditing(_ recording: LibraryRecording, version: LibraryTranscript, paragraph: Int? = nil) {
+        guard !managing, version.document?.paragraphs.isEmpty == false else { return }
+        if transcriptDrafts[recording.id] == nil { transcriptDrafts[recording.id] = TranscriptDraft(version: version, focusedParagraph: paragraph) }
+    }
+    func cancelTranscriptEditing(_ recording: LibraryRecording) {
+        guard transcriptDrafts[recording.id]?.saving != true else { return }
+        transcriptDrafts[recording.id] = nil
+    }
+    func saveTranscriptDraft(for recording: LibraryRecording) async {
+        guard let draft = transcriptDrafts[recording.id], !draft.saving, draft.changed else { return }
+        draft.saving = true; draft.error = nil
+        do {
+            try await saveTranscript(draft.text, version: draft.version, recording: recording)
+            transcriptDrafts[recording.id] = nil
+        } catch { draft.error = error.localizedDescription }
+        draft.saving = false
+    }
+    var hasUnsavedEdits: Bool {
+        transcriptDrafts.values.contains { $0.changed } || renamingID.flatMap { id in recordings.first { $0.id == id } }.map { $0.name != renameText } == true
     }
     func moveToTrash(_ recording: LibraryRecording, version: LibraryTranscript? = nil, playback: RecordingPlayback,
                      trash: (@Sendable (URL) throws -> URL)? = nil) async throws {
+        guard transcriptDrafts[recording.id] == nil, renamingID != recording.id else {
+            throw RecorderError.message("Save or cancel your edits before moving this item to Trash.")
+        }
         guard let recorder, !recorder.locked else { throw RecorderError.message("Finish recording before moving items to Trash.") }
         if version == nil, recording.isDirectory, CallFileOperations.contains(recording.url, recorder.destination.resolvingSymlinksInPath()) {
             throw RecorderError.message("This call contains the current recording destination. Choose another destination in Settings first.")

@@ -34,7 +34,7 @@ public struct SessionManifest: Codable {
     public var deliveredPath: String?
     public var retainRecoveryFiles: Bool?
     public var operatingSystem = ProcessInfo.processInfo.operatingSystemVersionString
-    public var applicationVersion = "0.7.0"
+    public var applicationVersion = "0.7.1"
     public var clippedSamples: UInt64 = 0
     public var invalidSamples: UInt64 = 0
     public var droppedFrames: UInt64 = 0

@@ -88,6 +88,12 @@ The popover uses a persistent native `NSPopover` with animations disabled to avo
 - **Native macOS Trash round trip passes.** A newly generated test folder was moved with `FileManager.trashItem`, restored using the returned URL, checked for unchanged content, and removed. Existing user recordings were not edited or deleted by these checks.
 - Transcript edits retain paragraph audio intervals, not inferred word timings. This release does not requalify recognition accuracy or live capture. Xcode execution remains unavailable on this host.
 
+### Inline editing (version 0.7.1, November 14)
+
+- The library row now supports inline title editing, with Return/checkmark to save and Escape/× to cancel. The isolated native harness verifies real text-field focus, text insertion, Return-to-save, empty-title validation, cancellation, and preservation of other call details.
+- Transcript editing now uses the existing reader and player. The harness verifies draft retention through selection/search/refresh changes, saving a new version without changing the original, cancellation without a write, and clean draft state after saving. The reader and title field were rendered and inspected at normal and minimum window widths; no desktop capture was used.
+- The 60 core tests and the expanded native library harness pass. Drafts are retained in memory while the app runs; quitting with unsaved edits requires an explicit discard choice. Production recording files were not edited during verification.
+
 ## Failed / limitations observed
 
 ### Local transcription checks (version 0.3)

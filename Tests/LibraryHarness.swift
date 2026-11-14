@@ -19,6 +19,7 @@ import RecorderCore
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-ui-" + UUID().uuidString)
         let name = Bundle.main.bundleIdentifier!
+        UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
         func require(_ condition: @autoclosure () -> Bool, _ message: String) {
             if !condition() { fputs("FAIL: \(message)\n", stderr); exit(1) }
@@ -92,15 +93,33 @@ import RecorderCore
                                            description: "Decisions about the recording library and the next steps for readable transcripts."), for: recording)
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
         require(library.selectedRecording?.name == "Product planning", "Renamed title did not persist through refresh")
+        library.beginRenaming(library.recordings[0]); library.renameText = "Product planning · weekly review"
+        await library.saveRename()
+        require(library.selectedRecording?.name == "Product planning · weekly review", "Inline rename did not persist")
+        require(library.selectedRecording?.details.participants == ["Jack", "Alex"], "Renaming replaced participants")
+        library.beginRenaming(library.recordings[0]); library.renameText = "   "
+        await library.saveRename()
+        require(library.renameError != nil && library.renamingID == recording.id, "An empty title was accepted or its draft lost")
+        library.cancelRename()
+        library.beginRenaming(library.recordings[0]); library.renameText = "Cancelled title"
+        library.cancelRename()
+        require(library.selectedRecording?.name == "Product planning · weekly review", "Cancelling rename changed the title")
         library.search = "Roadmap"
         require(library.visibleRecordings.count == 1, "Tag search failed")
         library.search = "Alex"
         require(library.visibleRecordings.count == 1, "Participant search failed")
         var corrected = document.paragraphs.map(\.text)
         corrected[0] = "Let's build a library that makes our conversations easy to find and review."
-        try await library.saveTranscript(corrected, version: originalVersion, recording: recording)
+        library.beginTranscriptEditing(recording, version: originalVersion)
+        library.transcriptDrafts[recording.id]?.text = corrected
+        require(library.hasUnsavedEdits, "Inline changes were not tracked as unsaved")
+        library.selection = nil; library.search = "no matching call"; await library.refresh()?.value
+        require(library.transcriptDrafts[recording.id]?.text == corrected, "Navigating or refreshing lost inline edits")
+        library.search = ""; library.selection = recording.id
+        await library.saveTranscriptDraft(for: recording)
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
         require(library.selectedRecording?.transcripts.count == 2, "Editing did not create a version")
+        require(library.transcriptDrafts[recording.id] == nil && !library.hasUnsavedEdits, "Successful save left a dirty draft")
         require(library.preferredTranscriptID != nil, "Edited version was not selected")
         require(library.selectedRecording?.transcripts.contains { $0.document?.editing != nil } == true, "Edited version lacks its origin")
         let unchangedBytes = try Data(contentsOf: originalVersion.url)
@@ -143,9 +162,11 @@ import RecorderCore
         print("PASS own-view rendering at default and minimum sizes; no screen capture or live audio capture")
 
         let updated = library.recordings[0]
+        library.beginTranscriptEditing(updated, version: updated.transcripts[0], paragraph: 1)
+        library.transcriptDrafts[updated.id]?.text[1] += " This correction is still a draft."
         for (view, width, height, suffix) in [
             (AnyView(CallDetailsEditor(recording: updated, library: library)), 578.0, 430.0, "call-details"),
-            (AnyView(TranscriptEditor(recording: updated, version: updated.transcripts[0], library: library)), 660.0, 580.0, "transcript-editor")
+            (AnyView(RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {})), 1180.0, 740.0, "transcript-inline")
         ] {
             let host = NSHostingView(rootView: view.preferredColorScheme(.light))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
@@ -157,7 +178,30 @@ import RecorderCore
             try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/\(suffix).png"))
             window.orderOut(nil)
         }
-        print("PASS call and transcript editor rendering")
+        library.cancelTranscriptEditing(updated)
+        require(!library.hasUnsavedEdits && library.recordings[0].transcripts.count == 2, "Cancelling an inline draft wrote a transcript")
+        print("PASS inline rename, draft navigation/save/cancel, and inline transcript rendering")
+
+        let renameView = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}).preferredColorScheme(.light))
+        let renameWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 940, height: 660), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        renameWindow.appearance = NSAppearance(named: .aqua); renameView.appearance = renameWindow.appearance
+        renameWindow.contentView = renameView; renameWindow.makeKeyAndOrderFront(nil); await pump()
+        library.beginRenaming(updated); await pump(0.1)
+        require(library.renamingID == updated.id, "Row rename editor dismissed immediately")
+        guard let titleEditor = renameWindow.firstResponder as? NSTextView else { throw RecorderError.message("Inline title did not receive keyboard focus") }
+        renameView.layoutSubtreeIfNeeded(); renameView.displayIfNeeded()
+        let renameBitmap = renameView.bitmapImageRepForCachingDisplay(in: renameView.bounds)!
+        renameWindow.appearance!.performAsCurrentDrawingAppearance { renameView.cacheDisplay(in: renameView.bounds, to: renameBitmap) }
+        try renameBitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/rename-inline.png"))
+        titleEditor.selectAll(nil)
+        titleEditor.insertText("Title saved with Return", replacementRange: titleEditor.selectedRange())
+        await pump(0.1)
+        require(library.renameText == "Title saved with Return", "Typing in the title field did not update the draft")
+        titleEditor.insertNewline(nil)
+        await pump(0.4)
+        require(library.renamingID == nil && library.recordings[0].name == "Title saved with Return", "Return did not save the inline title")
+        renameWindow.orderOut(nil)
+        print("PASS inline title keyboard focus, typing, Return to save, and minimum-width rendering")
 
         let fixtureTrash = root.appendingPathComponent(".fixture-trash")
         try FileManager.default.createDirectory(at: fixtureTrash, withIntermediateDirectories: true)
