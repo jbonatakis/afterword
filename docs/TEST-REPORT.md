@@ -94,6 +94,12 @@ The popover uses a persistent native `NSPopover` with animations disabled to avo
 - Transcript editing now uses the existing reader and player. The harness verifies draft retention through selection/search/refresh changes, saving a new version without changing the original, cancellation without a write, and clean draft state after saving. The reader and title field were rendered and inspected at normal and minimum window widths; no desktop capture was used.
 - The 60 core tests and the expanded native library harness pass. Drafts are retained in memory while the app runs; quitting with unsaved edits requires an explicit discard choice. Production recording files were not edited during verification.
 
+### Participant assignments (version 0.8, November 14)
+
+- **69 core tests pass.** Nine new cases cover one-person inference for new and existing transcripts, preserving that assignment when a second person is added, migration from old call details, independent passage assignments, unchanged timing/source/text for speaker-only edits, explicit unassigned passages, preservation across text edits, grouping boundaries between named speakers, name search, and legacy shared-folder ownership. Microphone and mixed-source labels are not inferred as remote people.
+- The isolated native harness adds a participant while a transcript draft is open, verifies the original automatic assignment, assigns a system passage to the new name, saves, and checks the named readable text. Updated light/dark reader and details-editor rendering passes alongside existing navigation, playback, editing, and deletion checks. Tests use only generated fixtures.
+- Call details schema 2 stores frozen defaults per transcript version; annotated transcripts use schema 3. Older files remain readable. Named labels are manual assignments or one-person assumptions, not voice recognition or diarization.
+
 ## Failed / limitations observed
 
 ### Local transcription checks (version 0.3)

@@ -89,14 +89,14 @@ import RecorderCore
 
         let originalVersion = recording.transcripts[0]
         let originalBytes = try Data(contentsOf: originalVersion.url)
-        try await library.saveDetails(.init(title: "Product planning", participants: ["Jack", "Alex"], tags: ["Roadmap", "Design"],
+        try await library.saveDetails(.init(title: "Product planning", participants: ["Alex"], tags: ["Roadmap", "Design"],
                                            description: "Decisions about the recording library and the next steps for readable transcripts."), for: recording)
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
         require(library.selectedRecording?.name == "Product planning", "Renamed title did not persist through refresh")
         library.beginRenaming(library.recordings[0]); library.renameText = "Product planning · weekly review"
         await library.saveRename()
         require(library.selectedRecording?.name == "Product planning · weekly review", "Inline rename did not persist")
-        require(library.selectedRecording?.details.participants == ["Jack", "Alex"], "Renaming replaced participants")
+        require(library.selectedRecording?.details.participants == ["Alex"], "Renaming replaced participants")
         library.beginRenaming(library.recordings[0]); library.renameText = "   "
         await library.saveRename()
         require(library.renameError != nil && library.renamingID == recording.id, "An empty title was accepted or its draft lost")
@@ -112,6 +112,15 @@ import RecorderCore
         corrected[0] = "Let's build a library that makes our conversations easy to find and review."
         library.beginTranscriptEditing(recording, version: originalVersion)
         library.transcriptDrafts[recording.id]?.text = corrected
+        var callDetails = library.recordings[0].details
+        callDetails.participants.append("Sam")
+        try await library.saveDetails(callDetails, for: library.recordings[0])
+        let named = library.recordings[0]
+        require(named.automaticParticipant(for: originalVersion) == "Alex", "Adding a second person changed existing automatic assignments")
+        library.assignParticipant("Sam", to: 0, recording: named, version: originalVersion)
+        require(library.transcriptDrafts[recording.id]?.participants[0] == nil, "Participant assignment changed the microphone speaker")
+        library.assignParticipant("Sam", to: 1, recording: named, version: originalVersion)
+        require(library.transcriptDrafts[recording.id]?.participants[1] == "Sam", "Speaker menu selection did not update the draft")
         require(library.hasUnsavedEdits, "Inline changes were not tracked as unsaved")
         library.selection = nil; library.search = "no matching call"; await library.refresh()?.value
         require(library.transcriptDrafts[recording.id]?.text == corrected, "Navigating or refreshing lost inline edits")
@@ -122,6 +131,9 @@ import RecorderCore
         require(library.transcriptDrafts[recording.id] == nil && !library.hasUnsavedEdits, "Successful save left a dirty draft")
         require(library.preferredTranscriptID != nil, "Edited version was not selected")
         require(library.selectedRecording?.transcripts.contains { $0.document?.editing != nil } == true, "Edited version lacks its origin")
+        let namedDocument = library.recordings[0].transcripts.first { $0.document?.editing != nil }!.document!
+        require(namedDocument.automaticParticipant == "Alex" && namedDocument.paragraphs[1].participant == "Sam", "Saved transcript lost the frozen automatic name or manual assignment")
+        require(namedDocument.readableText.contains("Sam · 00:00:18"), "Readable transcript omitted assigned names")
         let unchangedBytes = try Data(contentsOf: originalVersion.url)
         require(unchangedBytes == originalBytes, "Editing changed the original transcript")
         recorder.transcription.recordingSaved(folder)
@@ -132,7 +144,7 @@ import RecorderCore
         recorder.transcription.filesMovedToTrash([folder])
         recorder.transcription.endLibraryMutation()
         require(recorder.transcription.recording == nil, "Trashed recording remained selected for transcription")
-        print("PASS editable metadata, searchable details, new transcript version, original preservation, and transcription mutation guard")
+        print("PASS editable metadata, one-to-many participant transition, manual assignments, transcript versions, original preservation, and transcription mutation guard")
 
         let native = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
         native.window?.setFrameOrigin(NSPoint(x: -10000, y: -10000))

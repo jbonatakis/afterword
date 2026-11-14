@@ -76,11 +76,11 @@ import RecorderCore
             await finishManagement()?.value
         } catch { finishManagement(); throw error }
     }
-    func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording) async throws {
+    func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil) async throws {
         try beginManagement()
         do {
             let file = try await Task.detached(priority: .userInitiated) {
-                try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording)
+                try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording, participants: participants)
             }.value
             preferredTranscriptID = file.deletingLastPathComponent().appendingPathComponent("Transcript.json").path
             if selection == recording.id { search = "" }
@@ -118,11 +118,19 @@ import RecorderCore
         guard transcriptDrafts[recording.id]?.saving != true else { return }
         transcriptDrafts[recording.id] = nil
     }
+    func assignParticipant(_ participant: String?, to paragraph: Int, recording: LibraryRecording, version: LibraryTranscript) {
+        guard !managing, version.document?.paragraphs.indices.contains(paragraph) == true,
+              version.document?.paragraphs[paragraph].source == .system else { return }
+        if let participant, !participant.isEmpty, !recording.details.participants.contains(participant) { return }
+        beginTranscriptEditing(recording, version: version)
+        guard let draft = transcriptDrafts[recording.id], !draft.saving, draft.version.id == version.id else { return }
+        draft.participants[paragraph] = participant
+    }
     func saveTranscriptDraft(for recording: LibraryRecording) async {
         guard let draft = transcriptDrafts[recording.id], !draft.saving, draft.changed else { return }
         draft.saving = true; draft.error = nil
         do {
-            try await saveTranscript(draft.text, version: draft.version, recording: recording)
+            try await saveTranscript(draft.text, version: draft.version, recording: recording, participants: draft.participants)
             transcriptDrafts[recording.id] = nil
         } catch { draft.error = error.localizedDescription }
         draft.saving = false

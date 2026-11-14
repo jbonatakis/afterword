@@ -1,13 +1,16 @@
 import Foundation
 
 public struct CallDetails: Codable, Equatable, Sendable {
-    public var version = 1
+    public var version = 2
     public var title: String?
     public var participants: [String]
     public var tags: [String]
     public var description: String
-    public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "") {
+    /// Frozen defaults for existing transcript versions, keyed by their run directory name.
+    public var automaticParticipants: [String: String]?
+    public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "", automaticParticipants: [String: String]? = nil) {
         self.title = title; self.participants = participants; self.tags = tags; self.description = description
+        self.automaticParticipants = automaticParticipants
     }
     public var normalized: CallDetails {
         func unique(_ values: [String]) -> [String] {
@@ -17,11 +20,18 @@ public struct CallDetails: Codable, Equatable, Sendable {
         }
         let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         return .init(title: title?.isEmpty == false ? title : nil, participants: unique(participants), tags: unique(tags),
-                     description: description.trimmingCharacters(in: .whitespacesAndNewlines))
+                     description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants)
     }
 }
 
 public enum CallDetailsStore {
+    static func singleParticipant(for input: TranscriptionInput) -> String? {
+        guard let track = input.tracks.first else { return nil }
+        let audio = URL(fileURLWithPath: track.path)
+        let directory = RecordingTrack.allCases.contains { $0.filename == audio.lastPathComponent }
+        guard let details = try? load(for: directory ? input.outputDirectory : audio, isDirectory: directory), details.participants.count == 1 else { return nil }
+        return details.participants.first
+    }
     public static func url(for recording: URL, isDirectory: Bool) -> URL {
         isDirectory ? recording.appendingPathComponent("CallDetails.json") : recording.appendingPathExtension("call.json")
     }
@@ -30,15 +40,29 @@ public enum CallDetailsStore {
         guard FileManager.default.fileExists(atPath: file.path) else { return .init() }
         guard PrivateFiles.isRegular(file) else { throw RecorderError.message("Call details must be stored in a regular file.") }
         let details = try JSONDecoder().decode(CallDetails.self, from: Data(contentsOf: file))
-        guard details.version == 1 else { throw RecorderError.message("These call details use a newer format. They have not been changed.") }
+        guard (1...2).contains(details.version) else { throw RecorderError.message("These call details use a newer format. They have not been changed.") }
         return details.normalized
     }
     public static func save(_ details: CallDetails, for recording: LibraryRecording) throws {
         try CallFileOperations.validateRecording(recording)
         // Do not silently replace an unreadable or newer details file.
-        _ = try load(for: recording.url, isDirectory: recording.isDirectory)
+        let previous = try load(for: recording.url, isDirectory: recording.isDirectory)
+        var saved = details.normalized
+        var assignments = previous.automaticParticipants ?? [:]
+        // Freeze the old one-person assumption BEFORE adding a second name.
+        // Existing transcript bytes stay untouched, and only this call's runs are associated.
+        let inferred = previous.participants.count == 1 ? previous.participants.first : saved.participants.count == 1 ? saved.participants.first : nil
+        if let inferred {
+            let folder = recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent()
+            for transcript in RecordingLibraryScanner.transcripts(in: folder) {
+                guard recording.isDirectory || (transcript.document?.recording == recording.sourceName && transcript.document?.sources[TranscriptSource.mixed.rawValue] == recording.url.lastPathComponent) else { continue }
+                let key = transcript.url.deletingLastPathComponent().lastPathComponent
+                if assignments[key] == nil { assignments[key] = transcript.document?.automaticParticipant ?? inferred }
+            }
+        }
+        saved.automaticParticipants = assignments.isEmpty ? nil : assignments
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try PrivateFiles.atomicWrite(encoder.encode(details.normalized), to: url(for: recording.url, isDirectory: recording.isDirectory))
+        try PrivateFiles.atomicWrite(encoder.encode(saved), to: url(for: recording.url, isDirectory: recording.isDirectory))
     }
 }
 
@@ -135,15 +159,18 @@ public enum CallFileOperations {
             throw error
         }
     }
-    public static func saveTranscriptEdits(_ text: [String], version: LibraryTranscript, recording: LibraryRecording) throws -> URL {
+    public static func saveTranscriptEdits(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil) throws -> URL {
         try validateRecording(recording)
         _ = try transcriptDirectory(version, for: recording)
         guard let original = version.document else { throw RecorderError.message("This transcript cannot be edited because it could not be read.") }
         let current = try Transcript.read(from: version.url)
-        guard current.segments == original.segments, current.createdAt == original.createdAt else {
+        guard current.segments == original.segments, current.createdAt == original.createdAt, current.automaticParticipant == original.automaticParticipant else {
             throw RecorderError.message("This transcript changed while you were editing it. Reopen the editor to review the latest version.")
         }
-        let edited = try original.editingParagraphs(text, parentVersion: version.url.deletingLastPathComponent().lastPathComponent)
+        let details = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
+        let key = version.url.deletingLastPathComponent().lastPathComponent
+        let automatic = original.automaticParticipant ?? details.automaticParticipants?[key] ?? (details.participants.count == 1 ? details.participants.first : nil)
+        let edited = try original.editingParagraphs(text, parentVersion: key, participants: participants, automaticParticipant: automatic)
         return try edited.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
     }
 }

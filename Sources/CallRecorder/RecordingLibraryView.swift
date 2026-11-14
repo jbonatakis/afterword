@@ -260,7 +260,7 @@ private struct RecordingDetail: View {
                         if let document = version?.document {
                             Button {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(document.readableText(recordingName: recording.name), forType: .string)
+                                NSPasteboard.general.setString(document.readableText(recordingName: recording.name, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) }), forType: .string)
                             } label: { Label("Copy", systemImage: "doc.on.doc") }
                             .help("Copy readable transcript")
                             Button { beginEditing() } label: { Image(systemName: "pencil") }
@@ -300,7 +300,11 @@ private struct RecordingDetail: View {
             Divider()
             if let document = version?.document {
                 ReadableTranscript(paragraphs: document.paragraphs, edited: document.editing != nil, query: query, playback: playback, playbackDisabled: recorder.locked,
-                                   draft: draft, canEdit: !library.managing, editParagraph: { beginEditing(paragraph: $0) })
+                                   draft: draft, canEdit: !library.managing, editParagraph: { beginEditing(paragraph: $0) },
+                                   participants: recording.details.participants, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) },
+                                   assignParticipant: { name, paragraph in
+                                       if let version { library.assignParticipant(name, to: paragraph, recording: recording, version: version) }
+                                   }, editParticipants: editDetails)
             } else if let error = version?.error {
                 ContentUnavailableView {
                     Label("Couldn’t read this transcript", systemImage: "exclamationmark.triangle")
@@ -337,7 +341,9 @@ private struct RecordingDetail: View {
             versionID = preferred; library.preferredTranscriptID = nil; return
         }
         guard !query.isEmpty else { return }
-        if let matching = recording.transcripts.first(where: { $0.document?.paragraphs.contains { $0.text.localizedStandardContains(query) } == true }) {
+        if let matching = recording.transcripts.first(where: { version in version.document?.paragraphs.contains {
+            $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: recording.automaticParticipant(for: version)).localizedStandardContains(query)
+        } == true }) {
             versionID = matching.id
         }
     }
@@ -352,8 +358,14 @@ private struct ReadableTranscript: View {
     let draft: TranscriptDraft?
     let canEdit: Bool
     let editParagraph: (Int) -> Void
+    let participants: [String]
+    let automaticParticipant: String?
+    let assignParticipant: (String?, Int) -> Void
+    let editParticipants: () -> Void
     private var firstMatch: Int? {
-        query.isEmpty ? nil : paragraphs.first { $0.text.localizedStandardContains(query) }?.id
+        query.isEmpty ? nil : paragraphs.first {
+            $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant).localizedStandardContains(query)
+        }?.id
     }
     var body: some View {
         if paragraphs.isEmpty {
@@ -367,7 +379,17 @@ private struct ReadableTranscript: View {
                             VStack(alignment: .leading, spacing: 9) {
                                 HStack(spacing: 10) {
                                     Circle().fill(paragraph.source == .microphone ? Color.accentColor : .secondary).frame(width: 7, height: 7)
-                                    Text(paragraph.source.label).font(.callout.weight(.semibold))
+                                    if paragraph.source == .system {
+                                        if let draft {
+                                            DraftParticipantPicker(paragraph: paragraph, draft: draft, participants: participants, automaticParticipant: automaticParticipant,
+                                                                   assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
+                                                .disabled(!canEdit)
+                                        } else {
+                                            ParticipantPicker(participant: paragraph.participant, participants: participants, automaticParticipant: automaticParticipant, start: paragraph.start,
+                                                              assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
+                                                .disabled(!canEdit)
+                                        }
+                                    } else { Text(paragraph.source.label).font(.callout.weight(.semibold)) }
                                     Button(Transcript.timestamp(paragraph.start)) {
                                         playback.seek(paragraph.start); playback.play()
                                     }.buttonStyle(.plain).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -392,7 +414,7 @@ private struct ReadableTranscript: View {
                                 }
                             }.id(paragraph.id)
                         }
-                        Text("Labels follow the audio tracks. Other participants may include multiple people.")
+                        Text("“You” follows the microphone track. Other speaker names use the call’s participant assignments.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: 760).padding(28).frame(maxWidth: .infinity)
                 }

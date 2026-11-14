@@ -51,8 +51,16 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
     public let end: Double
     public let text: String
     public let timing: String
-    public init(source: TranscriptSource, start: Double, end: Double, text: String, timing: String) {
+    /// nil uses the transcript's automatic name; an empty string explicitly leaves a passage unassigned.
+    public let participant: String?
+    public init(source: TranscriptSource, start: Double, end: Double, text: String, timing: String, participant: String? = nil) {
         self.source = source; self.start = start; self.end = end; self.text = text; self.timing = timing
+        self.participant = participant
+    }
+    public func speakerLabel(automaticParticipant: String? = nil) -> String {
+        guard source == .system else { return source.label }
+        let name = (participant ?? automaticParticipant)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name?.isEmpty == false ? name! : source.label
     }
 }
 
@@ -76,14 +84,18 @@ public struct Transcript: Codable, Sendable {
     public let speakerBleedReduction: SpeakerBleedReduction?
     public let echoCancellation: EchoCancellationDetails?
     public let editing: TranscriptEditing?
+    public let automaticParticipant: String?
 
     public init(input: TranscriptionInput, model: SpeechModel, engine: String, language: String, segments: [TranscriptSegment],
-                speakerBleedReduction: SpeakerBleedReduction? = nil, echoCancellation: EchoCancellationDetails? = nil) throws {
+                speakerBleedReduction: SpeakerBleedReduction? = nil, echoCancellation: EchoCancellationDetails? = nil,
+                automaticParticipant: String? = nil) throws {
         let allowed = Set(input.tracks.map(\.source))
         guard segments.allSatisfy({ allowed.contains($0.source) && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && ["word", "segment", "chunk"].contains($0.timing) }) else {
             throw RecorderError.message("The transcription worker returned invalid timestamps or track labels.")
         }
-        version = 2; createdAt = Date(); recording = input.name
+        self.automaticParticipant = automaticParticipant ?? CallDetailsStore.singleParticipant(for: input)
+        version = self.automaticParticipant != nil || segments.contains(where: { $0.participant != nil }) ? 3 : 2
+        createdAt = Date(); recording = input.name
         self.speakerBleedReduction = speakerBleedReduction; self.echoCancellation = echoCancellation
         editing = nil
         modelID = model.id; modelName = model.name; modelSHA256 = model.sha256
@@ -95,9 +107,12 @@ public struct Transcript: Codable, Sendable {
     public var plainText: String {
         let cleanup = speakerBleedReduction.map { "Speaker bleed reduction: \($0.description)\n" } ?? ""
         let edits = editing == nil ? "" : "Manually edited transcript. Edited paragraphs retain their original audio intervals.\n"
-        let header = "\(recording)\nModel: \(modelName)\n\(cleanup)\(edits)Labels follow the recorded tracks. Other participants may include multiple people and system audio.\n\n"
+        let labels = automaticParticipant != nil || segments.contains(where: { $0.participant != nil })
+            ? "Speaker names use participant assignments; unassigned labels follow the recorded tracks."
+            : "Labels follow the recorded tracks. Other participants may include multiple people and system audio."
+        let header = "\(recording)\nModel: \(modelName)\n\(cleanup)\(edits)\(labels)\n\n"
         if segments.isEmpty { return header + (editing == nil ? "No speech was detected.\n" : "This edited transcript has no text.\n") }
-        return header + segments.map { "[\(Self.timestamp($0.start))] \($0.source.label): \($0.text)" }.joined(separator: "\n") + "\n"
+        return header + segments.map { "[\(Self.timestamp($0.start))] \($0.speakerLabel(automaticParticipant: automaticParticipant)): \($0.text)" }.joined(separator: "\n") + "\n"
     }
     public static func timestamp(_ seconds: Double) -> String {
         let value = Int(seconds.rounded(.down))
@@ -121,25 +136,36 @@ public struct Transcript: Codable, Sendable {
         return final.appendingPathComponent("Transcript.txt")
     }
 
-    public func editingParagraphs(_ text: [String], parentVersion: String) throws -> Transcript {
+    public func editingParagraphs(_ text: [String], parentVersion: String, participants: [String?]? = nil,
+                                  automaticParticipant: String? = nil) throws -> Transcript {
         let paragraphs = paragraphs
         guard text.count == paragraphs.count else { throw RecorderError.message("The transcript structure changed. Reopen the editor.") }
+        let participants = participants ?? paragraphs.map(\.participant)
+        guard participants.count == paragraphs.count else { throw RecorderError.message("The speaker assignments no longer match this transcript. Reopen the editor.") }
         var segments: [TranscriptSegment] = []
-        for (paragraph, replacement) in zip(paragraphs, text) {
-            let replacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
-            if replacement == paragraph.text { segments.append(contentsOf: paragraph.segments) }
+        for (index, paragraph) in paragraphs.enumerated() {
+            let replacement = text[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            let participant = participants[index]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard paragraph.source == .system || participant == nil else { throw RecorderError.message("Only the separate system-audio track can be assigned to other participants.") }
+            if replacement == paragraph.text {
+                segments.append(contentsOf: paragraph.segments.map {
+                    .init(source: $0.source, start: $0.start, end: $0.end, text: $0.text, timing: $0.timing, participant: participant)
+                })
+            }
             else if !replacement.isEmpty {
-                segments.append(.init(source: paragraph.source, start: paragraph.start, end: paragraph.end, text: replacement, timing: "segment"))
+                segments.append(.init(source: paragraph.source, start: paragraph.start, end: paragraph.end, text: replacement, timing: "segment", participant: participant))
             }
         }
-        return Transcript(original: self, segments: segments, parentVersion: parentVersion)
+        return Transcript(original: self, segments: segments, parentVersion: parentVersion, automaticParticipant: automaticParticipant ?? self.automaticParticipant)
     }
-    private init(original: Transcript, segments: [TranscriptSegment], parentVersion: String) {
-        version = 2; createdAt = Date(); recording = original.recording
+    private init(original: Transcript, segments: [TranscriptSegment], parentVersion: String, automaticParticipant: String?) {
+        version = automaticParticipant != nil || segments.contains(where: { $0.participant != nil }) ? 3 : 2
+        createdAt = Date(); recording = original.recording
         modelID = original.modelID; modelName = original.modelName; modelSHA256 = original.modelSHA256
         engine = original.engine; language = original.language; sources = original.sources
         speakerBleedReduction = original.speakerBleedReduction; echoCancellation = original.echoCancellation
         self.segments = segments
         editing = .init(parentVersion: parentVersion, editedAt: createdAt)
+        self.automaticParticipant = automaticParticipant
     }
 }

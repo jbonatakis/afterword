@@ -6,6 +6,8 @@ public struct TranscriptParagraph: Identifiable, Sendable {
     public let id: Int
     public let segments: [TranscriptSegment]
     public var source: TranscriptSource { segments[0].source }
+    public var participant: String? { segments[0].participant }
+    public func speakerLabel(automaticParticipant: String? = nil) -> String { segments[0].speakerLabel(automaticParticipant: automaticParticipant) }
     public var start: Double { segments[0].start }
     public var end: Double { segments.map(\.end).max() ?? start }
     public var text: String { segments.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: " ") }
@@ -20,6 +22,7 @@ public struct TranscriptParagraph: Identifiable, Sendable {
             let segment = item.element
             if let previous = groups.last, let last = previous.last,
                last.source == segment.source,
+               last.participant == segment.participant,
                segment.start - (previous.map(\.end).max() ?? last.end) <= 3,
                segment.end - previous[0].start <= 45,
                previous.reduce(0, { $0 + $1.text.count + 1 }) + segment.text.count <= 650 {
@@ -35,15 +38,15 @@ public extension Transcript {
     var readableText: String {
         readableText(recordingName: recording)
     }
-    func readableText(recordingName: String) -> String {
-        let body = paragraphs.map { "\($0.source.label) · \(Self.timestamp($0.start))\n\($0.text)" }.joined(separator: "\n\n")
+    func readableText(recordingName: String, automaticParticipant: String? = nil) -> String {
+        let body = paragraphs.map { "\($0.speakerLabel(automaticParticipant: automaticParticipant ?? self.automaticParticipant)) · \(Self.timestamp($0.start))\n\($0.text)" }.joined(separator: "\n\n")
         let empty = editing == nil ? "No speech was detected." : "This edited transcript has no text."
         return "\(recordingName)\nModel: \(modelName)\n" + (editing == nil ? "\n" : "Manually edited transcript\n\n") + (body.isEmpty ? empty : body) + "\n"
     }
     static func read(from url: URL) throws -> Transcript {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let document = try decoder.decode(Transcript.self, from: Data(contentsOf: url))
-        guard (1...2).contains(document.version), document.segments.allSatisfy({
+        guard (1...3).contains(document.version), document.segments.allSatisfy({
             $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && $0.end < 1e12
         }) else { throw RecorderError.message("This transcript has an unsupported format or invalid timestamps.") }
         return document
@@ -82,16 +85,27 @@ public struct LibraryRecording: Identifiable, Sendable {
     public var id: String { url.path }
     public var latestTranscript: LibraryTranscript? { transcripts.first }
     public var hasTranscript: Bool { transcripts.contains { $0.document != nil } }
+    public func automaticParticipant(for version: LibraryTranscript) -> String? {
+        version.document?.automaticParticipant ?? details.automaticParticipants?[version.url.deletingLastPathComponent().lastPathComponent]
+            ?? (details.participants.count == 1 ? details.participants.first : nil)
+    }
     public func matches(_ query: String) -> Bool {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let information = ([name, sourceName, details.description] + details.participants + details.tags).joined(separator: "\n")
         return query.isEmpty || information.localizedStandardContains(query) || transcripts.contains {
-            $0.document?.paragraphs.contains { $0.text.localizedStandardContains(query) } == true
+            version in version.document?.paragraphs.contains {
+                $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant(for: version)).localizedStandardContains(query)
+            } == true
         }
     }
     public func matchingPassage(_ query: String) -> String? {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return transcripts.lazy.compactMap(\.document).flatMap(\.paragraphs).first { $0.text.localizedStandardContains(query) }?.text
+        for version in transcripts {
+            if let paragraph = version.document?.paragraphs.first(where: {
+                $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant(for: version)).localizedStandardContains(query)
+            }) { return paragraph.text }
+        }
+        return nil
     }
 }
 
