@@ -86,6 +86,35 @@ import RecorderCore
         library.filter = .all
         print("PASS async library refresh, initial selection, transcript search, and filters")
 
+        let originalVersion = recording.transcripts[0]
+        let originalBytes = try Data(contentsOf: originalVersion.url)
+        try await library.saveDetails(.init(title: "Product planning", participants: ["Jack", "Alex"], tags: ["Roadmap", "Design"],
+                                           description: "Decisions about the recording library and the next steps for readable transcripts."), for: recording)
+        for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
+        require(library.selectedRecording?.name == "Product planning", "Renamed title did not persist through refresh")
+        library.search = "Roadmap"
+        require(library.visibleRecordings.count == 1, "Tag search failed")
+        library.search = "Alex"
+        require(library.visibleRecordings.count == 1, "Participant search failed")
+        var corrected = document.paragraphs.map(\.text)
+        corrected[0] = "Let's build a library that makes our conversations easy to find and review."
+        try await library.saveTranscript(corrected, version: originalVersion, recording: recording)
+        for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
+        require(library.selectedRecording?.transcripts.count == 2, "Editing did not create a version")
+        require(library.preferredTranscriptID != nil, "Edited version was not selected")
+        require(library.selectedRecording?.transcripts.contains { $0.document?.editing != nil } == true, "Edited version lacks its origin")
+        let unchangedBytes = try Data(contentsOf: originalVersion.url)
+        require(unchangedBytes == originalBytes, "Editing changed the original transcript")
+        recorder.transcription.recordingSaved(folder)
+        try recorder.transcription.beginLibraryMutation()
+        require(!recorder.transcription.canTranscribe, "Transcription allowed during file mutation")
+        recorder.transcription.transcribe(recording: root.appendingPathComponent("other"))
+        require(recorder.transcription.recording == folder, "Mutation allowed a new transcription selection")
+        recorder.transcription.filesMovedToTrash([folder])
+        recorder.transcription.endLibraryMutation()
+        require(recorder.transcription.recording == nil, "Trashed recording remained selected for transcription")
+        print("PASS editable metadata, searchable details, new transcript version, original preservation, and transcription mutation guard")
+
         let native = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
         native.window?.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         native.present(); await pump()
@@ -112,5 +141,51 @@ import RecorderCore
             window.orderOut(nil)
         }
         print("PASS own-view rendering at default and minimum sizes; no screen capture or live audio capture")
+
+        let updated = library.recordings[0]
+        for (view, width, height, suffix) in [
+            (AnyView(CallDetailsEditor(recording: updated, library: library)), 578.0, 430.0, "call-details"),
+            (AnyView(TranscriptEditor(recording: updated, version: updated.transcripts[0], library: library)), 660.0, 580.0, "transcript-editor")
+        ] {
+            let host = NSHostingView(rootView: view.preferredColorScheme(.light))
+            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .aqua); host.appearance = window.appearance
+            window.contentView = host; window.orderFront(nil); await pump(0.3)
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            window.appearance!.performAsCurrentDrawingAppearance { host.cacheDisplay(in: host.bounds, to: bitmap) }
+            try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/\(suffix).png"))
+            window.orderOut(nil)
+        }
+        print("PASS call and transcript editor rendering")
+
+        let fixtureTrash = root.appendingPathComponent(".fixture-trash")
+        try FileManager.default.createDirectory(at: fixtureTrash, withIntermediateDirectories: true)
+        let move: @Sendable (URL) throws -> URL = { url in
+            let target = fixtureTrash.appendingPathComponent(UUID().uuidString + "-" + url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: target)
+            return target
+        }
+        recorder.destination = folder
+        do {
+            try await library.moveToTrash(updated, playback: playback, trash: move)
+            throw RecorderError.message("Trash was permitted for the current recording destination")
+        } catch { require(FileManager.default.fileExists(atPath: folder.path) && !library.managing, "Blocked Trash changed the recording") }
+        recorder.destination = root
+        try await library.moveToTrash(updated, version: updated.transcripts[0], playback: playback, trash: move)
+        for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
+        require(library.recordings.first?.transcripts.count == 1, "Version deletion failed to refresh the library")
+        require(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Mixed.m4a").path), "Version deletion removed audio")
+        recorder.savedFile = folder
+        recorder.transcription.recordingSaved(folder)
+        playback.select(updated); playback.play()
+        try await library.moveToTrash(library.recordings[0], playback: playback, trash: move)
+        for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
+        require(library.recordings.isEmpty && library.selection == nil, "Call deletion left a stale library entry")
+        require(!playback.playing && playback.recordingID == nil, "Call deletion did not unload playback")
+        require(recorder.savedFile == nil && recorder.transcription.recording == nil, "Call deletion retained a stale recent recording")
+        require(!library.managing && !recorder.transcription.libraryMutationActive, "Trash failed to release its mutation guard")
+        require(library.issues.isEmpty, "Deleted call remained as a missing library folder")
+        print("PASS call/version deletion, recording destination guard, playback unload, and recent-recording cleanup using fixture Trash")
     }
 }

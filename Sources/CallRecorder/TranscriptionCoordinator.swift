@@ -25,9 +25,10 @@ import RecorderCore
     private var recordingActive = false
     private var cancellationMessage: String?
     private var pendingAutomaticRecording: URL?
+    @Published private(set) var libraryMutationActive = false
 
     var selected: SpeechModel { SpeechModel.catalog.first { $0.id == selectedID } ?? SpeechModel.catalog[0] }
-    var canTranscribe: Bool { !busy && !recordingActive && recording != nil && installed[selectedID] != nil }
+    var canTranscribe: Bool { !busy && !recordingActive && !libraryMutationActive && recording != nil && installed[selectedID] != nil }
     var recordingName: String? {
         guard let recording else { return nil }
         return recording.lastPathComponent == RecordingTrack.mixed.filename ? recording.deletingLastPathComponent().lastPathComponent : recording.lastPathComponent
@@ -80,7 +81,7 @@ import RecorderCore
         refreshModels()
     }
     func chooseRecording() {
-        guard !busy, !recordingActive else { return }
+        guard !busy, !recordingActive, !libraryMutationActive else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = true
         panel.allowsMultipleSelection = false; panel.allowedContentTypes = [.folder, .audio]
         panel.prompt = "Choose recording"; panel.message = "Choose a call folder or an audio file. Separate tracks will be transcribed together."
@@ -94,7 +95,7 @@ import RecorderCore
     func recordingSaved(_ url: URL) {
         setRecording(url)
         if autoTranscribe && !recordingActive {
-            if busy { pendingAutomaticRecording = url; return }
+            if busy || libraryMutationActive { pendingAutomaticRecording = url; return }
             refreshModels()
             if installed[selectedID] != nil { transcribe() }
             else { status = "Recording saved. Download a model in Settings to transcribe it." }
@@ -138,9 +139,26 @@ import RecorderCore
         }
     }
     func transcribe(recording url: URL) {
-        guard !busy, !recordingActive else { return }
+        guard !busy, !recordingActive, !libraryMutationActive else { return }
         setRecording(url)
         transcribe()
+    }
+    func beginLibraryMutation() throws {
+        guard !busy, !libraryMutationActive else { throw RecorderError.message("Wait for transcription to finish or cancel it before moving items to Trash.") }
+        libraryMutationActive = true
+    }
+    func endLibraryMutation() {
+        libraryMutationActive = false
+        if let pending = pendingAutomaticRecording {
+            pendingAutomaticRecording = nil
+            if autoTranscribe, !recordingActive, recording == pending { transcribe() }
+        }
+    }
+    func filesMovedToTrash(_ urls: [URL]) {
+        func removed(_ file: URL?) -> Bool { file.map { file in urls.contains { CallFileOperations.contains($0, file) } } ?? false }
+        if removed(recording) { recording = nil; defaults.removeObject(forKey: "transcriptionRecording"); status = nil }
+        if removed(transcript) { transcript = nil; status = nil }
+        if removed(pendingAutomaticRecording) { pendingAutomaticRecording = nil }
     }
     func cancel(reason: String = "Cancelling transcription…") {
         guard busy else { return }

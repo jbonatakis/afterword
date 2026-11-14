@@ -56,6 +56,11 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
     }
 }
 
+public struct TranscriptEditing: Codable, Sendable {
+    public let parentVersion: String
+    public let editedAt: Date
+}
+
 public struct Transcript: Codable, Sendable {
     public let version: Int
     public let createdAt: Date
@@ -70,6 +75,7 @@ public struct Transcript: Codable, Sendable {
     // Optional for compatibility with transcripts produced before version 0.4.
     public let speakerBleedReduction: SpeakerBleedReduction?
     public let echoCancellation: EchoCancellationDetails?
+    public let editing: TranscriptEditing?
 
     public init(input: TranscriptionInput, model: SpeechModel, engine: String, language: String, segments: [TranscriptSegment],
                 speakerBleedReduction: SpeakerBleedReduction? = nil, echoCancellation: EchoCancellationDetails? = nil) throws {
@@ -79,6 +85,7 @@ public struct Transcript: Codable, Sendable {
         }
         version = 2; createdAt = Date(); recording = input.name
         self.speakerBleedReduction = speakerBleedReduction; self.echoCancellation = echoCancellation
+        editing = nil
         modelID = model.id; modelName = model.name; modelSHA256 = model.sha256
         self.engine = engine; self.language = language
         sources = Dictionary(uniqueKeysWithValues: input.tracks.map { ($0.source.rawValue, URL(fileURLWithPath: $0.path).lastPathComponent) })
@@ -87,8 +94,9 @@ public struct Transcript: Codable, Sendable {
     }
     public var plainText: String {
         let cleanup = speakerBleedReduction.map { "Speaker bleed reduction: \($0.description)\n" } ?? ""
-        let header = "\(recording)\nModel: \(modelName)\n\(cleanup)Labels follow the recorded tracks. Other participants may include multiple people and system audio.\n\n"
-        if segments.isEmpty { return header + "No speech was detected.\n" }
+        let edits = editing == nil ? "" : "Manually edited transcript. Edited paragraphs retain their original audio intervals.\n"
+        let header = "\(recording)\nModel: \(modelName)\n\(cleanup)\(edits)Labels follow the recorded tracks. Other participants may include multiple people and system audio.\n\n"
+        if segments.isEmpty { return header + (editing == nil ? "No speech was detected.\n" : "This edited transcript has no text.\n") }
         return header + segments.map { "[\(Self.timestamp($0.start))] \($0.source.label): \($0.text)" }.joined(separator: "\n") + "\n"
     }
     public static func timestamp(_ seconds: Double) -> String {
@@ -96,7 +104,10 @@ public struct Transcript: Codable, Sendable {
         return String(format: "%02d:%02d:%02d", value / 3600, value / 60 % 60, value % 60)
     }
     public func save(beside input: TranscriptionInput) throws -> URL {
-        let root = input.outputDirectory.appendingPathComponent("Transcripts", isDirectory: true)
+        try save(in: input.outputDirectory)
+    }
+    public func save(in directory: URL) throws -> URL {
+        let root = directory.appendingPathComponent("Transcripts", isDirectory: true)
         try PrivateFiles.directory(root)
         let stage = root.appendingPathComponent(".pending-" + UUID().uuidString, isDirectory: true)
         try PrivateFiles.directory(stage)
@@ -108,5 +119,27 @@ public struct Transcript: Codable, Sendable {
         let final = root.appendingPathComponent(formatter.string(from: createdAt) + "-" + modelID + "-" + UUID().uuidString.prefix(8), isDirectory: true)
         guard renamex_np(stage.path, final.path, UInt32(RENAME_EXCL)) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         return final.appendingPathComponent("Transcript.txt")
+    }
+
+    public func editingParagraphs(_ text: [String], parentVersion: String) throws -> Transcript {
+        let paragraphs = paragraphs
+        guard text.count == paragraphs.count else { throw RecorderError.message("The transcript structure changed. Reopen the editor.") }
+        var segments: [TranscriptSegment] = []
+        for (paragraph, replacement) in zip(paragraphs, text) {
+            let replacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+            if replacement == paragraph.text { segments.append(contentsOf: paragraph.segments) }
+            else if !replacement.isEmpty {
+                segments.append(.init(source: paragraph.source, start: paragraph.start, end: paragraph.end, text: replacement, timing: "segment"))
+            }
+        }
+        return Transcript(original: self, segments: segments, parentVersion: parentVersion)
+    }
+    private init(original: Transcript, segments: [TranscriptSegment], parentVersion: String) {
+        version = 2; createdAt = Date(); recording = original.recording
+        modelID = original.modelID; modelName = original.modelName; modelSHA256 = original.modelSHA256
+        engine = original.engine; language = original.language; sources = original.sources
+        speakerBleedReduction = original.speakerBleedReduction; echoCancellation = original.echoCancellation
+        self.segments = segments
+        editing = .init(parentVersion: parentVersion, editedAt: createdAt)
     }
 }

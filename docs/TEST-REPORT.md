@@ -81,6 +81,13 @@ The popover uses a persistent native `NSPopover` with animations disabled to avo
 - **Window lifecycle checks pass.** Closing the main window leaves the app running and pauses playback. The File menu, native popover's Library button, and application reopen restore it. Settings opens from the library. Three isolated cold-launch/close/quit cycles also pass, polling for macOS foreground activation before accessibility inspection. Fixed-delay external probes were unreliable during foreground transitions. The configured shortcut was preserved, and the release bundle passes deep, strict code-signature verification. No capture, transcription, or playback was started by the window checks.
 - This release does not requalify live capture or recognition accuracy. Very large archives, externally moved source folders, and long-duration playback need broader hands-on qualification. Xcode execution remains unavailable; SwiftPM and the generated Xcode project are the supported build artifacts checked here.
 
+### Call management and transcript editing (version 0.7, November 14)
+
+- **60 core tests pass.** Nine new cases cover normalized/searchable call details without renaming audio, corrupt/newer metadata protection, versioned transcript edits with original bytes preserved, source/timing/provenance retention, stale edits, same-basename legacy ownership, multi-item Trash rollback, individual-version deletion, full-call restoration, unrelated files, linked transcript directories, and edits to removed calls. Rapid versions use file modification time to break equal JSON timestamps.
+- **The expanded isolated library harness passes.** It exercises metadata saving and search, new transcript versions, transcription exclusion during file mutation, async refresh after call/version deletion, protection of the recording destination, playback unloading, and removal of stale recent-recording references. Its Trash implementation moves only generated fixture files into a private test directory. The call and transcript editors render successfully, alongside the existing light and compact dark library checks.
+- **Native macOS Trash round trip passes.** A newly generated test folder was moved with `FileManager.trashItem`, restored using the returned URL, checked for unchanged content, and removed. Existing user recordings were not edited or deleted by these checks.
+- Transcript edits retain paragraph audio intervals, not inferred word timings. This release does not requalify recognition accuracy or live capture. Xcode execution remains unavailable on this host.
+
 ## Failed / limitations observed
 
 ### Local transcription checks (version 0.3)

@@ -2,7 +2,7 @@
 
 A native SwiftUI recorder for macOS 14.2+ with a searchable recording library and menu-bar controls, built from [the recording specification, version 1.1](docs/spec-v1.1.md), with separate source tracks and selectable local transcription added. Each recording folder contains **Microphone.m4a** (selected mono mic, 64 kbps target), **System.m4a** (stereo playback, 128 kbps), and **Mixed.m4a** (stereo playback mix, 128 kbps). All use 48 kHz AAC-LC and share the same start and duration. No virtual audio driver, server, or audio uploads. Transcription uses a bundled, pinned build of Handy's [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp).
 
-**Qualification status:** 51 audio/export/recovery/transcription/library tests pass, along with native echo-stream checks. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
+**Qualification status:** 60 audio/export/recovery/transcription/library tests pass, along with native echo-stream checks. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
 
 ## Build and run
 
@@ -36,17 +36,20 @@ xcodebuild -project CallRecorder.xcodeproj -scheme CallRecorder \
 
 The checked-in native project has app, core framework, C library, and XCTest targets. Regenerate it after adding/removing source or test files with `python3 Scripts/generate-project.py`. The Swift package provides the command-line build without Xcode project tooling.
 
-## Recording library (version 0.6)
+## Recording library (version 0.7)
 
 The app opens a regular Mac window and appears in the Dock and app switcher. The menu-bar recorder and your configured global shortcut remain available. Closing the library pauses playback and keeps Call Recorder running; use **Quit Call Recorder** to exit. Reopen the library from the Dock, **File → Show Recordings** (Command–1), or **Library** in the menu-bar panel.
 
 - Recordings in the configured save folder appear automatically, including older single-file recordings. **Recording folders → Add recordings folder…** adds other folders in place; removing a folder from the library does not delete its files. The current recording destination remains included. Previous destinations remain available until removed.
-- Search matches recording names and the paragraphs in all saved JSON transcript versions. Select a result to read it; matching text is highlighted and the reader scrolls to the first matching paragraph. Filters show all recordings, those with transcripts, or those needing transcription.
+- Search matches titles, original filenames, participants, tags, descriptions, and the paragraphs in all saved JSON transcript versions. Select a result to read it; matching text is highlighted and the reader scrolls to the first matching paragraph. Filters show all recordings, those with transcripts, or those needing transcription.
 - The reader groups adjacent fragments into paragraphs with source labels and a timestamp per block. Wording and underlying segment times remain intact. **Copy** copies this readable layout; existing saved text and JSON files are untouched. Older transcript versions remain selectable, including a visible error when a version cannot be read.
 - Click a paragraph timestamp to listen from that point, or use the player and seek slider. Switch between mixed, microphone, and system audio while keeping your place. Playback pauses and is disabled during recording, audio tests, and saving.
 - **Transcribe / Transcribe again** uses the selected model and speaker-bleed setting from Settings. Each run still saves a separate transcript version. Progress and cancellation appear in the sidebar.
+- **Edit details** changes the title, participants (one per line), tags (comma-separated), and description. Titles are display names: audio paths and transcript associations stay stable. Details are stored atomically in `CallDetails.json` inside the call folder, or `<audio filename>.call.json` for older single-file calls. Unreadable or newer metadata is reported and cannot be overwritten by the editor.
+- **Edit** beside the transcript opens a paragraph editor. **Save new version** (Command–S) preserves the original, marks the new version as edited, and records its parent version. Unchanged segments retain their exact timing; changed paragraphs retain their source and start/end interval, with segment-level timing. Clear a paragraph to omit it from the new version. Edited versions remain searchable and selectable alongside ASR output; edits do not alter audio.
+- The call’s **…** menu and list context menu offer **Move to Trash** with confirmation. Call folders move as a unit; single-file calls move with their details and only their own associated transcript versions. A failed multi-item move attempts to restore items already moved. The transcript version’s **…** menu can move just that version to Trash. Capture/transcription must finish first. Files remain recoverable through the Mac’s Trash; folders containing unrelated files must be reviewed in Finder.
 
-The library refreshes after recording/transcription saves, when the app becomes active, and with the toolbar refresh button. It indexes direct recording folders and audio files inside the chosen locations, not arbitrary nested folder trees. Its first version uses an in-memory index; calendar integration, notes generation, transcript editing, and individual remote speaker identification are future work.
+The library refreshes after recording/transcription saves and edits, when the app becomes active, and with the toolbar refresh button. It indexes direct recording folders and audio files inside the chosen locations, not arbitrary nested folder trees. It uses an in-memory index; calendar integration, notes generation, and individual remote speaker identification are future work.
 
 ## Use
 
@@ -105,7 +108,7 @@ Sleep/shutdown checkpoints and stops best-effort. Recording never resumes automa
 
 ```sh
 ./Scripts/test.sh
-./Scripts/check-library.sh # Isolated library UI, silent playback, and layout checks
+./Scripts/check-library.sh # Isolated library/editing/deletion UI, silent playback, and layout checks
 ./Scripts/check-echo.sh         # Native AEC streaming, silence, overlap and failure checks
 ./Scripts/run-crash-test.sh
 ./Scripts/check-layout.sh       # List available inputs; no capture

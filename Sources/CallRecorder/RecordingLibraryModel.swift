@@ -12,6 +12,9 @@ import RecorderCore
     @Published var filter: LibraryFilter = .all
     @Published var sidebarVisible = true
     @Published private(set) var roots: [URL] = []
+    @Published private(set) var managing = false
+    @Published var preferredTranscriptID: String?
+    private weak var recorder: RecordingCoordinator?
     private var currentDestination: URL
     private var scan: Task<LibraryScan, Never>?
     private var generation = UUID()
@@ -25,6 +28,7 @@ import RecorderCore
 
     init(recorder: RecordingCoordinator, defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.recorder = recorder
         currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
         selection = defaults.string(forKey: "librarySelection")
         roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -39,6 +43,7 @@ import RecorderCore
             .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
     }
     func refresh() {
+        guard !managing else { return }
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots
@@ -50,7 +55,56 @@ import RecorderCore
             self.recordings = result.recordings; self.issues = result.issues
             self.refreshing = false; self.scan = nil
             if self.selection == nil { self.selection = self.visibleRecordings.first?.id }
-            else if !self.recordings.contains(where: { $0.id == self.selection }) { self.selection = nil }
+            else if !self.recordings.contains(where: { $0.id == self.selection }) { self.selection = self.visibleRecordings.first?.id }
+        }
+    }
+    private func beginManagement() throws {
+        guard !managing else { throw RecorderError.message("Another change is still saving. Try again in a moment.") }
+        managing = true; scan?.cancel(); scan = nil; generation = UUID(); refreshing = false
+    }
+    private func finishManagement() { managing = false; refresh() }
+    func saveDetails(_ details: CallDetails, for recording: LibraryRecording) async throws {
+        try beginManagement()
+        defer { finishManagement() }
+        try await Task.detached(priority: .userInitiated) { try CallDetailsStore.save(details, for: recording) }.value
+        search = ""; selection = recording.id
+    }
+    func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording) async throws {
+        try beginManagement()
+        defer { finishManagement() }
+        let file = try await Task.detached(priority: .userInitiated) {
+            try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording)
+        }.value
+        preferredTranscriptID = file.deletingLastPathComponent().appendingPathComponent("Transcript.json").path
+        search = ""; selection = recording.id
+    }
+    func moveToTrash(_ recording: LibraryRecording, version: LibraryTranscript? = nil, playback: RecordingPlayback,
+                     trash: (@Sendable (URL) throws -> URL)? = nil) async throws {
+        guard let recorder, !recorder.locked else { throw RecorderError.message("Finish recording before moving items to Trash.") }
+        if version == nil, recording.isDirectory, CallFileOperations.contains(recording.url, recorder.destination.resolvingSymlinksInPath()) {
+            throw RecorderError.message("This call contains the current recording destination. Choose another destination in Settings first.")
+        }
+        try beginManagement()
+        defer { finishManagement() }
+        try recorder.transcription.beginLibraryMutation()
+        defer { recorder.transcription.endLibraryMutation() }
+        let unloadedPlayback = version == nil && playback.recordingID == recording.id
+        if unloadedPlayback { playback.clear() }
+        do {
+            let plan = try await Task.detached(priority: .userInitiated) {
+                let plan = try version.map { try CallFileOperations.trashPlan(for: $0, recording: recording) }
+                    ?? CallFileOperations.trashPlan(for: recording)
+                try CallFileOperations.moveToTrash(plan, trash: trash)
+                return plan
+            }.value
+            recorder.transcription.filesMovedToTrash(plan.urls)
+            roots.removeAll { root in plan.urls.contains { CallFileOperations.contains($0, root) } }
+            defaults.set(roots.map(\.path), forKey: "libraryFolders")
+            if let saved = recorder.savedFile, plan.urls.contains(where: { CallFileOperations.contains($0, saved) }) { recorder.savedFile = nil }
+            if preferredTranscriptID.map({ id in plan.urls.contains { CallFileOperations.contains($0, URL(fileURLWithPath: id)) } }) == true { preferredTranscriptID = nil }
+        } catch {
+            if unloadedPlayback, playback.recordingID == nil { playback.select(recording) }
+            throw error
         }
     }
     func addFolder() {

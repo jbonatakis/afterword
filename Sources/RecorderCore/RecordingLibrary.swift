@@ -33,8 +33,12 @@ public struct TranscriptParagraph: Identifiable, Sendable {
 public extension Transcript {
     var paragraphs: [TranscriptParagraph] { TranscriptParagraph.make(from: segments) }
     var readableText: String {
+        readableText(recordingName: recording)
+    }
+    func readableText(recordingName: String) -> String {
         let body = paragraphs.map { "\($0.source.label) · \(Self.timestamp($0.start))\n\($0.text)" }.joined(separator: "\n\n")
-        return "\(recording)\nModel: \(modelName)\n\n" + (body.isEmpty ? "No speech was detected." : body) + "\n"
+        let empty = editing == nil ? "No speech was detected." : "This edited transcript has no text."
+        return "\(recordingName)\nModel: \(modelName)\n" + (editing == nil ? "\n" : "Manually edited transcript\n\n") + (body.isEmpty ? empty : body) + "\n"
     }
     static func read(from url: URL) throws -> Transcript {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
@@ -60,12 +64,17 @@ public struct LibraryTranscript: Identifiable, Sendable {
     public let document: Transcript?
     public let error: String?
     public let date: Date
+    let fileModificationDate: Date
     public var id: String { url.path }
 }
 
 public struct LibraryRecording: Identifiable, Sendable {
     public let url: URL
-    public let name: String
+    public let sourceName: String
+    public let isDirectory: Bool
+    public let details: CallDetails
+    public let detailsError: String?
+    public var name: String { details.title ?? sourceName }
     public let date: Date
     public let duration: Double?
     public let tracks: [LibraryAudioTrack]
@@ -75,7 +84,8 @@ public struct LibraryRecording: Identifiable, Sendable {
     public var hasTranscript: Bool { transcripts.contains { $0.document != nil } }
     public func matches(_ query: String) -> Bool {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty || name.localizedStandardContains(query) || transcripts.contains {
+        let information = ([name, sourceName, details.description] + details.participants + details.tags).joined(separator: "\n")
+        return query.isEmpty || information.localizedStandardContains(query) || transcripts.contains {
             $0.document?.paragraphs.contains { $0.text.localizedStandardContains(query) } == true
         }
     }
@@ -119,10 +129,15 @@ public enum RecordingLibraryScanner {
                     } else { continue }
                     guard !tracks.isEmpty else { continue }
                     let name = directory ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
-                    let versions = directory ? transcripts(in: url) : shared.filter { $0.document?.recording == name }
+                    let versions = directory ? transcripts(in: url) : shared.filter {
+                        $0.document?.recording == name && $0.document?.sources[TranscriptSource.mixed.rawValue] == url.lastPathComponent
+                    }
+                    var details = CallDetails(), detailsError: String?
+                    do { details = try CallDetailsStore.load(for: url, isDirectory: directory) }
+                    catch { detailsError = error.localizedDescription }
                     let reader = tracks.lazy.compactMap { try? AVAudioFile(forReading: $0.url) }.first
                     let duration = reader.map { Double($0.length) / $0.processingFormat.sampleRate }
-                    result.recordings.append(.init(url: url, name: name,
+                    result.recordings.append(.init(url: url, sourceName: name, isDirectory: directory, details: details, detailsError: detailsError,
                         date: recordingDate(name) ?? values?.creationDate ?? .distantPast,
                         duration: duration?.isFinite == true ? duration : nil, tracks: tracks, transcripts: versions))
                 }
@@ -141,7 +156,7 @@ public enum RecordingLibraryScanner {
         }
     }
 
-    private static func transcripts(in directory: URL) -> [LibraryTranscript] {
+    static func transcripts(in directory: URL) -> [LibraryTranscript] {
         let root = directory.appendingPathComponent("Transcripts", isDirectory: true)
         let runs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         return runs.compactMap { run -> LibraryTranscript? in
@@ -150,9 +165,14 @@ public enum RecordingLibraryScanner {
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             do {
                 let document = try Transcript.read(from: url)
-                return .init(url: url, document: document, error: nil, date: document.createdAt)
-            } catch { return .init(url: url, document: nil, error: error.localizedDescription, date: date) }
-        }.sorted { $0.date == $1.date ? $0.id > $1.id : $0.date > $1.date }
+                return .init(url: url, document: document, error: nil, date: document.createdAt, fileModificationDate: date)
+            } catch { return .init(url: url, document: nil, error: error.localizedDescription, date: date, fileModificationDate: date) }
+        }.sorted {
+            if $0.date != $1.date { return $0.date > $1.date }
+            // JSON timestamps have second precision. Rapid edits still sort by save order.
+            if $0.fileModificationDate != $1.fileModificationDate { return $0.fileModificationDate > $1.fileModificationDate }
+            return $0.id > $1.id
+        }
     }
 
     private static func recordingDate(_ name: String) -> Date? {
