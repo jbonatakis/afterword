@@ -303,8 +303,9 @@ private struct RecordingDetail: View {
                                    draft: draft, canEdit: !library.managing, editParagraph: { beginEditing(paragraph: $0) },
                                    participants: recording.details.participants, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) },
                                    participantNames: version.map { recording.details.participantNames(for: $0) } ?? [:],
+                                   assignment: library.participantAssignments[recording.id].flatMap { $0.versionID == version?.id ? $0 : nil },
                                    assignParticipant: { name, paragraph in
-                                       if let version { library.assignParticipant(name, to: paragraph, recording: recording, version: version) }
+                                       if let version { Task { await library.assignParticipant(name, to: paragraph, recording: recording, version: version) } }
                                    }, editParticipants: editDetails)
             } else if let error = version?.error {
                 ContentUnavailableView {
@@ -362,6 +363,7 @@ struct ReadableTranscript: View {
     let participants: [String]
     let automaticParticipant: String?
     var participantNames: [String: String] = [:]
+    var assignment: ParticipantAssignmentStatus? = nil
     let assignParticipant: (String?, Int) -> Void
     let editParticipants: () -> Void
     private var firstMatch: Int? {
@@ -394,6 +396,9 @@ struct ReadableTranscript: View {
                                                 .disabled(!canEdit)
                                         }
                                     } else { Text(paragraph.source.label).font(.callout.weight(.semibold)) }
+                                    if assignment?.paragraph == paragraph.id, assignment?.error == nil {
+                                        ProgressView().controlSize(.small).help("Saving speaker…").accessibilityLabel("Saving speaker")
+                                    }
                                     Button(Transcript.timestamp(paragraph.start)) {
                                         playback.seek(paragraph.start); playback.play()
                                     }.buttonStyle(.plain).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -409,6 +414,9 @@ struct ReadableTranscript: View {
                                             .buttonStyle(.plain).foregroundStyle(.secondary).disabled(!canEdit)
                                             .help("Edit this paragraph").accessibilityLabel("Edit paragraph at \(Transcript.timestamp(paragraph.start))")
                                     }
+                                }
+                                if assignment?.paragraph == paragraph.id, let error = assignment?.error {
+                                    Text("Couldn’t save speaker: \(error)").font(.caption).foregroundStyle(.red).textSelection(.enabled)
                                 }
                                 if let draft {
                                     InlineParagraphEditor(paragraph: paragraph, draft: draft)

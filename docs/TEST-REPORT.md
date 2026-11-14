@@ -107,6 +107,12 @@ The popover uses a persistent native `NSPopover` with animations disabled to avo
 - Participant rows distinguish a rename from adding/removing someone. Schema 3 call details apply corrections per transcript version without changing its original JSON/TXT. Removed manual assignments stay unassigned even if the old name is later reused. Automatic sections follow the current sole participant; adding more people retains that assignment.
 - The isolated native harness checks renaming a manually assigned participant while text edits are open, saving the updated name, removing/replacing participants while an unchanged draft is open, and keeping draft text and dirty state correct. The reader and participant rows are rendered from their own views; no desktop capture or user-recording mutation is used.
 
+### Immediate speaker assignment (version 0.8.2, November 14)
+
+- In reading mode, choosing a speaker saves a new transcript version without creating a text-editing draft. The reader shows a small saving indicator on the passage and an inline error on failure. Selecting the already assigned name is a no-op. Search and playback position are retained.
+- The native fixture verifies persisted assignments, no editor or unsaved draft, original-file/text/timestamp preservation, unchanged search/selection/playback, no duplicate version for a repeated choice, and recovery after a deliberately missing fixture file prevents saving. Existing text drafts retain their Save/Cancel behavior and do not publish text when their speaker dropdown is used.
+- The existing title-field focus check needed reruns before passing; this change does not claim to resolve that intermittent fixture-focus issue. The completed harness also passes participant rename/removal, text editing, playback, reader stress, and fixture deletion checks.
+
 ## Failed / limitations observed
 
 ### Local transcription checks (version 0.3)

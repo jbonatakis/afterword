@@ -117,9 +117,9 @@ import RecorderCore
         try await library.saveDetails(callDetails, for: library.recordings[0])
         let named = library.recordings[0]
         require(named.automaticParticipant(for: originalVersion) == "Alex", "Adding a second person changed existing automatic assignments")
-        library.assignParticipant("Sam", to: 0, recording: named, version: originalVersion)
+        await library.assignParticipant("Sam", to: 0, recording: named, version: originalVersion)
         require(library.transcriptDrafts[recording.id]?.participants[0] == nil, "Participant assignment changed the microphone speaker")
-        library.assignParticipant("Sam", to: 1, recording: named, version: originalVersion)
+        await library.assignParticipant("Sam", to: 1, recording: named, version: originalVersion)
         require(library.transcriptDrafts[recording.id]?.participants[1] == "Sam", "Speaker menu selection did not update the draft")
         var renamedDetails = named.details; renamedDetails.participants = ["Alex", "Samuel"]
         try await library.saveDetails(renamedDetails, for: named, participantRenames: ["Sam": "Samuel"])
@@ -215,7 +215,9 @@ import RecorderCore
         let renameView = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}).preferredColorScheme(.light))
         let renameWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 940, height: 660), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         renameWindow.appearance = NSAppearance(named: .aqua); renameView.appearance = renameWindow.appearance
-        renameWindow.contentView = renameView; renameWindow.makeKeyAndOrderFront(nil); await pump()
+        renameWindow.contentView = renameView; renameWindow.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        await pump()
         library.beginRenaming(updated)
         for _ in 0..<40 {
             if renameWindow.firstResponder is NSTextView { break }
@@ -236,6 +238,43 @@ import RecorderCore
         require(library.renamingID == nil && library.recordings[0].name == "Title saved with Return", "Return did not save the inline title")
         renameWindow.orderOut(nil)
         print("PASS inline title keyboard focus, typing, Return to save, and minimum-width rendering")
+
+        var quickDetails = library.recordings[0].details; quickDetails.participants = ["Taylor", "Morgan"]
+        try await library.saveDetails(quickDetails, for: library.recordings[0])
+        let quickRecording = library.recordings[0], quickVersion = quickRecording.transcripts[0]
+        let quickOriginal = try Data(contentsOf: quickVersion.url)
+        library.search = "Taylor"
+        playback.seek(12.5)
+        await library.assignParticipant("Morgan", to: 1, recording: quickRecording, version: quickVersion)
+        require(library.transcriptDrafts[updated.id] == nil && !library.hasUnsavedEdits, "Quick speaker assignment opened transcript editing")
+        require(library.search == "Taylor" && library.selection == updated.id, "Quick assignment changed search or selection")
+        require(playback.position == 12.5, "Quick assignment changed playback position")
+        let quickSaved = library.recordings[0].transcripts.first { version in !quickRecording.transcripts.contains { $0.id == version.id } }!
+        require(quickSaved.document?.paragraphs[1].participant == "Morgan", "Quick speaker assignment was not persisted")
+        require(quickSaved.document?.segments.map(\.text) == quickVersion.document?.segments.map(\.text), "Quick assignment changed transcript text")
+        require(quickSaved.document?.segments.map(\.start) == quickVersion.document?.segments.map(\.start), "Quick assignment changed timestamps")
+        require(library.participantAssignments[updated.id] == nil, "Successful speaker save retained a spinner or error")
+        let quickUnchanged = try Data(contentsOf: quickVersion.url)
+        require(quickUnchanged == quickOriginal, "Quick assignment changed the previous version")
+        let quickCount = library.recordings[0].transcripts.count
+        await library.assignParticipant("Morgan", to: 1, recording: library.recordings[0], version: quickSaved)
+        require(library.recordings[0].transcripts.count == quickCount, "Choosing the current speaker created a duplicate version")
+
+        // Simulate a failed save using only this fixture's file, then restore it.
+        let temporarilyMissing = quickSaved.url.appendingPathExtension("fixture-backup")
+        try FileManager.default.moveItem(at: quickSaved.url, to: temporarilyMissing)
+        do {
+            defer { try? FileManager.default.moveItem(at: temporarilyMissing, to: quickSaved.url) }
+            await library.assignParticipant("Taylor", to: 1, recording: library.recordings[0], version: quickSaved)
+            require(library.participantAssignments[updated.id]?.error != nil, "Failed speaker save did not report an error")
+            require(library.transcriptDrafts[updated.id] == nil && !library.managing, "Failed speaker save opened an editor or retained its save lock")
+        }
+        await library.refresh()?.value
+        require(library.recordings[0].transcripts.count == quickCount, "Failed save published a transcript version")
+        await library.assignParticipant("Taylor", to: 1, recording: library.recordings[0], version: quickSaved)
+        require(library.participantAssignments[updated.id] == nil && library.recordings[0].transcripts.count == quickCount + 1, "Retry did not save and clear the speaker error")
+        library.search = ""
+        print("PASS immediate speaker save without text editing, original/text/timing preservation, search/playback stability, no-op choice, and failed-save retry")
 
         var stressSegments: [TranscriptSegment] = []
         for index in 0..<80 {
@@ -275,9 +314,10 @@ import RecorderCore
             throw RecorderError.message("Trash was permitted for the current recording destination")
         } catch { require(FileManager.default.fileExists(atPath: folder.path) && !library.managing, "Blocked Trash changed the recording") }
         recorder.destination = root
+        let countBeforeTrash = library.recordings[0].transcripts.count
         try await library.moveToTrash(updated, version: updated.transcripts[0], playback: playback, trash: move)
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
-        require(library.recordings.first?.transcripts.count == 1, "Version deletion failed to refresh the library")
+        require(library.recordings.first?.transcripts.count == countBeforeTrash - 1, "Version deletion failed to refresh the library")
         require(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Mixed.m4a").path), "Version deletion removed audio")
         recorder.savedFile = folder
         recorder.transcription.recordingSaved(folder)

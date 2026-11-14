@@ -3,6 +3,12 @@ import AVFoundation
 import Combine
 import RecorderCore
 
+struct ParticipantAssignmentStatus {
+    let versionID: String
+    let paragraph: Int
+    var error: String?
+}
+
 @MainActor final class RecordingLibraryModel: ObservableObject {
     @Published private(set) var recordings: [LibraryRecording] = []
     @Published private(set) var refreshing = false
@@ -15,6 +21,7 @@ import RecorderCore
     @Published private(set) var managing = false
     @Published var preferredTranscriptID: String?
     @Published private(set) var transcriptDrafts: [String: TranscriptDraft] = [:]
+    @Published private(set) var participantAssignments: [String: ParticipantAssignmentStatus] = [:]
     @Published private(set) var renamingID: String?
     @Published var renameText = ""
     @Published private(set) var renameError: String?
@@ -77,14 +84,14 @@ import RecorderCore
             await finishManagement()?.value
         } catch { finishManagement(); throw error }
     }
-    func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil) async throws {
+    func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil, clearSearch: Bool = true) async throws {
         try beginManagement()
         do {
             let file = try await Task.detached(priority: .userInitiated) {
                 try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording, participants: participants)
             }.value
             preferredTranscriptID = file.deletingLastPathComponent().appendingPathComponent("Transcript.json").path
-            if selection == recording.id { search = "" }
+            if clearSearch && selection == recording.id { search = "" }
             await finishManagement()?.value
         } catch { finishManagement(); throw error }
     }
@@ -113,19 +120,37 @@ import RecorderCore
     }
     func beginTranscriptEditing(_ recording: LibraryRecording, version: LibraryTranscript, paragraph: Int? = nil) {
         guard !managing, version.document?.paragraphs.isEmpty == false else { return }
+        participantAssignments[recording.id] = nil
         if transcriptDrafts[recording.id] == nil { transcriptDrafts[recording.id] = TranscriptDraft(version: version, focusedParagraph: paragraph, details: recording.details) }
     }
     func cancelTranscriptEditing(_ recording: LibraryRecording) {
         guard transcriptDrafts[recording.id]?.saving != true else { return }
         transcriptDrafts[recording.id] = nil
     }
-    func assignParticipant(_ participant: String?, to paragraph: Int, recording: LibraryRecording, version: LibraryTranscript) {
+    func assignParticipant(_ participant: String?, to paragraph: Int, recording: LibraryRecording, version: LibraryTranscript) async {
         guard !managing, version.document?.paragraphs.indices.contains(paragraph) == true,
               version.document?.paragraphs[paragraph].source == .system else { return }
         if let participant, !participant.isEmpty, !recording.details.participants.contains(participant) { return }
-        beginTranscriptEditing(recording, version: version)
-        guard let draft = transcriptDrafts[recording.id], !draft.saving, draft.version.id == version.id else { return }
-        draft.participants[paragraph] = participant
+        participantAssignments[recording.id] = nil
+        // An explicitly opened text draft keeps its Save/Cancel behavior. A
+        // speaker choice in the reader saves on its own, without opening it.
+        if let draft = transcriptDrafts[recording.id] {
+            guard !draft.saving, draft.version.id == version.id else { return }
+            draft.participants[paragraph] = participant
+            return
+        }
+        guard let document = version.document else { return }
+        let paragraphs = document.paragraphs
+        var names = paragraphs.map { recording.details.participantName($0.participant, for: version) }
+        guard names[paragraph] != participant else { return }
+        names[paragraph] = participant
+        participantAssignments[recording.id] = .init(versionID: version.id, paragraph: paragraph)
+        do {
+            try await saveTranscript(paragraphs.map(\.text), version: version, recording: recording, participants: names, clearSearch: false)
+            participantAssignments[recording.id] = nil
+        } catch {
+            participantAssignments[recording.id] = .init(versionID: version.id, paragraph: paragraph, error: error.localizedDescription)
+        }
     }
     func saveTranscriptDraft(for recording: LibraryRecording) async {
         guard let draft = transcriptDrafts[recording.id], !draft.saving, draft.changed else { return }
