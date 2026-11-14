@@ -1,0 +1,789 @@
+// !$*UTF8*$!
+{
+	"archiveVersion" = 1;
+	"classes" = {
+	};
+	"objectVersion" = 56;
+	"objects" = {
+		"B071B5D28A3EE8F67B67E4E1" = {
+			"isa" = "XCLocalSwiftPackageReference";
+			"relativePath" = "Vendor/KeyboardShortcuts";
+		};
+		"A01D6AEEDD0EBC19F2AAF5C9" = {
+			"isa" = "XCSwiftPackageProductDependency";
+			"productName" = "KeyboardShortcuts";
+		};
+		"03F95B20E6E799B100D8C0F1" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "archive.ar";
+			"path" = "libCaptureBridge.a";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"64F9D4288FD7EFB91CB67D7F" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.framework";
+			"path" = "RecorderCore.framework";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"07A9811ECEF2A85EE35974E2" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.application";
+			"path" = "Call Recorder.app";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"23BBD1F4144DF706A6A89F84" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.cfbundle";
+			"path" = "RecorderCoreTests.xctest";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"AAEED3F6C8B6F46C4884D4D3" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.c";
+			"path" = "Sources/CaptureBridge/CaptureBridge.c";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"18F16FB695B7202E5D93FDC9" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "AAEED3F6C8B6F46C4884D4D3";
+		};
+		"FBD0CA6D537355D467C07A4F" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.c.h";
+			"path" = "Sources/CaptureBridge/include/CaptureBridge.h";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"9C4E3328F866AD9C88048469" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "FBD0CA6D537355D467C07A4F";
+			"settings" = {
+				"ATTRIBUTES" = ("Public");
+			};
+		};
+		"191F806404E7FD8AB13BACEE" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.module-map";
+			"path" = "Sources/CaptureBridge/include/module.modulemap";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"C60BB3B9F23EC21C202DC1EB" = {
+			"isa" = "PBXGroup";
+			"children" = ("AAEED3F6C8B6F46C4884D4D3", "FBD0CA6D537355D467C07A4F", "191F806404E7FD8AB13BACEE");
+			"name" = "CaptureBridge";
+			"sourceTree" = "<group>";
+		};
+		"1C51C1426F2EEB1EBD258686" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("18F16FB695B7202E5D93FDC9");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"7EE45602FBB6330B7158AA6F" = {
+			"isa" = "PBXHeadersBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("9C4E3328F866AD9C88048469");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"A0C80740A361D1DD53B35E5B" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ();
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"39AD393333DDAE240AFD1D1E" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "CaptureBridge";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.capturebridge";
+				"SKIP_INSTALL" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SWIFT_VERSION" = "5.0";
+			};
+		};
+		"C4155C04DA7F2DC0CAFDF043" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "CaptureBridge";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.capturebridge";
+				"SKIP_INSTALL" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SWIFT_VERSION" = "5.0";
+			};
+		};
+		"0E3FBDC6740E3898B0847797" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("39AD393333DDAE240AFD1D1E", "C4155C04DA7F2DC0CAFDF043");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"482FCA0D14E7049883ADEE2C" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "0E3FBDC6740E3898B0847797";
+			"buildPhases" = ("1C51C1426F2EEB1EBD258686", "7EE45602FBB6330B7158AA6F", "A0C80740A361D1DD53B35E5B");
+			"buildRules" = ();
+			"dependencies" = ();
+			"name" = "CaptureBridge";
+			"productName" = "CaptureBridge";
+			"productReference" = "03F95B20E6E799B100D8C0F1";
+			"productType" = "com.apple.product-type.library.static";
+		};
+		"0D47A2B1CF4AA977420E2FAA" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/AudioPipeline.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"49A12AAFF1B93C9A33DA330D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0D47A2B1CF4AA977420E2FAA";
+		};
+		"2C17BD5E1FF85B4E1DB7A272" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/CoreAudioCapture.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"890350AFBC30EBC0120F47B4" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "2C17BD5E1FF85B4E1DB7A272";
+		};
+		"5D4C1142B6D38DA21DC92ECA" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/Exporter.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"03631EEC5C1AB5D375DFF593" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "5D4C1142B6D38DA21DC92ECA";
+		};
+		"050CC4487ED7816701AA806D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/HAL.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A735953C5E58416F18B625EF" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "050CC4487ED7816701AA806D";
+		};
+		"595366117C85E0F1A82BED4F" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/ModelStore.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"15D1005CAC8A07DCC7925696" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "595366117C85E0F1A82BED4F";
+		};
+		"766FA1E2C061F291927BB636" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/Models.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"032FB8DB6E043BEF27C0B4E2" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "766FA1E2C061F291927BB636";
+		};
+		"C5C6B1A2F1C74FB5D3E4C69B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/RecordingEngine.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"8636BAB44BE289A26D68D6C2" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "C5C6B1A2F1C74FB5D3E4C69B";
+		};
+		"2E61F333698D0DAB61E297B3" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/RecordingLibrary.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E1DECD6B17859D3EE1CFBC2C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "2E61F333698D0DAB61E297B3";
+		};
+		"0FEC978EA52913BFD1752155" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/SessionStore.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E08FA30429D65D825E89A7B1" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0FEC978EA52913BFD1752155";
+		};
+		"65AA15B740DF76237FD01EF2" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/SpeakerBleedReduction.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"78E6F8A82D0048DAAD26EC13" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "65AA15B740DF76237FD01EF2";
+		};
+		"FE5C1BB35882B0B9EDBA28C7" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/SpeechModels.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"5646F4FE0E822D7E428AC62F" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "FE5C1BB35882B0B9EDBA28C7";
+		};
+		"A71A978CEE5ED763E954A71B" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/Transcript.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"9900B6EDC1B35980B7C70CF5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "A71A978CEE5ED763E954A71B";
+		};
+		"C5AB24E475FC67C3C75401BE" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/RecorderCore/TranscriptionJob.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"B5E61EF3070618DAD8E30B57" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "C5AB24E475FC67C3C75401BE";
+		};
+		"F3C896CF7F8B7C562F1DCA1F" = {
+			"isa" = "PBXGroup";
+			"children" = ("0D47A2B1CF4AA977420E2FAA", "2C17BD5E1FF85B4E1DB7A272", "5D4C1142B6D38DA21DC92ECA", "050CC4487ED7816701AA806D", "595366117C85E0F1A82BED4F", "766FA1E2C061F291927BB636", "C5C6B1A2F1C74FB5D3E4C69B", "2E61F333698D0DAB61E297B3", "0FEC978EA52913BFD1752155", "65AA15B740DF76237FD01EF2", "FE5C1BB35882B0B9EDBA28C7", "A71A978CEE5ED763E954A71B", "C5AB24E475FC67C3C75401BE");
+			"name" = "RecorderCore";
+			"sourceTree" = "<group>";
+		};
+		"29F712BBA2D2DA9027BB47DC" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("49A12AAFF1B93C9A33DA330D", "890350AFBC30EBC0120F47B4", "03631EEC5C1AB5D375DFF593", "A735953C5E58416F18B625EF", "15D1005CAC8A07DCC7925696", "032FB8DB6E043BEF27C0B4E2", "8636BAB44BE289A26D68D6C2", "E1DECD6B17859D3EE1CFBC2C", "E08FA30429D65D825E89A7B1", "78E6F8A82D0048DAAD26EC13", "5646F4FE0E822D7E428AC62F", "9900B6EDC1B35980B7C70CF5", "B5E61EF3070618DAD8E30B57");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"AB3D0E30FC97CB0D5EB232A1" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
+			"proxyType" = 1;
+			"remoteGlobalIDString" = "482FCA0D14E7049883ADEE2C";
+			"remoteInfo" = "CaptureBridge";
+		};
+		"F06A21C176933E53255D1B54" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "482FCA0D14E7049883ADEE2C";
+			"targetProxy" = "AB3D0E30FC97CB0D5EB232A1";
+		};
+		"A94E1FD83C98A9A6AADF5A93" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "03F95B20E6E799B100D8C0F1";
+		};
+		"A9F394A7BDE83C011CADBE12" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("A94E1FD83C98A9A6AADF5A93");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"2C75A5817990280EA713EFDC" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "RecorderCore";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercore";
+				"SKIP_INSTALL" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SWIFT_VERSION" = "5.0";
+				"DEFINES_MODULE" = "YES";
+				"MACH_O_TYPE" = "mh_dylib";
+				"DYLIB_INSTALL_NAME_BASE" = "@rpath";
+				"INSTALL_PATH" = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+			};
+		};
+		"26AF002EA3B9E1F3D170F2A8" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "RecorderCore";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercore";
+				"SKIP_INSTALL" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SWIFT_VERSION" = "5.0";
+				"DEFINES_MODULE" = "YES";
+				"MACH_O_TYPE" = "mh_dylib";
+				"DYLIB_INSTALL_NAME_BASE" = "@rpath";
+				"INSTALL_PATH" = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+			};
+		};
+		"CA1934D69BC7AAB5241EE193" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("2C75A5817990280EA713EFDC", "26AF002EA3B9E1F3D170F2A8");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"F9DF7460351A56700C10CB0C" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "CA1934D69BC7AAB5241EE193";
+			"buildPhases" = ("29F712BBA2D2DA9027BB47DC", "A9F394A7BDE83C011CADBE12");
+			"buildRules" = ();
+			"dependencies" = ("F06A21C176933E53255D1B54");
+			"name" = "RecorderCore";
+			"productName" = "RecorderCore";
+			"productReference" = "64F9D4288FD7EFB91CB67D7F";
+			"productType" = "com.apple.product-type.framework";
+		};
+		"4E6EBDE1515E280F37D29F63" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/CallRecorderApp.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"890E14D6D1ED1A2DB09D0BF9" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "4E6EBDE1515E280F37D29F63";
+		};
+		"E994BB616A583BC6BB5B0B71" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/RecorderStatusItem.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"FCE2826336609A48B1043BF7" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "E994BB616A583BC6BB5B0B71";
+		};
+		"5E70290BBB7CF0EABBA0097A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/RecordingCoordinator.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"B58B5846B16FEEDFEA1B4F10" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "5E70290BBB7CF0EABBA0097A";
+		};
+		"2815994C06AD69AFCB1B4CC0" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/RecordingLibraryModel.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"43DAD1C887F6BBE090BD0CB7" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "2815994C06AD69AFCB1B4CC0";
+		};
+		"E4668A4E035EDD24AD9455C6" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/RecordingLibraryView.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"7E3A3C43707B8C11F5A7BC38" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "E4668A4E035EDD24AD9455C6";
+		};
+		"85F8FB0B1220841C0B3FCB18" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/RecordingLibraryWindow.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"F1C3118E7FBFC94C5FF16DC9" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "85F8FB0B1220841C0B3FCB18";
+		};
+		"AC800BD42A735B213E186F93" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/RecordingShortcut.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"EB9F6130CB01493B66E0707A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "AC800BD42A735B213E186F93";
+		};
+		"D3E20C2993BC54777FEA3B1D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/CallRecorder/TranscriptionCoordinator.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"BE2FEE68AE19505D661B8497" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D3E20C2993BC54777FEA3B1D";
+		};
+		"5B555829F67E7DFD8CC6A9AB" = {
+			"isa" = "PBXGroup";
+			"children" = ("4E6EBDE1515E280F37D29F63", "E994BB616A583BC6BB5B0B71", "5E70290BBB7CF0EABBA0097A", "2815994C06AD69AFCB1B4CC0", "E4668A4E035EDD24AD9455C6", "85F8FB0B1220841C0B3FCB18", "AC800BD42A735B213E186F93", "D3E20C2993BC54777FEA3B1D");
+			"name" = "CallRecorder";
+			"sourceTree" = "<group>";
+		};
+		"B348DF387218E1225273FABC" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("890E14D6D1ED1A2DB09D0BF9", "FCE2826336609A48B1043BF7", "B58B5846B16FEEDFEA1B4F10", "43DAD1C887F6BBE090BD0CB7", "7E3A3C43707B8C11F5A7BC38", "F1C3118E7FBFC94C5FF16DC9", "EB9F6130CB01493B66E0707A", "BE2FEE68AE19505D661B8497");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"D2B72637CE72F92220E2EE75" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
+			"proxyType" = 1;
+			"remoteGlobalIDString" = "F9DF7460351A56700C10CB0C";
+			"remoteInfo" = "RecorderCore";
+		};
+		"06EE3360EB079FCEEEA88B9A" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "F9DF7460351A56700C10CB0C";
+			"targetProxy" = "D2B72637CE72F92220E2EE75";
+		};
+		"9498964798AF8CB2E0542A95" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "64F9D4288FD7EFB91CB67D7F";
+		};
+		"D5EEC68F00155FCD4785313C" = {
+			"isa" = "PBXBuildFile";
+			"productRef" = "A01D6AEEDD0EBC19F2AAF5C9";
+		};
+		"D5BA4C66303D550DB7FE049C" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("9498964798AF8CB2E0542A95", "D5EEC68F00155FCD4785313C");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"749B28E42C337FE32B54FA1D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "64F9D4288FD7EFB91CB67D7F";
+			"settings" = {
+				"ATTRIBUTES" = ("CodeSignOnCopy", "RemoveHeadersOnCopy");
+			};
+		};
+		"B010F490339D132A9BE9E543" = {
+			"isa" = "PBXCopyFilesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("749B28E42C337FE32B54FA1D");
+			"runOnlyForDeploymentPostprocessing" = 0;
+			"dstPath" = "";
+			"dstSubfolderSpec" = 10;
+			"name" = "Embed Frameworks";
+		};
+		"6044D2C55F7DF76073211819" = {
+			"isa" = "PBXShellScriptBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ();
+			"runOnlyForDeploymentPostprocessing" = 0;
+			"name" = "Build local transcription worker";
+			"shellPath" = "/bin/bash";
+			"shellScript" = "set -euo pipefail\ncd \"$SRCROOT\"\n./Scripts/build-transcription.sh\n./Scripts/embed-transcription.sh \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+			"alwaysOutOfDate" = 1;
+		};
+		"AE5E41BE18896D5BE49BED74" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "Call Recorder";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder";
+				"SKIP_INSTALL" = "NO";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"SWIFT_VERSION" = "5.0";
+				"PRODUCT_MODULE_NAME" = "CallRecorder";
+				"EXECUTABLE_NAME" = "CallRecorder";
+				"INFOPLIST_FILE" = "Configuration/Info.plist";
+				"CODE_SIGN_ENTITLEMENTS" = "Configuration/CallRecorder.entitlements";
+				"ENABLE_HARDENED_RUNTIME" = "YES";
+				"ENABLE_APP_SANDBOX" = "NO";
+				"ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
+			};
+		};
+		"AF523061A612FEF3AD16B467" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "Call Recorder";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder";
+				"SKIP_INSTALL" = "NO";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"SWIFT_VERSION" = "5.0";
+				"PRODUCT_MODULE_NAME" = "CallRecorder";
+				"EXECUTABLE_NAME" = "CallRecorder";
+				"INFOPLIST_FILE" = "Configuration/Info.plist";
+				"CODE_SIGN_ENTITLEMENTS" = "Configuration/CallRecorder.entitlements";
+				"ENABLE_HARDENED_RUNTIME" = "YES";
+				"ENABLE_APP_SANDBOX" = "NO";
+				"ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
+			};
+		};
+		"D9DAB6ECC98B253727302B59" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("AE5E41BE18896D5BE49BED74", "AF523061A612FEF3AD16B467");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"C97F2FAC8F644316093B1CC8" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "D9DAB6ECC98B253727302B59";
+			"buildPhases" = ("B348DF387218E1225273FABC", "D5BA4C66303D550DB7FE049C", "B010F490339D132A9BE9E543", "6044D2C55F7DF76073211819");
+			"buildRules" = ();
+			"dependencies" = ("06EE3360EB079FCEEEA88B9A");
+			"name" = "CallRecorder";
+			"productName" = "Call Recorder";
+			"productReference" = "07A9811ECEF2A85EE35974E2";
+			"productType" = "com.apple.product-type.application";
+			"packageProductDependencies" = ("A01D6AEEDD0EBC19F2AAF5C9");
+		};
+		"F001818278B21512B5982837" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Tests/RecorderCoreTests/AudioTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"EB0077847AB0F38F038DF237" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F001818278B21512B5982837";
+		};
+		"2A423909700E6696EA13C9E5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Tests/RecorderCoreTests/LibraryTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"2F2BC9B21E0A3C2AF028A718" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "2A423909700E6696EA13C9E5";
+		};
+		"E0EC7A0FD55ECFCE6FD57455" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Tests/RecorderCoreTests/PersistenceTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"6A0490E70A40630C0943BDB3" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "E0EC7A0FD55ECFCE6FD57455";
+		};
+		"90662CB4E9C66D1B8178E211" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Tests/RecorderCoreTests/SelectionAndStateTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"4CC856BF5B73010BB627BCDF" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "90662CB4E9C66D1B8178E211";
+		};
+		"7B47A8698E922ED2FD446EB4" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Tests/RecorderCoreTests/SplitTrackTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"78DA678110A860DC586809A5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "7B47A8698E922ED2FD446EB4";
+		};
+		"63A65A7154F6E05D1705B600" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Tests/RecorderCoreTests/TranscriptionTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"9BC8263157D2AB113070021C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "63A65A7154F6E05D1705B600";
+		};
+		"F9F0A3D2FE7E594BB26E75C8" = {
+			"isa" = "PBXGroup";
+			"children" = ("F001818278B21512B5982837", "2A423909700E6696EA13C9E5", "E0EC7A0FD55ECFCE6FD57455", "90662CB4E9C66D1B8178E211", "7B47A8698E922ED2FD446EB4", "63A65A7154F6E05D1705B600");
+			"name" = "RecorderCoreTests";
+			"sourceTree" = "<group>";
+		};
+		"C853DFC1D86E8571B49F19AE" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("EB0077847AB0F38F038DF237", "2F2BC9B21E0A3C2AF028A718", "6A0490E70A40630C0943BDB3", "4CC856BF5B73010BB627BCDF", "78DA678110A860DC586809A5", "9BC8263157D2AB113070021C");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"93C3978244BBD0EF25B8E679" = {
+			"isa" = "PBXContainerItemProxy";
+			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
+			"proxyType" = 1;
+			"remoteGlobalIDString" = "F9DF7460351A56700C10CB0C";
+			"remoteInfo" = "RecorderCore";
+		};
+		"0E7E4DF847F196E20B097F99" = {
+			"isa" = "PBXTargetDependency";
+			"target" = "F9DF7460351A56700C10CB0C";
+			"targetProxy" = "93C3978244BBD0EF25B8E679";
+		};
+		"5299FC2D63F093E81028E3A0" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "64F9D4288FD7EFB91CB67D7F";
+		};
+		"F8464B9E0A68B08EE2DF6C5B" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("5299FC2D63F093E81028E3A0");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"830F421893BF53D1CA5A360E" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "RecorderCoreTests";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercoretests";
+				"SKIP_INSTALL" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SWIFT_VERSION" = "5.0";
+				"TEST_HOST" = "";
+				"BUNDLE_LOADER" = "";
+				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@loader_path/../Frameworks", "$(BUILT_PRODUCTS_DIR)");
+			};
+		};
+		"D6BB58A49B7980E92F9CE041" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"PRODUCT_NAME" = "RecorderCoreTests";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercoretests";
+				"SKIP_INSTALL" = "YES";
+				"GENERATE_INFOPLIST_FILE" = "YES";
+				"SWIFT_VERSION" = "5.0";
+				"TEST_HOST" = "";
+				"BUNDLE_LOADER" = "";
+				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@loader_path/../Frameworks", "$(BUILT_PRODUCTS_DIR)");
+			};
+		};
+		"AE76899E3081E9D028E37DA5" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("830F421893BF53D1CA5A360E", "D6BB58A49B7980E92F9CE041");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"95E1E3894F698A22137D9998" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "AE76899E3081E9D028E37DA5";
+			"buildPhases" = ("C853DFC1D86E8571B49F19AE", "F8464B9E0A68B08EE2DF6C5B");
+			"buildRules" = ();
+			"dependencies" = ("0E7E4DF847F196E20B097F99");
+			"name" = "RecorderCoreTests";
+			"productName" = "RecorderCoreTests";
+			"productReference" = "23BBD1F4144DF706A6A89F84";
+			"productType" = "com.apple.product-type.bundle.unit-test";
+		};
+		"93DE64BA23D71186D904CD31" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"path" = "Configuration/Info.plist";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"1BC87CDBAF651D72D949F60A" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.entitlements";
+			"path" = "Configuration/CallRecorder.entitlements";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"BCFA14070C8F570C520EF850" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Package.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"AA4ACA445B3FBAF47CDE31AC" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "net.daringfireball.markdown";
+			"path" = "README.md";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"18FD7FD8A86AE7DB07FFE101" = {
+			"isa" = "PBXGroup";
+			"children" = ("93DE64BA23D71186D904CD31", "1BC87CDBAF651D72D949F60A", "BCFA14070C8F570C520EF850", "AA4ACA445B3FBAF47CDE31AC");
+			"name" = "Configuration";
+			"sourceTree" = "<group>";
+		};
+		"00C45FD35CB0F9C5F764F070" = {
+			"isa" = "PBXGroup";
+			"children" = ("03F95B20E6E799B100D8C0F1", "64F9D4288FD7EFB91CB67D7F", "07A9811ECEF2A85EE35974E2", "23BBD1F4144DF706A6A89F84");
+			"name" = "Products";
+			"sourceTree" = "<group>";
+		};
+		"DF891E785808226D241F246E" = {
+			"isa" = "PBXGroup";
+			"children" = ("C60BB3B9F23EC21C202DC1EB", "F3C896CF7F8B7C562F1DCA1F", "5B555829F67E7DFD8CC6A9AB", "F9F0A3D2FE7E594BB26E75C8", "18FD7FD8A86AE7DB07FFE101", "00C45FD35CB0F9C5F764F070");
+			"sourceTree" = "<group>";
+		};
+		"AB52CB08E0FDF02BF6C67C33" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"MACOSX_DEPLOYMENT_TARGET" = "14.2";
+				"SDKROOT" = "macosx";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"CLANG_ENABLE_OBJC_ARC" = "YES";
+				"GCC_C_LANGUAGE_STANDARD" = "c11";
+				"SWIFT_INCLUDE_PATHS" = ("$(SRCROOT)/Sources/CaptureBridge/include");
+				"HEADER_SEARCH_PATHS" = ("$(SRCROOT)/Sources/CaptureBridge/include");
+				"CODE_SIGN_IDENTITY" = "-";
+				"CODE_SIGN_STYLE" = "Manual";
+				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/../Frameworks");
+				"SWIFT_VERSION" = "5.0";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"GCC_OPTIMIZATION_LEVEL" = "0";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf";
+				"ENABLE_TESTABILITY" = "YES";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
+			};
+		};
+		"5283471FF90C511CFE244FFF" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"MACOSX_DEPLOYMENT_TARGET" = "14.2";
+				"SDKROOT" = "macosx";
+				"CLANG_ENABLE_MODULES" = "YES";
+				"CLANG_ENABLE_OBJC_ARC" = "YES";
+				"GCC_C_LANGUAGE_STANDARD" = "c11";
+				"SWIFT_INCLUDE_PATHS" = ("$(SRCROOT)/Sources/CaptureBridge/include");
+				"HEADER_SEARCH_PATHS" = ("$(SRCROOT)/Sources/CaptureBridge/include");
+				"CODE_SIGN_IDENTITY" = "-";
+				"CODE_SIGN_STYLE" = "Manual";
+				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/../Frameworks");
+				"SWIFT_VERSION" = "5.0";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"GCC_OPTIMIZATION_LEVEL" = "s";
+				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+			};
+		};
+		"DEB0744DC7708188060CB52C" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("AB52CB08E0FDF02BF6C67C33", "5283471FF90C511CFE244FFF");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"98F54143AB4E86B28C3AFEE0" = {
+			"isa" = "PBXProject";
+			"attributes" = {
+				"LastUpgradeCheck" = "1600";
+				"BuildIndependentTargetsInParallel" = "YES";
+			};
+			"buildConfigurationList" = "DEB0744DC7708188060CB52C";
+			"compatibilityVersion" = "Xcode 14.0";
+			"developmentRegion" = "en";
+			"hasScannedForEncodings" = 0;
+			"knownRegions" = ("en", "Base");
+			"mainGroup" = "DF891E785808226D241F246E";
+			"productRefGroup" = "00C45FD35CB0F9C5F764F070";
+			"projectDirPath" = "";
+			"projectRoot" = "";
+			"targets" = ("482FCA0D14E7049883ADEE2C", "F9DF7460351A56700C10CB0C", "C97F2FAC8F644316093B1CC8", "95E1E3894F698A22137D9998");
+			"packageReferences" = ("B071B5D28A3EE8F67B67E4E1");
+		};
+	};
+	"rootObject" = "98F54143AB4E86B28C3AFEE0";
+}

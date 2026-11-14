@@ -1,0 +1,133 @@
+# Call Recorder
+
+A native SwiftUI recorder for macOS 14.2+ with a searchable recording library and menu-bar controls, built from [the recording specification, version 1.1](docs/spec-v1.1.md), with separate source tracks and selectable local transcription added. Each recording folder contains **Microphone.m4a** (selected mono mic, 64 kbps target), **System.m4a** (stereo playback, 128 kbps), and **Mixed.m4a** (stereo playback mix, 128 kbps). All use 48 kHz AAC-LC and share the same start and duration. No virtual audio driver, server, or audio uploads. Transcription uses a bundled, pinned build of Handy's [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp).
+
+**Qualification status:** 51 audio/export/recovery/transcription/library tests pass, along with native echo-stream checks. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
+
+## Build and run
+
+With Apple's Command Line Tools (Swift 6.2+ and the macOS 26 SDK), Git, [uv](https://docs.astral.sh/uv/), and Python 3.12 available to uv:
+
+```sh
+cd /path/to/call-recorder
+./Scripts/build-app.sh
+open 'build/Call Recorder.app'
+```
+
+The first build downloads pinned transcription sources and CMake 3.31.6 into `build/`, then builds a native helper with embedded Metal shaders. Subsequent builds reuse this cache. The finished app needs no Python, uv, compiler, or network connection to transcribe with an installed model. The script signs the helper and app with the hardened runtime; only the app receives the audio-input entitlement. It is outside App Sandbox and uses local ad-hoc signing by default. You can copy the completed app to a stable location before granting permissions. Quit a previous running build before opening a new one. Apple silicon is the tested transcription platform; Intel's CPU path has not been qualified.
+
+If you have a development signing identity, use it consistently:
+
+```sh
+SIGNING_IDENTITY='Apple Development: Your Name (TEAMID)' ./Scripts/build-app.sh
+```
+
+The bundle ID is `io.local.callrecorder`. Ad-hoc rebuilds may require macOS to ask for access again because the code identity changes. Do not edit TCC databases or reset other apps' permissions. Distribution beyond this local build would require Developer ID signing, notarization, and testing that delivered identity.
+
+With Xcode 26 or newer, open `CallRecorder.xcodeproj` and choose the shared **CallRecorder** scheme, or run:
+
+```sh
+xcodebuild -project CallRecorder.xcodeproj -scheme CallRecorder \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath build/xcode CODE_SIGN_IDENTITY=- build
+xcodebuild -project CallRecorder.xcodeproj -scheme CallRecorder \
+  -destination 'platform=macOS' -derivedDataPath build/xcode test
+```
+
+The checked-in native project has app, core framework, C library, and XCTest targets. Regenerate it after adding/removing source or test files with `python3 Scripts/generate-project.py`. The Swift package provides the command-line build without Xcode project tooling.
+
+## Recording library (version 0.6)
+
+The app opens a regular Mac window and appears in the Dock and app switcher. The menu-bar recorder and your configured global shortcut remain available. Closing the library pauses playback and keeps Call Recorder running; use **Quit Call Recorder** to exit. Reopen the library from the Dock, **File → Show Recordings** (Command–1), or **Library** in the menu-bar panel.
+
+- Recordings in the configured save folder appear automatically, including older single-file recordings. **Recording folders → Add recordings folder…** adds other folders in place; removing a folder from the library does not delete its files. The current recording destination remains included. Previous destinations remain available until removed.
+- Search matches recording names and the paragraphs in all saved JSON transcript versions. Select a result to read it; matching text is highlighted and the reader scrolls to the first matching paragraph. Filters show all recordings, those with transcripts, or those needing transcription.
+- The reader groups adjacent fragments into paragraphs with source labels and a timestamp per block. Wording and underlying segment times remain intact. **Copy** copies this readable layout; existing saved text and JSON files are untouched. Older transcript versions remain selectable, including a visible error when a version cannot be read.
+- Click a paragraph timestamp to listen from that point, or use the player and seek slider. Switch between mixed, microphone, and system audio while keeping your place. Playback pauses and is disabled during recording, audio tests, and saving.
+- **Transcribe / Transcribe again** uses the selected model and speaker-bleed setting from Settings. Each run still saves a separate transcript version. Progress and cancellation appear in the sidebar.
+
+The library refreshes after recording/transcription saves, when the app becomes active, and with the toolbar refresh button. It indexes direct recording folders and audio files inside the chosen locations, not arbitrary nested folder trees. Its first version uses an in-memory index; calendar integration, notes generation, transcript editing, and individual remote speaker identification are future work.
+
+## Use
+
+1. Open the waveform icon in the menu bar. Read the recording notices.
+2. Leave **System default** selected or choose a specific microphone. The resolved device is shown. For a multichannel/ambiguous source, explicitly choose one channel and verify it with **Test audio**. Only that channel is saved in the mono microphone track and centered in the stereo mix.
+3. Press **Test audio** and grant the separate microphone and system-audio prompts. Speak and play audio in another app. Preview saves no audio and stops on panel dismissal or after 60 seconds. A permission dialog may dismiss the panel; reopen it and test again after granting access.
+4. Press **Start recording**. The menu-bar icon changes when valid capture buffers arrive, even if they contain silence. Closing the popover leaves recording running.
+5. **Record microphone** controls both the microphone track and playback mix. Turning it off zeros the selected microphone before queueing; the worker also enforces silence over the corresponding converted-frame interval. System audio continues, and silent portions remain in place so all tracks stay aligned. It does not mute your meeting app.
+6. Press **Stop recording**. Wait for **Saved mix + separate tracks**, then use **Show in Finder**. A dated `Call-YYYY-MM-DD_HH-mm-ss` folder in your selected destination contains all three files. The default destination is `~/Music/Call Recordings`; folder collisions get numeric suffixes.
+
+**Global shortcut:** press **Control–Option–Command–R** (⌃⌥⌘R) to start or stop from any app while Call Recorder is running. Change it in **Settings → Recording → Keyboard shortcut** by clicking the field and pressing a new combination. Clear the field to disable it, or use **Restore default shortcut**. Your choice persists across launches. The action happens once when the keys are released. During preparation it cancels; during an audio test it ends the test; while saving it does nothing. Recording still uses the selected microphone, destination, and normal permission checks. A shortcut registration conflict is shown in Settings and the recorder panel.
+
+Shortcuts use a pinned, vendored [KeyboardShortcuts 3.1.0](https://github.com/sindresorhus/KeyboardShortcuts) with documented build adaptations in [Vendor/KeyboardShortcuts/UPSTREAM.md](Vendor/KeyboardShortcuts/UPSTREAM.md). The app does not request Accessibility or Input Monitoring permission for its hotkey. Run `./Scripts/check-shortcut.sh` for the isolated integration check; synthetic-key tests run only if event posting is already authorized and never capture audio.
+
+System audio includes other apps and notifications. Meeting-app mute does not mute this recorder. Use headphones to avoid acoustic duplication, and get any required permission before recording. The app never plays back or monitors its capture.
+
+For closed-lid use, select an external microphone such as the webcam. Apple silicon and T2 Mac laptops disconnect their built-in microphone in hardware when the lid closes; system audio can still be captured. Seeing the system meter move or recording music does not prove the microphone is working. Verify the **Microphone** meter while speaking. [Apple's hardware microphone disconnect documentation](https://support.apple.com/guide/security/hardware-microphone-disconnect-secbbd20b00b/web).
+
+Settings have Recording and Transcription tabs. Sources/destination lock during a session. A missing explicit device never falls back silently. System default is resolved afresh for each session and frozen while active.
+
+## Transcription
+
+1. Open **Settings → Transcription** and select a model. The selection persists across launches. Parakeet Unified (English), Nemotron 3.5 (multilingual), Whisper Base English, and Whisper Large v3 Turbo (multilingual) are available in Q8 precision. The UI shows each download size and links to its model card.
+2. Compatible Handy/Hugging Face cached models appear as **Available on this Mac · shared** and are reused read-only. Otherwise choose **Download**. Downloads have progress, cancellation, and full size/SHA-256 verification before installation. Recorder-owned models live under `~/Library/Application Support/Call Recorder/Models/`; Remove never deletes Handy's files. A shared model's More menu can download a separate copy.
+3. After saving a recording, expand **Transcription** in the menu panel and click **Transcribe recording**. The section starts collapsed. **Choose recording…** also accepts an existing call folder or audio file. Optional automatic transcription starts after a successful save, using an available selected model; it never initiates a model download.
+4. **Reduce speaker bleed** is on by default in the panel and Settings. It uses the system track to reduce playback leaking into the microphone before transcription, with every model. Your original audio files stay intact. Turn it off to transcribe the original microphone signal; the choice persists across launches. The setting is frozen while a job runs. Mixed-only recordings remain supported and skip cleanup because they have no separate reference.
+5. **Open transcript** opens the text. Each run saves `Transcript.txt` and `Transcript.json` together inside a new `Transcripts/<date>-<model>-<id>/` folder beside the audio, preserving earlier runs. The header reports cleanup on/off/unavailable. JSON includes model identity/hash, ASR and echo engine versions, cleanup setting and reference look-ahead, source filenames, timestamps, and timing granularity. A cleanup failure stops the job with an error; it never silently publishes an unprocessed transcript as cleaned.
+
+The app transcribes **Microphone.m4a** as **You** and **System.m4a** as **Other participants**, then merges by timestamp, preserving overlaps. A folder's playback mix is not transcribed again. The system track includes all other applications and notifications and groups remote participants together; individual remote speaker diarization is not implemented. Headphones reduce playback leaking into the mic track. Old mixed-only recordings are labeled **Mixed audio**, without invented speaker identities. A broken source pair is rejected rather than silently switching to its mix.
+
+Audio processing runs in a separate, low-priority helper process with one model loaded at a time. Cancel leaves audio and previous transcripts untouched. Starting a recording/audio test cancels transcription to give capture priority. Audio is decoded into at most 30-second windows, preferring quiet cuts near their end; original sample offsets preserve silence and timing. Continuous speech across a window boundary may lose recognition context. Parakeet/Nemotron provide word-derived timing; this Whisper engine provides segment timing. These are model estimates, not guaranteed word alignment. Digital silence is skipped; background noise or music can still cause recognition errors. Models need substantially more RAM than the recorder itself, and first-run Metal shader compilation may take longer.
+
+Cleanup uses the same pinned WebRTC AEC3 path validated in the sample-call experiment, bundled natively without Python. It runs continuously in 10 ms frames across ASR chunk boundaries, with 40 ms of system-reference look-ahead and zero padding only at the end. Microphone timestamps and sample count stay intact; the system track is transcribed unchanged. No added noise suppressor or automatic gain controller is enabled. This can reduce duplication substantially, but may affect quiet words or overlapping speech. A synthetic overlap check passes; varied rooms, devices, and real simultaneous speakers still need validation.
+
+## Permissions
+
+Microphone access uses the public `AVCaptureDevice` authorization flow. System-audio access follows the process-tap/aggregate start flow; no undocumented authorization preflight or speculative Screen Recording request is used. Zero audio samples are valid silence, not evidence of denial.
+
+For microphone denial, open **System Settings → Privacy & Security → Microphone**. For system-audio access, open **Privacy & Security** and locate the screen/system-audio recording controls; Apple documents **Screen & System Audio Recording**, including audio-only access. Labels vary across supported macOS versions. The button opens System Settings itself, with text navigation as fallback, rather than relying on an unverified pane deep link. [Apple's system-audio permission instructions](https://support.apple.com/guide/mac-help/mchl2844ecab/mac).
+
+No camera, Accessibility, contacts, calendar, automation, launch-at-login, or background-service permission is requested.
+
+## Durability and recovery
+
+Sessions live under `~/Library/Application Support/Call Recorder/Sessions/<UUID>/`. The worker writes independently finalized 10-second Float32 PCM CAF chunks with three discrete channels: selected mic, system left, system right. A single converter and chunk sequence keep all sources aligned. Files are fsynced and checkpointed with a version 2 manifest. The manifest includes source selection/UID/channel, reported formats and latency, wall-clock/timezone and capture timestamp references, mute intervals, chunk order/frame counts, errors, and finalization state. It does not contain window titles or meeting contents. Version 1 stereo chunks are still recoverable.
+
+Export reads chunks sequentially with bounded audio buffers and writes the three AAC files into a hidden staging folder on the destination volume. Each is reopened to check codec/channel count/rate/duration and decoded at beginning/middle/end; decoded durations must agree within one sample. After all files are synced, the whole folder is published with an exclusive/no-overwrite rename. A failed track prevents partial delivery, and PCM remains for retry. Cleanup requires all three delivered files to exist. New private session and recording directories/files use 0700/0600 permissions. Existing destination-folder permissions are not changed.
+
+After interruption, **Recover recording** reconciles completed files missed by a checkpoint and attempts to use a readable unfinished CAF. A missing/corrupt middle chunk exports only the uninterrupted prefix; later/original files remain for inspection. An undecodable current chunk is never discarded. Failed exports can be retried, including to the current Settings destination. All recoverable sessions are reachable in the popover.
+
+At 48 kHz with three Float32 channels, PCM uses 576,000 bytes/second (about 2.07 GB/hour). The three AAC files target about 144 MB/hour combined. Start checks require 1 GB free on spool and destination volumes; active checks protect a 256 MB reserve. Export reserves space for all three estimated AAC files. Disk checks do not eliminate write errors. No encryption-at-rest or secure-deletion claim is made; another service may sync or back up your chosen folder.
+
+Sleep/shutdown checkpoints and stops best-effort. Recording never resumes automatically. Quit asks to stop/save or cancel; if saving/device teardown stalls, explicit **Quit and recover later** leaves completed PCM available.
+
+## Verification
+
+```sh
+./Scripts/test.sh
+./Scripts/check-library.sh # Isolated library UI, silent playback, and layout checks
+./Scripts/check-echo.sh         # Native AEC streaming, silence, overlap and failure checks
+./Scripts/run-crash-test.sh
+./Scripts/check-layout.sh       # List available inputs; no capture
+./Scripts/check-layout.sh 1     # Explicit input index; prepare/teardown only
+```
+
+`test.sh` uses XCTest when full Xcode is installed. With Command Line Tools only, it runs the **same test bodies** through a small assertion adapter. This machine lacks XCTest, so the adapter is included rather than skipping tests. AAC encoding needs access to Apple's local audio codec service; a restrictive development sandbox can return `fmt?` even for a valid encoder configuration. Run these commands normally in Terminal if that happens. The commands above do not capture live microphone/system audio.
+
+After building the app, exercise the actual downloader and ASR worker with a copy of the engine's public speech sample:
+
+```sh
+mkdir -p build/asr-smoke
+cp build/vendor/transcribe.cpp/samples/jfk.wav build/asr-smoke/Test.wav
+./Scripts/check-transcription.sh download whisper-base.en build/asr-models
+./Scripts/check-transcription.sh run whisper-base.en build/asr-models build/asr-smoke/Test.wav
+./Scripts/check-transcription.sh cancel whisper-base.en build/asr-models build/asr-smoke/Test.wav
+```
+
+The first command that downloads a model uses the network; recognition is local. Transcripts appear under `build/asr-smoke/Transcripts/`. `cancel` stops the real helper after loading and verifies that the job reports cancellation. The test model directory is separate from the app's installed models.
+
+For an explicit live check, `./Scripts/check-capture.sh --preview 0` runs three 3-second previews with the chosen device's first channel, using the production capture and conversion pipeline. It builds a diagnostic app with the recorder's bundle identity and normal macOS permission flow, processes microphone/system audio in memory, and saves only numeric diagnostics to `build/capture-check.log`. It does not change the recorder's source preference or persist audio. Do not use this check during a call; use **Test audio** to verify a chosen channel interactively.
+
+The crash test SIGKILLs only its own synthetic fixture writer, then checks all three recovered AAC files, matching durations, microphone frequency ordering and isolation, and system stereo. Artifacts are retained under `build/crash-fixture-*` for inspection. This proves synthetic source-track recovery, not live-capture crash behavior.
+
+See [architecture and implementation decisions](docs/ARCHITECTURE.md) and [test results / outstanding hardware checks](docs/TEST-REPORT.md).
