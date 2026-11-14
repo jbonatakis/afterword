@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+SIGNING_IDENTITY="$(./Scripts/signing-identity.sh)"
+export SIGNING_IDENTITY
 app="$1"
 mkdir -p "$app/Contents/Helpers" "$app/Contents/Resources/Licenses"
 cp Vendor/KeyboardShortcuts/license "$app/Contents/Resources/Licenses/KeyboardShortcuts.txt"
@@ -19,4 +21,4 @@ cp "$echo_vendor/vendor/webrtc_audio/jsoncpp/LICENSE" "$app/Contents/Resources/L
 cp "$echo_vendor/vendor/webrtc_audio/PATENTS" "$app/Contents/Resources/Licenses/WebRTC-PATENTS.txt"
 cp "$echo_vendor/vendor/webrtc_audio/AUTHORS" "$app/Contents/Resources/Licenses/WebRTC-AUTHORS.txt"
 cp NativeTranscription/Echo/Licenses/*.txt "$app/Contents/Resources/Licenses/"
-codesign --force --sign "${SIGNING_IDENTITY:-${EXPANDED_CODE_SIGN_IDENTITY:--}}" --options runtime "$app/Contents/Helpers/TranscriptionWorker"
+codesign --force --sign "$SIGNING_IDENTITY" --identifier io.local.callrecorder.transcription --options runtime "$app/Contents/Helpers/TranscriptionWorker"

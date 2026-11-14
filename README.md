@@ -10,31 +10,36 @@ With Apple's Command Line Tools (Swift 6.2+ and the macOS 26 SDK), Git, [uv](htt
 
 ```sh
 cd /path/to/call-recorder
+./Scripts/setup-local-signing.sh # One-time setup on this Mac
 ./Scripts/build-app.sh
 open 'build/Call Recorder.app'
 ```
 
-The first build downloads pinned transcription sources and CMake 3.31.6 into `build/`, then builds a native helper with embedded Metal shaders. Subsequent builds reuse this cache. The finished app needs no Python, uv, compiler, or network connection to transcribe with an installed model. The script signs the helper and app with the hardened runtime; only the app receives the audio-input and Calendar entitlements. It is outside App Sandbox and uses local ad-hoc signing by default. You can copy the completed app to a stable location before granting permissions. Quit a previous running build before opening a new one. Apple silicon is the tested transcription platform; Intel's CPU path has not been qualified.
+The first build downloads pinned transcription sources and CMake 3.31.6 into `build/`, then builds a native helper with embedded Metal shaders. Subsequent builds reuse this cache. The finished app needs no Python, uv, compiler, or network connection to transcribe with an installed model. The script signs the helper and app with the hardened runtime; only the app receives the audio-input and Calendar entitlements. It is outside App Sandbox. Quit a previous running build before opening a new one. Apple silicon is the tested transcription platform; Intel's CPU path has not been qualified.
 
-If you have a development signing identity, use it consistently:
+The default signing identity is **Call Recorder Local Development**. One-time setup creates a dedicated self-signed certificate in your login keychain, with a non-extractable private key and automatic key access restricted to `/usr/bin/codesign`. Trust is limited to code signing in your user account. macOS may ask you to authorize the keychain change. The certificate is reused on subsequent runs and survives cleaning `build/`; setup will not replace an existing unavailable identity. Keep this certificate and key to preserve the app’s identity across updates.
+
+If you already have an Apple Development or Developer ID identity, you can skip local setup and consistently select that certificate instead:
 
 ```sh
 SIGNING_IDENTITY='Apple Development: Your Name (TEAMID)' ./Scripts/build-app.sh
 ```
 
-The bundle ID is `io.local.callrecorder`. Ad-hoc rebuilds may require macOS to ask for access again because the code identity changes. Do not edit TCC databases or reset other apps' permissions. Distribution beyond this local build would require Developer ID signing, notarization, and testing that delivered identity.
+The bundle ID remains `io.local.callrecorder`; the helper uses `io.local.callrecorder.transcription`. The default designated requirements bind each identifier to the signing certificate, so new builds can satisfy the identity recorded with earlier permission grants. This follows [Apple’s documented update-identity mechanism](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements/). Moving from the old ad-hoc build to certificate signing can require one more round of permission approvals. Selecting a different certificate later can require approval again.
+
+Production builds stop before replacing the app if the signing identity is missing, ambiguous, or explicitly set to `-`; there is no ad-hoc fallback. Helper and app signatures are verified before installation. To verify two different signed builds without launching them, run `python3 Scripts/check-signing.py '/path/to/Previous.app' '/path/to/Updated.app'`. It checks mutual identity compatibility and rejects an ad-hoc copy with the same bundle ID. No build or setup script edits TCC records or resets permissions. Local self-signing does not provide Developer ID distribution or notarization; distribution beyond this Mac needs that separate setup.
 
 With Xcode 26 or newer, open `CallRecorder.xcodeproj` and choose the shared **CallRecorder** scheme, or run:
 
 ```sh
 xcodebuild -project CallRecorder.xcodeproj -scheme CallRecorder \
   -configuration Debug -destination 'platform=macOS' \
-  -derivedDataPath build/xcode CODE_SIGN_IDENTITY=- build
+  -derivedDataPath build/xcode build
 xcodebuild -project CallRecorder.xcodeproj -scheme CallRecorder \
   -destination 'platform=macOS' -derivedDataPath build/xcode test
 ```
 
-The checked-in native project has app, core framework, C library, and XCTest targets. Regenerate it after adding/removing source or test files with `python3 Scripts/generate-project.py`. The Swift package provides the command-line build without Xcode project tooling.
+The checked-in native project has app, core framework, C library, and XCTest targets, and defaults to the same local signing certificate. Override `CODE_SIGN_IDENTITY` consistently if using an Apple-issued certificate. Regenerate the project after adding/removing source or test files with `python3 Scripts/generate-project.py`. The Swift package provides the command-line build without Xcode project tooling.
 
 ## Recording library (version 0.8)
 
@@ -136,7 +141,7 @@ Microphone access uses the public `AVCaptureDevice` authorization flow. System-a
 
 For microphone denial, open **System Settings → Privacy & Security → Microphone**. For system-audio access, open **Privacy & Security** and locate the screen/system-audio recording controls; Apple documents **Screen & System Audio Recording**, including audio-only access. Labels vary across supported macOS versions. The button opens System Settings itself, with text navigation as fallback, rather than relying on an unverified pane deep link. [Apple's system-audio permission instructions](https://support.apple.com/guide/mac-help/mchl2844ecab/mac).
 
-No camera, Accessibility, contacts, calendar, automation, launch-at-login, or background-service permission is requested.
+No camera, Accessibility, contacts, automation, launch-at-login, or background-service permission is requested. Calendar access is requested when you connect calendars.
 
 ## Durability and recovery
 
@@ -184,7 +189,7 @@ cp build/vendor/transcribe.cpp/samples/jfk.wav build/asr-smoke/Test.wav
 
 The first command that downloads a model uses the network; recognition is local. Transcripts appear under `build/asr-smoke/Transcripts/`. `cancel` stops the real helper after loading and verifies that the job reports cancellation. The test model directory is separate from the app's installed models.
 
-For an explicit live check, `./Scripts/check-capture.sh --preview 0` runs three 3-second previews with the chosen device's first channel, using the production capture and conversion pipeline. It builds a diagnostic app with the recorder's bundle identity and normal macOS permission flow, processes microphone/system audio in memory, and saves only numeric diagnostics to `build/capture-check.log`. It does not change the recorder's source preference or persist audio. Do not use this check during a call; use **Test audio** to verify a chosen channel interactively.
+For an explicit live check, `./Scripts/check-capture.sh --preview 0` runs three 3-second previews with the chosen device's first channel, using the production capture and conversion pipeline. It builds a diagnostic app with its own `io.local.callrecorder.capturecheck` identity, using the same persistent signing certificate and separate macOS permission grants. It processes microphone/system audio in memory and saves only numeric diagnostics to `build/capture-check.log`. It does not change the recorder's source preference, reuse its privacy identity, or persist audio. Do not use this check during a call; use **Test audio** to verify a chosen channel interactively.
 
 The crash test SIGKILLs only its own synthetic fixture writer, then checks all three recovered AAC files, matching durations, microphone frequency ordering and isolation, and system stereo. Artifacts are retained under `build/crash-fixture-*` for inspection. This proves synthetic source-track recovery, not live-capture crash behavior.
 
