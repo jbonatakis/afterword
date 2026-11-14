@@ -12,7 +12,7 @@ let package = Package(
         .target(name: "RecorderCore", dependencies: ["CaptureBridge"],
                 linkerSettings: [.linkedFramework("AVFoundation"), .linkedFramework("CoreAudio")]),
         .executableTarget(name: "CallRecorder", dependencies: ["RecorderCore", "KeyboardShortcuts"],
-                          linkerSettings: [.linkedFramework("SwiftUI"), .linkedFramework("IOKit")]),
+                          linkerSettings: [.linkedFramework("SwiftUI"), .linkedFramework("IOKit"), .linkedFramework("EventKit")]),
         .testTarget(name: "RecorderCoreTests", dependencies: ["RecorderCore", "CaptureBridge"])
     ]
 )

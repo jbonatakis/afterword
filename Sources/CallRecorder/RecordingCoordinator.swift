@@ -8,6 +8,8 @@ import RecorderCore
 @MainActor final class RecordingCoordinator: ObservableObject {
     let transcription = TranscriptionCoordinator()
     let shortcut = RecordingShortcut()
+    private let peopleURL: URL
+    lazy var calendar = CalendarCoordinator(recorder: self, directoryURL: peopleURL)
     @Published private(set) var state: RecordingState = .idle {
         didSet { transcription.recordingStateChanged(active: locked) }
     }
@@ -58,7 +60,8 @@ import RecorderCore
         case .recoverable: return "Recoverable recording"
         }
     }
-    init() {
+    init(peopleURL: URL? = nil) {
+        self.peopleURL = peopleURL ?? SessionStore.defaultRoot.deletingLastPathComponent().appendingPathComponent("People.json")
         destination = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music/Call Recordings").path, isDirectory: true)
         noticesAccepted = UserDefaults.standard.bool(forKey: "noticesAccepted")
         if let data = defaults.data(forKey: "selection"), let selection = try? JSONDecoder().decode(MicrophoneSelection.self, from: data), case .device(let uid) = selection { selectedUID = uid }
@@ -116,7 +119,7 @@ import RecorderCore
         panel.prompt = "Use folder"; panel.directoryURL = destination
         if panel.runModal() == .OK, let url = panel.url { destination = url; defaults.set(url.path, forKey: "destination") }
     }
-    func start(preview: Bool = false) {
+    func start(preview: Bool = false, callDetails: CallDetails? = nil) {
         guard !locked else { return }
         message = nil; savedFile = nil; refreshDevices()
         guard let resolved else { return }
@@ -137,7 +140,7 @@ import RecorderCore
                 }
                 self.resolved = current
                 engineStarted = true
-                engine?.start(input: ResolvedInput(device: current, channel: channel, selection: selection), destination: destination, preview: preview, microphoneEnabled: recordMicrophone)
+                engine?.start(input: ResolvedInput(device: current, channel: channel, selection: selection), destination: destination, preview: preview, microphoneEnabled: recordMicrophone, callDetails: callDetails)
             } catch {
                 let permission = (error as? RecorderError).map { if case .microphonePermission = $0 { return true }; return false } ?? false
                 message = error.localizedDescription

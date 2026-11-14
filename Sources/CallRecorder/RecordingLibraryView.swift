@@ -37,6 +37,8 @@ struct RecordingLibraryView: View {
                     } label: { Label("Recording folders", systemImage: "folder") }
                         .menuStyle(.borderlessButton)
                     SettingsLink { Label("Settings", systemImage: "gearshape") }.buttonStyle(.plain)
+                    Button { recorder.calendar.showUpcoming() } label: { Label("Upcoming calls", systemImage: "calendar") }.buttonStyle(.plain)
+                    Button { recorder.calendar.showPeople() } label: { Label("People & groups", systemImage: "person.2") }.buttonStyle(.plain)
                 }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(16)
             }.navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 250)
         } content: {
@@ -214,6 +216,7 @@ private struct RecordingDetail: View {
     let editDetails: () -> Void
     let trash: (LibraryTranscript?) -> Void
     @State private var versionID: String?
+    @State private var showingAttendance = false
     private var draft: TranscriptDraft? { library.transcriptDrafts[recording.id] }
 
     private var version: LibraryTranscript? {
@@ -239,8 +242,20 @@ private struct RecordingDetail: View {
                     Spacer()
                     Button(action: editDetails) { Label("Edit details", systemImage: "pencil") }.disabled(library.managing || library.renamingID != nil)
                 }.font(.callout).foregroundStyle(.secondary)
-                if !recording.details.participants.isEmpty {
-                    Label(recording.details.participants.joined(separator: ", "), systemImage: "person.2").font(.callout).lineLimit(2).textSelection(.enabled)
+                if !recording.details.callAttendees.isEmpty {
+                    HStack {
+                        Label(recording.details.participants.isEmpty ? "No active participants" : recording.details.participants.joined(separator: ", "), systemImage: "person.2")
+                            .lineLimit(2).textSelection(.enabled)
+                        Spacer()
+                        Button("Attendance…") { showingAttendance = true }.disabled(library.managing)
+                    }.font(.callout)
+                    if recording.details.callAttendees.contains(where: { $0.attendance == .absent }) {
+                        Text("\(recording.details.callAttendees.filter { $0.attendance == .absent }.count) excluded · Review attendance to restore")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let meeting = recording.details.meeting {
+                    Label("From " + meeting.calendar, systemImage: "calendar").font(.caption).foregroundStyle(.secondary)
                 }
                 if !recording.details.tags.isEmpty {
                     Label(recording.details.tags.joined(separator: " · "), systemImage: "tag").font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
@@ -330,6 +345,7 @@ private struct RecordingDetail: View {
             PlaybackBar(recording: recording, playback: playback, disabled: recorder.locked)
         }
         .onAppear { playback.select(recording); selectMatchingVersion() }
+        .sheet(isPresented: $showingAttendance) { AttendanceEditor(recording: recording, version: version, library: library) }
         .onChange(of: query) { _, _ in selectMatchingVersion() }
         .onChange(of: recording.transcripts.map(\.id)) { _, _ in versionID = nil; selectMatchingVersion() }
         .onChange(of: draft?.version.id) { _, _ in selectMatchingVersion() }

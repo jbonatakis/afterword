@@ -73,7 +73,7 @@ import RecorderCore
         UserDefaults.standard.set(true, forKey: "noticesAccepted")
         // A cleared shortcut prevents registration of any production key.
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
-        let recorder = RecordingCoordinator(); recorder.shortcut.shutdown()
+        let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json")); recorder.shortcut.shutdown()
         defer { recorder.transcription.shutdown() }
         let library = RecordingLibraryModel(recorder: recorder)
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }

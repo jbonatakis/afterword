@@ -13,6 +13,7 @@ import RecorderCore
         showControls: { [weak self] in self?.showRecordingControls() })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        recorder.calendar.startMonitoring()
         statusItem = RecorderStatusItem(recorder: recorder, showLibrary: { [weak self] in self?.showLibrary() })
         DispatchQueue.main.async { [weak self] in self?.showLibrary() }
     }
@@ -39,6 +40,7 @@ import RecorderCore
         return recorder.shouldQuit()
     }
     func applicationWillTerminate(_ notification: Notification) {
+        recorder.calendar.shutdown()
         recorder.transcription.shutdown()
         recorder.shortcut.shutdown()
         playback.shutdown()
@@ -53,11 +55,14 @@ import RecorderCore
             TabView {
                 RecorderSettings(recorder: delegate.recorder).tabItem { Label("Recording", systemImage: "waveform") }
                 TranscriptionSettings(transcription: delegate.recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }
+                CalendarSettings(calendar: delegate.recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }
             }.padding(12).frame(width: 560, height: 640)
         }
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Show Recordings") { delegate.showLibrary() }.keyboardShortcut("1", modifiers: .command)
+                Button("Upcoming Calls") { delegate.recorder.calendar.showUpcoming() }.keyboardShortcut("2", modifiers: .command)
+                Button("People & Groups") { delegate.recorder.calendar.showPeople() }
             }
             CommandGroup(replacing: .sidebar) {
                 Button("Toggle Sidebar") { delegate.library.sidebarVisible.toggle() }

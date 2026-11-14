@@ -95,6 +95,28 @@ struct ParticipantAssignmentStatus {
             await finishManagement()?.value
         } catch { finishManagement(); throw error }
     }
+    func saveAttendance(_ attendees: [CallAttendee], for recording: LibraryRecording, version: LibraryTranscript?, confirmOnly: String?) async throws {
+        let latest = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
+        guard latest.callAttendees == recording.details.callAttendees else {
+            throw RecorderError.message("The participants changed. Reopen attendance to review the updated list.")
+        }
+        let details = try latest.updatingAttendance(attendees, confirmOnly: confirmOnly)
+        try await saveDetails(details, for: recording, reveal: false)
+        guard let confirmOnly, let person = attendees.first(where: { $0.id == confirmOnly }),
+              let current = recordings.first(where: { $0.id == recording.id }), let version, let document = version.document else { return }
+        if let draft = transcriptDrafts[recording.id] {
+            for index in draft.paragraphs.indices where draft.paragraphs[index].source == .system && (draft.participants[index] ?? "").isEmpty {
+                draft.participants[index] = person.name
+            }
+        } else {
+            let paragraphs = document.paragraphs
+            var names = paragraphs.map { current.details.participantName($0.participant, for: version) }
+            for index in paragraphs.indices where paragraphs[index].source == .system && (names[index] ?? "").isEmpty { names[index] = person.name }
+            if names != paragraphs.map(\.participant) {
+                try await saveTranscript(paragraphs.map(\.text), version: version, recording: current, participants: names, clearSearch: false)
+            }
+        }
+    }
     func beginRenaming(_ recording: LibraryRecording) {
         guard !managing, renamingID == nil || renamingID == recording.id else { return }
         selection = recording.id; renameText = recording.name; renameError = nil; renamingID = recording.id
