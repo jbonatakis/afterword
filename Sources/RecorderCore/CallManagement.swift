@@ -1,16 +1,22 @@
 import Foundation
 
 public struct CallDetails: Codable, Equatable, Sendable {
-    public var version = 2
+    public var version = 3
     public var title: String?
     public var participants: [String]
     public var tags: [String]
     public var description: String
-    /// Frozen defaults for existing transcript versions, keyed by their run directory name.
+    /// Defaults retained when adding people, updated when renaming/removing them.
+    /// Keyed by transcript run directory; an empty value clears the embedded default.
     public var automaticParticipants: [String: String]?
-    public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "", automaticParticipants: [String: String]? = nil) {
+    /// Per-version corrections to names stored in immutable transcript files.
+    /// An empty value removes an assignment, including if that name is later reused.
+    public var participantOverrides: [String: [String: String]]?
+    public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "", automaticParticipants: [String: String]? = nil,
+                participantOverrides: [String: [String: String]]? = nil) {
         self.title = title; self.participants = participants; self.tags = tags; self.description = description
         self.automaticParticipants = automaticParticipants
+        self.participantOverrides = participantOverrides
     }
     public var normalized: CallDetails {
         func unique(_ values: [String]) -> [String] {
@@ -20,7 +26,22 @@ public struct CallDetails: Codable, Equatable, Sendable {
         }
         let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         return .init(title: title?.isEmpty == false ? title : nil, participants: unique(participants), tags: unique(tags),
-                     description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants)
+                     description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants, participantOverrides: participantOverrides)
+    }
+    public func automaticParticipant(for transcript: LibraryTranscript) -> String? {
+        if participants.count == 1 { return participants.first }
+        let name = automaticParticipants?[transcript.runName] ?? transcript.document?.automaticParticipant
+        return name.flatMap { participants.contains($0) ? $0 : nil }
+    }
+    public func participantName(_ name: String?, for transcript: LibraryTranscript) -> String? {
+        guard let name else { return nil }
+        if name.isEmpty { return "" }
+        let current = participantOverrides?[transcript.runName]?[name] ?? name
+        return participants.contains(current) ? current : ""
+    }
+    public func participantNames(for transcript: LibraryTranscript) -> [String: String] {
+        let names = Set(transcript.document?.segments.compactMap(\.participant) ?? [])
+        return Dictionary(uniqueKeysWithValues: names.map { ($0, participantName($0, for: transcript) ?? "") })
     }
 }
 
@@ -40,29 +61,39 @@ public enum CallDetailsStore {
         guard FileManager.default.fileExists(atPath: file.path) else { return .init() }
         guard PrivateFiles.isRegular(file) else { throw RecorderError.message("Call details must be stored in a regular file.") }
         let details = try JSONDecoder().decode(CallDetails.self, from: Data(contentsOf: file))
-        guard (1...2).contains(details.version) else { throw RecorderError.message("These call details use a newer format. They have not been changed.") }
+        guard (1...3).contains(details.version) else { throw RecorderError.message("These call details use a newer format. They have not been changed.") }
         return details.normalized
     }
-    public static func save(_ details: CallDetails, for recording: LibraryRecording) throws {
+    @discardableResult public static func save(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String] = [:]) throws -> CallDetails {
         try CallFileOperations.validateRecording(recording)
         // Do not silently replace an unreadable or newer details file.
         let previous = try load(for: recording.url, isDirectory: recording.isDirectory)
         var saved = details.normalized
+        guard participantRenames.allSatisfy({ previous.participants.contains($0.key) && saved.participants.contains($0.value) }) else {
+            throw RecorderError.message("The participant list changed. Reopen call details and try again.")
+        }
+        func updatedName(_ name: String) -> String {
+            guard !name.isEmpty else { return "" }
+            let updated = participantRenames[name] ?? name
+            return saved.participants.contains(updated) ? updated : ""
+        }
         var assignments = previous.automaticParticipants ?? [:]
-        // Freeze the old one-person assumption BEFORE adding a second name.
-        // Existing transcript bytes stay untouched, and only this call's runs are associated.
-        let inferred = previous.participants.count == 1 ? previous.participants.first : saved.participants.count == 1 ? saved.participants.first : nil
-        if let inferred {
-            let folder = recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent()
-            for transcript in RecordingLibraryScanner.transcripts(in: folder) {
-                guard recording.isDirectory || (transcript.document?.recording == recording.sourceName && transcript.document?.sources[TranscriptSource.mixed.rawValue] == recording.url.lastPathComponent) else { continue }
-                let key = transcript.url.deletingLastPathComponent().lastPathComponent
-                if assignments[key] == nil { assignments[key] = transcript.document?.automaticParticipant ?? inferred }
-            }
+        var overrides = previous.participantOverrides ?? [:]
+        // Preserve the previous one-person default when adding names, but let
+        // renames/removals correct it. Never rewrite the original transcripts.
+        let folder = recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent()
+        for transcript in RecordingLibraryScanner.transcripts(in: folder) {
+            guard recording.isDirectory || (transcript.document?.recording == recording.sourceName && transcript.document?.sources[TranscriptSource.mixed.rawValue] == recording.url.lastPathComponent) else { continue }
+            let key = transcript.runName
+            assignments[key] = saved.participants.count == 1 ? saved.participants[0] : updatedName(previous.automaticParticipant(for: transcript) ?? "")
+            let names = previous.participantNames(for: transcript).mapValues(updatedName)
+            if !names.isEmpty { overrides[key] = names }
         }
         saved.automaticParticipants = assignments.isEmpty ? nil : assignments
+        saved.participantOverrides = overrides.isEmpty ? nil : overrides
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try PrivateFiles.atomicWrite(encoder.encode(saved), to: url(for: recording.url, isDirectory: recording.isDirectory))
+        return saved
     }
 }
 
@@ -168,9 +199,12 @@ public enum CallFileOperations {
             throw RecorderError.message("This transcript changed while you were editing it. Reopen the editor to review the latest version.")
         }
         let details = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
-        let key = version.url.deletingLastPathComponent().lastPathComponent
-        let automatic = original.automaticParticipant ?? details.automaticParticipants?[key] ?? (details.participants.count == 1 ? details.participants.first : nil)
-        let edited = try original.editingParagraphs(text, parentVersion: key, participants: participants, automaticParticipant: automatic)
+        let names = participants ?? original.paragraphs.map { details.participantName($0.participant, for: version) }
+        guard names.allSatisfy({ $0 == nil || $0 == "" || details.participants.contains($0!) }) else {
+            throw RecorderError.message("A participant changed while you were editing. Reopen the editor to review the latest names.")
+        }
+        let edited = try original.editingParagraphs(text, parentVersion: version.runName, participants: names,
+                                                  automaticParticipant: details.automaticParticipant(for: version) ?? "")
         return try edited.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
     }
 }

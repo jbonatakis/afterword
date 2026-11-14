@@ -101,6 +101,12 @@ The popover uses a persistent native `NSPopover` with animations disabled to avo
 - Call details schema 2 stores frozen defaults per transcript version; annotated transcripts use schema 3. Older files remain readable. Named labels are manual assignments or one-person assumptions, not voice recognition or diarization.
 - During relaunch, the older production build again became unresponsive at 100% CPU. Both sampled hangs stayed in SwiftUI’s lazy paragraph placement. The reader now uses stable eager paragraph layout; an 80-paragraph resize/search/silent-playback stress check passes. This removes that lazy-layout path; very large transcripts still need broader performance qualification.
 
+### Participant renaming and removal (version 0.8.1, November 14)
+
+- **75 core tests pass.** Regression cases cover replacing/removing a sole participant with embedded or frozen defaults, repairing stale schema-2 defaults on read, independent manual renames, copy/search labels, original-file preservation, explicit unassigned passages, deleting then reusing a name, simultaneous name swaps, reordered lists, chained renames, and saving an edit after all participants are removed.
+- Participant rows distinguish a rename from adding/removing someone. Schema 3 call details apply corrections per transcript version without changing its original JSON/TXT. Removed manual assignments stay unassigned even if the old name is later reused. Automatic sections follow the current sole participant; adding more people retains that assignment.
+- The isolated native harness checks renaming a manually assigned participant while text edits are open, saving the updated name, removing/replacing participants while an unchanged draft is open, and keeping draft text and dirty state correct. The reader and participant rows are rendered from their own views; no desktop capture or user-recording mutation is used.
+
 ## Failed / limitations observed
 
 ### Local transcription checks (version 0.3)

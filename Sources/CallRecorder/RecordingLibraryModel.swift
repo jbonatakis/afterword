@@ -68,10 +68,11 @@ import RecorderCore
         managing = true; scan?.cancel(); scan = nil; generation = UUID(); refreshing = false
     }
     @discardableResult private func finishManagement() -> Task<Void, Never>? { managing = false; return refresh() }
-    func saveDetails(_ details: CallDetails, for recording: LibraryRecording, reveal: Bool = true) async throws {
+    func saveDetails(_ details: CallDetails, for recording: LibraryRecording, reveal: Bool = true, participantRenames: [String: String] = [:]) async throws {
         try beginManagement()
         do {
-            try await Task.detached(priority: .userInitiated) { try CallDetailsStore.save(details, for: recording) }.value
+            let saved = try await Task.detached(priority: .userInitiated) { try CallDetailsStore.save(details, for: recording, participantRenames: participantRenames) }.value
+            transcriptDrafts[recording.id]?.updateParticipants(saved.participants, renames: participantRenames)
             if reveal { search = ""; selection = recording.id }
             await finishManagement()?.value
         } catch { finishManagement(); throw error }
@@ -112,7 +113,7 @@ import RecorderCore
     }
     func beginTranscriptEditing(_ recording: LibraryRecording, version: LibraryTranscript, paragraph: Int? = nil) {
         guard !managing, version.document?.paragraphs.isEmpty == false else { return }
-        if transcriptDrafts[recording.id] == nil { transcriptDrafts[recording.id] = TranscriptDraft(version: version, focusedParagraph: paragraph) }
+        if transcriptDrafts[recording.id] == nil { transcriptDrafts[recording.id] = TranscriptDraft(version: version, focusedParagraph: paragraph, details: recording.details) }
     }
     func cancelTranscriptEditing(_ recording: LibraryRecording) {
         guard transcriptDrafts[recording.id]?.saving != true else { return }

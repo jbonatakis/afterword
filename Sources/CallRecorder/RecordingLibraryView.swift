@@ -260,7 +260,7 @@ private struct RecordingDetail: View {
                         if let document = version?.document {
                             Button {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(document.readableText(recordingName: recording.name, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) }), forType: .string)
+                                NSPasteboard.general.setString(version.flatMap { recording.readableText(for: $0) } ?? "", forType: .string)
                             } label: { Label("Copy", systemImage: "doc.on.doc") }
                             .help("Copy readable transcript")
                             Button { beginEditing() } label: { Image(systemName: "pencil") }
@@ -302,6 +302,7 @@ private struct RecordingDetail: View {
                 ReadableTranscript(paragraphs: document.paragraphs, edited: document.editing != nil, query: query, playback: playback, playbackDisabled: recorder.locked,
                                    draft: draft, canEdit: !library.managing, editParagraph: { beginEditing(paragraph: $0) },
                                    participants: recording.details.participants, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) },
+                                   participantNames: version.map { recording.details.participantNames(for: $0) } ?? [:],
                                    assignParticipant: { name, paragraph in
                                        if let version { library.assignParticipant(name, to: paragraph, recording: recording, version: version) }
                                    }, editParticipants: editDetails)
@@ -342,7 +343,7 @@ private struct RecordingDetail: View {
         }
         guard !query.isEmpty else { return }
         if let matching = recording.transcripts.first(where: { version in version.document?.paragraphs.contains {
-            $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: recording.automaticParticipant(for: version)).localizedStandardContains(query)
+            $0.text.localizedStandardContains(query) || recording.speakerLabel(for: $0, version: version).localizedStandardContains(query)
         } == true }) {
             versionID = matching.id
         }
@@ -360,11 +361,12 @@ struct ReadableTranscript: View {
     let editParagraph: (Int) -> Void
     let participants: [String]
     let automaticParticipant: String?
+    var participantNames: [String: String] = [:]
     let assignParticipant: (String?, Int) -> Void
     let editParticipants: () -> Void
     private var firstMatch: Int? {
         query.isEmpty ? nil : paragraphs.first {
-            $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant).localizedStandardContains(query)
+            $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant, participantNames: participantNames).localizedStandardContains(query)
         }?.id
     }
     var body: some View {
@@ -387,7 +389,7 @@ struct ReadableTranscript: View {
                                                                    assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
                                                 .disabled(!canEdit)
                                         } else {
-                                            ParticipantPicker(participant: paragraph.participant, participants: participants, automaticParticipant: automaticParticipant, start: paragraph.start,
+                                            ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, start: paragraph.start,
                                                               assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
                                                 .disabled(!canEdit)
                                         }

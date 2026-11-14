@@ -57,9 +57,9 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
         self.source = source; self.start = start; self.end = end; self.text = text; self.timing = timing
         self.participant = participant
     }
-    public func speakerLabel(automaticParticipant: String? = nil) -> String {
+    public func speakerLabel(automaticParticipant: String? = nil, participantNames: [String: String] = [:]) -> String {
         guard source == .system else { return source.label }
-        let name = (participant ?? automaticParticipant)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (participant.map { participantNames[$0] ?? $0 } ?? automaticParticipant)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return name?.isEmpty == false ? name! : source.label
     }
 }
@@ -159,6 +159,7 @@ public struct Transcript: Codable, Sendable {
         return Transcript(original: self, segments: segments, parentVersion: parentVersion, automaticParticipant: automaticParticipant ?? self.automaticParticipant)
     }
     private init(original: Transcript, segments: [TranscriptSegment], parentVersion: String, automaticParticipant: String?) {
+        let automaticParticipant = automaticParticipant?.isEmpty == true ? nil : automaticParticipant
         version = automaticParticipant != nil || segments.contains(where: { $0.participant != nil }) ? 3 : 2
         createdAt = Date(); recording = original.recording
         modelID = original.modelID; modelName = original.modelName; modelSHA256 = original.modelSHA256

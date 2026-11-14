@@ -121,6 +121,10 @@ import RecorderCore
         require(library.transcriptDrafts[recording.id]?.participants[0] == nil, "Participant assignment changed the microphone speaker")
         library.assignParticipant("Sam", to: 1, recording: named, version: originalVersion)
         require(library.transcriptDrafts[recording.id]?.participants[1] == "Sam", "Speaker menu selection did not update the draft")
+        var renamedDetails = named.details; renamedDetails.participants = ["Alex", "Samuel"]
+        try await library.saveDetails(renamedDetails, for: named, participantRenames: ["Sam": "Samuel"])
+        require(library.transcriptDrafts[recording.id]?.participants[1] == "Samuel", "Renaming a participant left a stale assignment in the open draft")
+        require(library.transcriptDrafts[recording.id]?.text == corrected, "Renaming a participant lost text edits")
         require(library.hasUnsavedEdits, "Inline changes were not tracked as unsaved")
         library.selection = nil; library.search = "no matching call"; await library.refresh()?.value
         require(library.transcriptDrafts[recording.id]?.text == corrected, "Navigating or refreshing lost inline edits")
@@ -132,8 +136,8 @@ import RecorderCore
         require(library.preferredTranscriptID != nil, "Edited version was not selected")
         require(library.selectedRecording?.transcripts.contains { $0.document?.editing != nil } == true, "Edited version lacks its origin")
         let namedDocument = library.recordings[0].transcripts.first { $0.document?.editing != nil }!.document!
-        require(namedDocument.automaticParticipant == "Alex" && namedDocument.paragraphs[1].participant == "Sam", "Saved transcript lost the frozen automatic name or manual assignment")
-        require(namedDocument.readableText.contains("Sam · 00:00:18"), "Readable transcript omitted assigned names")
+        require(namedDocument.automaticParticipant == "Alex" && namedDocument.paragraphs[1].participant == "Samuel", "Saved transcript lost the frozen automatic name or renamed assignment")
+        require(namedDocument.readableText.contains("Samuel · 00:00:18"), "Readable transcript omitted renamed speakers")
         let unchangedBytes = try Data(contentsOf: originalVersion.url)
         require(unchangedBytes == originalBytes, "Editing changed the original transcript")
         recorder.transcription.recordingSaved(folder)
@@ -177,7 +181,7 @@ import RecorderCore
         library.beginTranscriptEditing(updated, version: updated.transcripts[0], paragraph: 1)
         library.transcriptDrafts[updated.id]?.text[1] += " This correction is still a draft."
         for (view, width, height, suffix) in [
-            (AnyView(CallDetailsEditor(recording: updated, library: library)), 578.0, 430.0, "call-details"),
+            (AnyView(CallDetailsEditor(recording: updated, library: library)), 578.0, 510.0, "call-details"),
             (AnyView(RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {})), 1180.0, 740.0, "transcript-inline")
         ] {
             let host = NSHostingView(rootView: view.preferredColorScheme(.light))
@@ -193,6 +197,20 @@ import RecorderCore
         library.cancelTranscriptEditing(updated)
         require(!library.hasUnsavedEdits && library.recordings[0].transcripts.count == 2, "Cancelling an inline draft wrote a transcript")
         print("PASS inline rename, draft navigation/save/cancel, and inline transcript rendering")
+
+        library.beginTranscriptEditing(updated, version: updated.transcripts[0])
+        require(!library.hasUnsavedEdits, "Starting an unchanged draft reported unsaved edits")
+        var removed = updated.details; removed.participants = []
+        try await library.saveDetails(removed, for: updated)
+        require(library.transcriptDrafts[updated.id]?.participants[1] == "", "Removing a participant left their name in the open draft")
+        require(!library.hasUnsavedEdits, "A participant metadata change made an unchanged draft dirty")
+        require(library.recordings[0].automaticParticipant(for: originalVersion) == nil, "Removing all participants retained the automatic name")
+        removed.participants = ["Taylor"]
+        try await library.saveDetails(removed, for: library.recordings[0])
+        require(library.recordings[0].automaticParticipant(for: originalVersion) == "Taylor", "A replacement sole participant did not label automatic sections")
+        require(library.transcriptDrafts[updated.id]?.participants[1] == "", "Adding a person revived a removed manual assignment")
+        library.cancelTranscriptEditing(updated)
+        print("PASS rename/remove/replace participant updates in open drafts and saved transcript views")
 
         let renameView = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}).preferredColorScheme(.light))
         let renameWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 940, height: 660), styleMask: [.titled, .resizable], backing: .buffered, defer: false)

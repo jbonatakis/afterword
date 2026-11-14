@@ -88,10 +88,10 @@ final class ParticipantTests: XCTestCase {
         let updated = try call()
         XCTAssertEqual(updated.automaticParticipant(for: updated.transcripts[0]), "Alex")
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-        XCTAssertEqual(json["version"] as? Int, 2)
-        // A later details edit must retain the frozen association even without names.
+        XCTAssertEqual(json["version"] as? Int, 3)
+        // Removing the participant clears the default without reviving the embedded name.
         try CallDetailsStore.save(.init(title: "Renamed"), for: updated)
-        XCTAssertEqual(try call().automaticParticipant(for: updated.transcripts[0]), "Alex")
+        XCTAssertNil(try call().automaticParticipant(for: updated.transcripts[0]))
         json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertNotEqual(json["automaticParticipants"] as? [String: String], nil)
     }
@@ -112,7 +112,7 @@ final class ParticipantTests: XCTestCase {
         XCTAssertTrue(edited.readableText.contains("Alex · 00:00:02"))
         try CallDetailsStore.save(.init(), for: recording)
         let refreshed = try call()
-        XCTAssertTrue(refreshed.matches("Sam")); XCTAssertEqual(refreshed.matchingPassage("Sam"), "Second answer.")
+        XCTAssertFalse(refreshed.matches("Sam")); XCTAssertNil(refreshed.matchingPassage("Sam"))
     }
     func testReassigningOnePreviouslyAutomaticPassageLeavesOtherPassagesAlone() throws {
         let initial = try prepare(["Alex"])
@@ -170,5 +170,103 @@ final class ParticipantTests: XCTestCase {
         XCTAssertEqual(details.automaticParticipants?.count, 1)
         XCTAssertNil(details.automaticParticipants?[two.transcripts[0].url.deletingLastPathComponent().lastPathComponent])
         XCTAssertNil(try call("Two.m4a").automaticParticipant(for: two.transcripts[0]))
+    }
+
+    func testReplacingOrRemovingSoleParticipantUpdatesEmbeddedAndFrozenDefaults() throws {
+        let initial = try prepare(["Alex"]), version = initial.transcripts[0]
+        let original = try Data(contentsOf: version.url)
+        for names in [["Alexandra"], [], ["Sam"], ["Sam", "Taylor"]] {
+            try CallDetailsStore.save(.init(participants: names), for: call())
+            let current = try call()
+            let expected = names.isEmpty ? "Other participants" : names[0]
+            XCTAssertEqual(current.speakerLabel(for: version.document!.paragraphs[1], version: version), expected)
+            XCTAssertTrue(current.readableText(for: version)!.contains("\(expected) · 00:00:02"))
+            XCTAssertFalse(current.readableText(for: version)!.contains("Alex ·"))
+            XCTAssertEqual(try Data(contentsOf: version.url), original)
+        }
+    }
+
+    func testVersionTwoStaleDefaultUsesCurrentSoleParticipantWithoutSaving() throws {
+        let initial = try prepare(["Alex"]), version = initial.transcripts[0]
+        let file = CallDetailsStore.url(for: initial.url, isDirectory: true)
+        let data: [String: Any] = ["version": 2, "participants": ["Sam"], "tags": [], "description": "",
+                                  "automaticParticipants": [version.runName: "Alex"]]
+        try JSONSerialization.data(withJSONObject: data).write(to: file)
+        let repaired = try call()
+        XCTAssertEqual(repaired.automaticParticipant(for: version), "Sam")
+        XCTAssertTrue(repaired.readableText(for: version)!.contains("Sam · 00:00:02"))
+        XCTAssertFalse(repaired.matches("Alex"))
+        try CallDetailsStore.save(.init(participants: ["Sam", "Taylor"]), for: repaired)
+        XCTAssertEqual(try call().automaticParticipant(for: version), "Sam")
+    }
+
+    func testRenamingManualSpeakersUpdatesCopySearchAndNewEditsWithoutChangingOriginals() throws {
+        let initial = try prepare(["Alex", "Sam"]), version = initial.transcripts[0]
+        _ = try CallFileOperations.saveTranscriptEdits(version.document!.paragraphs.map(\.text), version: version, recording: initial,
+                                                     participants: [nil, "Alex", nil, "Sam"])
+        let assigned = try call(), named = assigned.transcripts.first { $0.document?.editing != nil }!
+        let bytes = try Data(contentsOf: named.url)
+        try CallDetailsStore.save(.init(participants: ["Alexandra", "Samuel"]), for: assigned, participantRenames: ["Alex": "Alexandra", "Sam": "Samuel"])
+        let renamed = try call()
+        XCTAssertEqual(renamed.speakerLabel(for: named.document!.paragraphs[1], version: named), "Alexandra")
+        XCTAssertEqual(renamed.speakerLabel(for: named.document!.paragraphs[3], version: named), "Samuel")
+        XCTAssertTrue(renamed.readableText(for: named)!.contains("Samuel · 00:00:07"))
+        XCTAssertEqual(renamed.matchingPassage("Samuel"), "Second answer.")
+        XCTAssertEqual(try Data(contentsOf: named.url), bytes)
+        var text = named.document!.paragraphs.map(\.text); text[0] = "Corrected greeting."
+        let edited = try savedDocument(CallFileOperations.saveTranscriptEdits(text, version: named, recording: renamed))
+        XCTAssertEqual(edited.paragraphs[1].participant, "Alexandra")
+        XCTAssertEqual(edited.paragraphs[3].participant, "Samuel")
+        XCTAssertTrue(edited.plainText.contains("Samuel: Second answer."))
+    }
+
+    func testRemovingManualSpeakerClearsAssignmentsAndReusingNameDoesNotRestoreThem() throws {
+        let initial = try prepare(["Alex", "Sam"]), version = initial.transcripts[0]
+        _ = try CallFileOperations.saveTranscriptEdits(version.document!.paragraphs.map(\.text), version: version, recording: initial,
+                                                     participants: [nil, "Alex", nil, "Sam"])
+        let named = try call().transcripts.first { $0.document?.editing != nil }!
+        try CallDetailsStore.save(.init(participants: ["Sam"]), for: call())
+        var current = try call()
+        XCTAssertEqual(current.speakerLabel(for: named.document!.paragraphs[1], version: named), "Other participants")
+        XCTAssertEqual(current.speakerLabel(for: named.document!.paragraphs[3], version: named), "Sam")
+        XCTAssertEqual(current.automaticParticipant(for: version), "Sam")
+        try CallDetailsStore.save(.init(participants: ["Sam", "Alex"]), for: current)
+        current = try call()
+        XCTAssertEqual(current.speakerLabel(for: named.document!.paragraphs[1], version: named), "Other participants")
+        let edited = try savedDocument(CallFileOperations.saveTranscriptEdits(named.document!.paragraphs.map(\.text), version: named, recording: current))
+        XCTAssertEqual(edited.paragraphs[1].participant, "")
+    }
+
+    func testRenamesAreAppliedOnceAndReorderingDoesNotChangeAssignments() throws {
+        let initial = try prepare(["Alex"]), version = initial.transcripts[0]
+        try CallDetailsStore.save(.init(participants: ["Alex", "Sam"]), for: initial)
+        _ = try CallFileOperations.saveTranscriptEdits(version.document!.paragraphs.map(\.text), version: version, recording: call(),
+                                                     participants: [nil, "Alex", nil, "Sam"])
+        let named = try call().transcripts.first { $0.document?.editing != nil }!
+        try CallDetailsStore.save(.init(participants: ["Sam", "Alex"]), for: call())
+        XCTAssertEqual(try call().automaticParticipant(for: version), "Alex")
+        // Swapping the row names is an explicit rename, not list reordering.
+        try CallDetailsStore.save(.init(participants: ["Sam", "Alex"]), for: call(), participantRenames: ["Alex": "Sam", "Sam": "Alex"])
+        let swapped = try call()
+        XCTAssertEqual(swapped.automaticParticipant(for: version), "Sam")
+        XCTAssertEqual(swapped.speakerLabel(for: named.document!.paragraphs[1], version: named), "Sam")
+        XCTAssertEqual(swapped.speakerLabel(for: named.document!.paragraphs[3], version: named), "Alex")
+        try CallDetailsStore.save(.init(participants: ["Sam", "Taylor"]), for: swapped, participantRenames: ["Alex": "Taylor"])
+        XCTAssertEqual(try call().speakerLabel(for: named.document!.paragraphs[3], version: named), "Taylor")
+    }
+
+    func testClearedDefaultAndExplicitUnassignedSurviveSavingAndFurtherParticipantChanges() throws {
+        let initial = try prepare(["Alex"]), version = initial.transcripts[0]
+        try CallDetailsStore.save(.init(), for: initial)
+        let edited = try savedDocument(CallFileOperations.saveTranscriptEdits(version.document!.paragraphs.map(\.text), version: version, recording: call(),
+                                                                             participants: [nil, "", nil, nil]))
+        XCTAssertNil(edited.automaticParticipant)
+        XCTAssertFalse(edited.plainText.contains("Alex:"))
+        let named = try call().transcripts.first { $0.document?.editing != nil }!
+        try CallDetailsStore.save(.init(participants: ["Sam"]), for: call())
+        let current = try call()
+        XCTAssertEqual(current.speakerLabel(for: named.document!.paragraphs[1], version: named), "Other participants")
+        XCTAssertEqual(current.speakerLabel(for: named.document!.paragraphs[3], version: named), "Sam")
+        XCTAssertThrowsError(try CallDetailsStore.save(.init(participants: ["Sam"]), for: current, participantRenames: ["Missing": "Sam"]))
     }
 }

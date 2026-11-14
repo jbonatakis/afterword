@@ -7,7 +7,9 @@ public struct TranscriptParagraph: Identifiable, Sendable {
     public let segments: [TranscriptSegment]
     public var source: TranscriptSource { segments[0].source }
     public var participant: String? { segments[0].participant }
-    public func speakerLabel(automaticParticipant: String? = nil) -> String { segments[0].speakerLabel(automaticParticipant: automaticParticipant) }
+    public func speakerLabel(automaticParticipant: String? = nil, participantNames: [String: String] = [:]) -> String {
+        segments[0].speakerLabel(automaticParticipant: automaticParticipant, participantNames: participantNames)
+    }
     public var start: Double { segments[0].start }
     public var end: Double { segments.map(\.end).max() ?? start }
     public var text: String { segments.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.joined(separator: " ") }
@@ -38,8 +40,8 @@ public extension Transcript {
     var readableText: String {
         readableText(recordingName: recording)
     }
-    func readableText(recordingName: String, automaticParticipant: String? = nil) -> String {
-        let body = paragraphs.map { "\($0.speakerLabel(automaticParticipant: automaticParticipant ?? self.automaticParticipant)) · \(Self.timestamp($0.start))\n\($0.text)" }.joined(separator: "\n\n")
+    func readableText(recordingName: String, automaticParticipant: String? = nil, participantNames: [String: String] = [:]) -> String {
+        let body = paragraphs.map { "\($0.speakerLabel(automaticParticipant: automaticParticipant ?? self.automaticParticipant, participantNames: participantNames)) · \(Self.timestamp($0.start))\n\($0.text)" }.joined(separator: "\n\n")
         let empty = editing == nil ? "No speech was detected." : "This edited transcript has no text."
         return "\(recordingName)\nModel: \(modelName)\n" + (editing == nil ? "\n" : "Manually edited transcript\n\n") + (body.isEmpty ? empty : body) + "\n"
     }
@@ -69,6 +71,7 @@ public struct LibraryTranscript: Identifiable, Sendable {
     public let date: Date
     let fileModificationDate: Date
     public var id: String { url.path }
+    public var runName: String { url.deletingLastPathComponent().lastPathComponent }
 }
 
 public struct LibraryRecording: Identifiable, Sendable {
@@ -86,15 +89,21 @@ public struct LibraryRecording: Identifiable, Sendable {
     public var latestTranscript: LibraryTranscript? { transcripts.first }
     public var hasTranscript: Bool { transcripts.contains { $0.document != nil } }
     public func automaticParticipant(for version: LibraryTranscript) -> String? {
-        version.document?.automaticParticipant ?? details.automaticParticipants?[version.url.deletingLastPathComponent().lastPathComponent]
-            ?? (details.participants.count == 1 ? details.participants.first : nil)
+        details.automaticParticipant(for: version)
+    }
+    public func speakerLabel(for paragraph: TranscriptParagraph, version: LibraryTranscript) -> String {
+        let names = paragraph.participant.map { [$0: details.participantName($0, for: version) ?? ""] } ?? [:]
+        return paragraph.speakerLabel(automaticParticipant: automaticParticipant(for: version), participantNames: names)
+    }
+    public func readableText(for version: LibraryTranscript) -> String? {
+        version.document?.readableText(recordingName: name, automaticParticipant: automaticParticipant(for: version) ?? "", participantNames: details.participantNames(for: version))
     }
     public func matches(_ query: String) -> Bool {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let information = ([name, sourceName, details.description] + details.participants + details.tags).joined(separator: "\n")
         return query.isEmpty || information.localizedStandardContains(query) || transcripts.contains {
             version in version.document?.paragraphs.contains {
-                $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant(for: version)).localizedStandardContains(query)
+                $0.text.localizedStandardContains(query) || speakerLabel(for: $0, version: version).localizedStandardContains(query)
             } == true
         }
     }
@@ -102,7 +111,7 @@ public struct LibraryRecording: Identifiable, Sendable {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         for version in transcripts {
             if let paragraph = version.document?.paragraphs.first(where: {
-                $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant(for: version)).localizedStandardContains(query)
+                $0.text.localizedStandardContains(query) || speakerLabel(for: $0, version: version).localizedStandardContains(query)
             }) { return paragraph.text }
         }
         return nil

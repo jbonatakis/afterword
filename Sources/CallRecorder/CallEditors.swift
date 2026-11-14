@@ -1,12 +1,18 @@
 import SwiftUI
 import RecorderCore
 
+private struct ParticipantRow: Identifiable {
+    let id = UUID()
+    let originalName: String?
+    var name: String
+}
+
 struct CallDetailsEditor: View {
     let recording: LibraryRecording
     @ObservedObject var library: RecordingLibraryModel
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
-    @State private var participants: String
+    @State private var participants: [ParticipantRow]
     @State private var tags: String
     @State private var description: String
     @State private var saving = false
@@ -15,7 +21,7 @@ struct CallDetailsEditor: View {
     init(recording: LibraryRecording, library: RecordingLibraryModel) {
         self.recording = recording; self.library = library
         _title = State(initialValue: recording.name)
-        _participants = State(initialValue: recording.details.participants.joined(separator: "\n"))
+        _participants = State(initialValue: recording.details.participants.map { ParticipantRow(originalName: $0, name: $0) })
         _tags = State(initialValue: recording.details.tags.joined(separator: ", "))
         _description = State(initialValue: recording.details.description)
     }
@@ -26,8 +32,22 @@ struct CallDetailsEditor: View {
                 TextField("Title", text: $title)
                 LabeledContent("Participants") {
                     VStack(alignment: .leading, spacing: 4) {
-                        TextEditor(text: $participants).frame(height: 60).editorBorder().accessibilityLabel("Participants")
-                        Text("Other people on the call, one per line. A single name labels their speech automatically; adding more names keeps existing assignments.")
+                        ScrollView {
+                            VStack(spacing: 6) {
+                                ForEach($participants) { $participant in
+                                    HStack {
+                                        TextField("Name", text: $participant.name).labelsHidden().accessibilityLabel("Participant name")
+                                        Button {
+                                            participants.removeAll { $0.id == participant.id }
+                                        } label: { Image(systemName: "minus.circle") }
+                                            .buttonStyle(.borderless).help("Remove participant").accessibilityLabel("Remove participant")
+                                    }
+                                }
+                            }
+                        }.frame(height: min(120, CGFloat(participants.count) * 28))
+                        Button("Add participant", systemImage: "plus") { participants.append(.init(originalName: nil, name: "")) }
+                            .buttonStyle(.borderless)
+                        Text("List the other people on the call. Renaming updates their labels; removing clears their assignments. One person labels automatic sections; adding people keeps existing assignments.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -47,11 +67,19 @@ struct CallDetailsEditor: View {
         }.padding(24).frame(width: 530).background(Color(nsColor: .windowBackgroundColor)).interactiveDismissDisabled(saving)
     }
     private func save() {
-        saving = true; error = nil
-        let details = CallDetails(title: title, participants: participants.components(separatedBy: .newlines),
+        error = nil
+        let names = participants.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let details = CallDetails(title: title, participants: names,
                                   tags: tags.components(separatedBy: ","), description: description)
+        guard details.normalized.participants.count == names.count else { error = "Use a different name for each participant."; return }
+        let renames = Dictionary(uniqueKeysWithValues: participants.compactMap { row -> (String, String)? in
+            let name = row.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let original = row.originalName, !name.isEmpty, name != original else { return nil }
+            return (original, name)
+        })
+        saving = true
         Task {
-            do { try await library.saveDetails(details, for: recording); dismiss() }
+            do { try await library.saveDetails(details, for: recording, participantRenames: renames); dismiss() }
             catch { self.error = error.localizedDescription }
             saving = false
         }
@@ -64,16 +92,28 @@ struct CallDetailsEditor: View {
     let focusedParagraph: Int?
     @Published var text: [String]
     @Published var participants: [String?]
+    private var originalParticipants: [String?]
     @Published var saving = false
     @Published var error: String?
-    init(version: LibraryTranscript, focusedParagraph: Int?) {
+    init(version: LibraryTranscript, focusedParagraph: Int?, details: CallDetails) {
         self.version = version; self.focusedParagraph = focusedParagraph
         paragraphs = version.document?.paragraphs ?? []
         text = paragraphs.map(\.text)
-        participants = paragraphs.map(\.participant)
+        let names = paragraphs.map { details.participantName($0.participant, for: version) }
+        participants = names; originalParticipants = names
     }
     var changed: Bool {
-        zip(text, paragraphs).contains { $0.0.trimmingCharacters(in: .whitespacesAndNewlines) != $0.1.text } || participants != paragraphs.map(\.participant)
+        zip(text, paragraphs).contains { $0.0.trimmingCharacters(in: .whitespacesAndNewlines) != $0.1.text } || participants != originalParticipants
+    }
+    func updateParticipants(_ names: [String], renames: [String: String]) {
+        func update(_ name: String?) -> String? {
+            guard let name else { return nil }
+            if name.isEmpty { return "" }
+            let renamed = renames[name] ?? name
+            return names.contains(renamed) ? renamed : ""
+        }
+        originalParticipants = originalParticipants.map(update)
+        participants = participants.map(update)
     }
 }
 
