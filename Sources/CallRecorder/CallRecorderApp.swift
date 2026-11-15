@@ -59,6 +59,7 @@ import RecorderCore
                 RecorderSettings(recorder: delegate.recorder).tabItem { Label("Recording", systemImage: "waveform") }
                 TranscriptionSettings(transcription: delegate.recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }
                 CalendarSettings(calendar: delegate.recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }
+                AgentAccessSettings(library: delegate.library).tabItem { Label("Agent Access", systemImage: "point.3.connected.trianglepath.dotted") }
             }.padding(12).frame(width: 560, height: 640)
         }
         .commands {

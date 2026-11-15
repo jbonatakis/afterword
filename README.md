@@ -1,8 +1,8 @@
 # Call Recorder
 
-A native SwiftUI recorder for macOS 14.2+ with a searchable recording library and menu-bar controls, built from [the recording specification, version 1.1](docs/spec-v1.1.md), with separate source tracks and selectable local transcription added. Each recording folder contains **Microphone.m4a** (selected mono mic, 64 kbps target), **System.m4a** (stereo playback, 128 kbps), and **Mixed.m4a** (stereo playback mix, 128 kbps). All use 48 kHz AAC-LC and share the same start and duration. No virtual audio driver, server, or audio uploads. Transcription uses a bundled, pinned build of Handy's [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp).
+A native SwiftUI recorder for macOS 14.2+ with a searchable recording library and menu-bar controls, built from [the recording specification, version 1.1](docs/spec-v1.1.md), with separate source tracks and selectable local transcription added. Each recording folder contains **Microphone.m4a** (selected mono mic, 64 kbps target), **System.m4a** (stereo playback, 128 kbps), and **Mixed.m4a** (stereo playback mix, 128 kbps). All use 48 kHz AAC-LC and share the same start and duration. Capture and transcription run locally, with no virtual audio driver or audio uploads. Transcription uses a bundled, pinned build of Handy's [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp).
 
-**Qualification status:** 98 core audio/export/recovery/transcription/library/calendar tests pass, along with native echo-stream checks. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
+**Qualification status:** 111 core audio/export/recovery/transcription/library/calendar/MCP tests pass, along with native echo-stream checks. The signed MCP helper passes an official-client integration check. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
 
 ## Build and run
 
@@ -120,6 +120,10 @@ System audio includes other apps and notifications. Meeting-app mute does not mu
 For closed-lid use, select an external microphone such as the webcam. Apple silicon and T2 Mac laptops disconnect their built-in microphone in hardware when the lid closes; system audio can still be captured. Seeing the system meter move or recording music does not prove the microphone is working. Verify the **Microphone** meter while speaking. [Apple's hardware microphone disconnect documentation](https://support.apple.com/guide/security/hardware-microphone-disconnect-secbbd20b00b/web).
 
 Settings have Recording and Transcription tabs. Sources/destination lock during a session. A missing explicit device never falls back silently. System default is resolved afresh for each session and frozen while active.
+
+## Agent access (MCP)
+
+**Settings → Agent Access** enables a bundled local MCP server and selects the recording folders clients may read. **Copy Server Path** supplies the stdio command; no client-specific setup is included. The server provides call listing, transcript search, saved call/version retrieval, and independent change checkpoints. It uses the library's current saved speaker assignments and edits, works while the app is closed, and rechecks access on every request. Access starts disabled. See the [MCP interface and behavior](docs/mcp.md).
 
 ## Transcription
 

@@ -126,7 +126,7 @@ public struct LibraryScan: Sendable {
 /// Index only saved deliveries. Hidden export/transcription staging directories
 /// are excluded; opening the library never writes to recordings or transcripts.
 public enum RecordingLibraryScanner {
-    public static func scan(roots: [URL]) -> LibraryScan {
+    public static func scan(roots: [URL], confined: Bool = false) -> LibraryScan {
         var result = LibraryScan(), visited = Set<String>()
         let fm = FileManager.default
         for root in roots {
@@ -136,13 +136,17 @@ public enum RecordingLibraryScanner {
                 let candidates = audioTracks(in: root).isEmpty ? children : [root]
                 // Legacy files share their parent's Transcripts directory. Match
                 // the stored recording name so transcripts cannot cross calls.
-                let shared = transcripts(in: root)
+                let shared = try transcripts(in: root, confined: confined)
                 for candidate in candidates {
                     if Task.isCancelled { break }
                     let url = candidate.resolvingSymlinksInPath().standardizedFileURL
+                    if confined && (url != candidate.standardizedFileURL || !CallFileOperations.contains(root, url)) { continue }
                     guard visited.insert(url.path).inserted else { continue }
                     let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey])
                     let directory = values?.isDirectory == true
+                    if confined && directory && !fm.isReadableFile(atPath: url.path) {
+                        throw RecorderError.message("A library directory is unreadable.")
+                    }
                     let tracks: [LibraryAudioTrack]
                     if directory { tracks = audioTracks(in: url) }
                     else if values?.isRegularFile == true,
@@ -152,10 +156,16 @@ public enum RecordingLibraryScanner {
                     } else { continue }
                     guard !tracks.isEmpty else { continue }
                     let name = directory ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
-                    let versions = directory ? transcripts(in: url) : shared.filter {
+                    let versions = directory ? try transcripts(in: url, confined: confined) : shared.filter {
                         $0.document?.recording == name && $0.document?.sources[TranscriptSource.mixed.rawValue] == url.lastPathComponent
                     }
                     var details = CallDetails(), detailsError: String?
+                    if confined {
+                        let file = CallDetailsStore.url(for: url, isDirectory: directory)
+                        if let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 1_048_576 {
+                            throw RecorderError.message("Call information exceeds the agent access size limit.")
+                        }
+                    }
                     do { details = try CallDetailsStore.load(for: url, isDirectory: directory) }
                     catch { detailsError = error.localizedDescription }
                     let reader = tracks.lazy.compactMap { try? AVAudioFile(forReading: $0.url) }.first
@@ -180,9 +190,31 @@ public enum RecordingLibraryScanner {
     }
 
     static func transcripts(in directory: URL) -> [LibraryTranscript] {
+        (try? transcripts(in: directory, confined: false)) ?? []
+    }
+
+    static func transcripts(in directory: URL, confined: Bool) throws -> [LibraryTranscript] {
         let root = directory.appendingPathComponent("Transcripts", isDirectory: true)
-        let runs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        if confined && root.resolvingSymlinksInPath().standardizedFileURL != root.standardizedFileURL { return [] }
+        let runs: [URL]
+        do { runs = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) }
+        catch {
+            if confined && FileManager.default.fileExists(atPath: root.path) { throw error }
+            return []
+        }
+        if confined {
+            for run in runs where run.resolvingSymlinksInPath().standardizedFileURL == run.standardizedFileURL {
+                if !FileManager.default.isReadableFile(atPath: run.path) {
+                    throw RecorderError.message("A transcript directory is unreadable.")
+                }
+                let file = run.appendingPathComponent("Transcript.json")
+                if let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 16 * 1_048_576 {
+                    throw RecorderError.message("A transcript exceeds the agent access size limit.")
+                }
+            }
+        }
         return runs.compactMap { run -> LibraryTranscript? in
+            if confined && run.resolvingSymlinksInPath().standardizedFileURL != run.standardizedFileURL { return nil }
             let url = run.appendingPathComponent("Transcript.json")
             guard PrivateFiles.isRegular(url) else { return nil }
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast

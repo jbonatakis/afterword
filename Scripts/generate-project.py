@@ -26,12 +26,13 @@ def configlist(name, values, project=False):
         entries.append(add(name + ":" + variant, "XCBuildConfiguration", name=variant, buildSettings=settings))
     return add(name + ":configlist", "XCConfigurationList", buildConfigurations=entries, defaultConfigurationIsVisible=0, defaultConfigurationName="Release")
 
-target_names = ["CaptureBridge", "RecorderCore", "CallRecorder", "RecorderCoreTests"]
+target_names = ["CaptureBridge", "RecorderCore", "CallRecorderMCP", "CallRecorder", "RecorderCoreTests"]
 target_ids = {name: ident("target:" + name) for name in target_names}
 shortcut_package = add("package:KeyboardShortcuts", "XCLocalSwiftPackageReference", relativePath="Vendor/KeyboardShortcuts")
 shortcut_product = add("package-product:KeyboardShortcuts", "XCSwiftPackageProductDependency", productName="KeyboardShortcuts")
 products = {}
 product_kinds = {"CaptureBridge": ("libCaptureBridge.a", "archive.ar", "com.apple.product-type.library.static"), "RecorderCore": ("RecorderCore.framework", "wrapper.framework", "com.apple.product-type.framework"), "CallRecorder": ("Call Recorder.app", "wrapper.application", "com.apple.product-type.application"), "RecorderCoreTests": ("RecorderCoreTests.xctest", "wrapper.cfbundle", "com.apple.product-type.bundle.unit-test")}
+product_kinds["CallRecorderMCP"] = ("CallRecorderMCP", "compiled.mach-o.executable", "com.apple.product-type.tool")
 for name, (path, kind, _) in product_kinds.items():
     products[name] = add("product:" + name, "PBXFileReference", explicitFileType=kind, path=path, sourceTree="BUILT_PRODUCTS_DIR")
 
@@ -50,21 +51,25 @@ for name in target_names:
     phases = [phase(name + ":sources", "PBXSourcesBuildPhase", compiled)]
     if headers: phases.append(phase(name + ":headers", "PBXHeadersBuildPhase", headers))
     dependencies, links = [], []
-    deps = {"CaptureBridge": [], "RecorderCore": ["CaptureBridge"], "CallRecorder": ["RecorderCore"], "RecorderCoreTests": ["RecorderCore"]}[name]
+    deps = {"CaptureBridge": [], "RecorderCore": ["CaptureBridge"], "CallRecorderMCP": ["RecorderCore"], "CallRecorder": ["RecorderCore", "CallRecorderMCP"], "RecorderCoreTests": ["RecorderCore"]}[name]
     for dep in deps:
         proxy = add(name + ":proxy:" + dep, "PBXContainerItemProxy", containerPortal=ident("project"), proxyType=1, remoteGlobalIDString=target_ids[dep], remoteInfo=dep)
         dependencies.append(add(name + ":depends:" + dep, "PBXTargetDependency", target=target_ids[dep], targetProxy=proxy))
-        links.append(build(name + ":link:" + dep, products[dep]))
+        if dep != "CallRecorderMCP": links.append(build(name + ":link:" + dep, products[dep]))
     if name == "CallRecorder":
         links.append(add("build:KeyboardShortcuts", "PBXBuildFile", productRef=shortcut_product))
     phases.append(phase(name + ":frameworks", "PBXFrameworksBuildPhase", links))
     values = {"PRODUCT_NAME": name, "PRODUCT_BUNDLE_IDENTIFIER": "io.local.callrecorder." + name.lower(), "SKIP_INSTALL": "YES", "GENERATE_INFOPLIST_FILE": "YES", "SWIFT_VERSION": "5.0"}
     if name == "RecorderCore":
         values.update(DEFINES_MODULE="YES", MACH_O_TYPE="mh_dylib", DYLIB_INSTALL_NAME_BASE="@rpath", INSTALL_PATH="$(LOCAL_LIBRARY_DIR)/Frameworks")
+    if name == "CallRecorderMCP":
+        values.update(PRODUCT_BUNDLE_IDENTIFIER="io.local.callrecorder.mcp", GENERATE_INFOPLIST_FILE="NO", ENABLE_HARDENED_RUNTIME="YES", OTHER_CODE_SIGN_FLAGS="--identifier io.local.callrecorder.mcp")
     if name == "CallRecorder":
         values.update(PRODUCT_NAME="Call Recorder", PRODUCT_MODULE_NAME="CallRecorder", EXECUTABLE_NAME="CallRecorder", PRODUCT_BUNDLE_IDENTIFIER="io.local.callrecorder", SKIP_INSTALL="NO", GENERATE_INFOPLIST_FILE="NO", INFOPLIST_FILE="Configuration/Info.plist", CODE_SIGN_ENTITLEMENTS="Configuration/CallRecorder.entitlements", ENABLE_HARDENED_RUNTIME="YES", ENABLE_APP_SANDBOX="NO")
         embed = build("embed:RecorderCore", products["RecorderCore"], settings={"ATTRIBUTES": ["CodeSignOnCopy", "RemoveHeadersOnCopy"]})
         phases.append(phase(name + ":embed", "PBXCopyFilesBuildPhase", [embed], dstPath="", dstSubfolderSpec=10, name="Embed Frameworks"))
+        helper = build("embed:CallRecorderMCP", products["CallRecorderMCP"], settings={"ATTRIBUTES": ["CodeSignOnCopy"]})
+        phases.append(phase(name + ":mcp", "PBXCopyFilesBuildPhase", [helper], dstPath="Contents/Helpers", dstSubfolderSpec=1, name="Embed MCP server"))
         phases.append(phase(name + ":transcription", "PBXShellScriptBuildPhase", [], name="Build local transcription worker", shellPath="/bin/bash", shellScript='set -euo pipefail\ncd "$SRCROOT"\n./Scripts/build-transcription.sh\n./Scripts/embed-transcription.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n', alwaysOutOfDate=1))
         values.update(ENABLE_USER_SCRIPT_SANDBOXING="NO")
     if name == "RecorderCoreTests": values.update(TEST_HOST="", BUNDLE_LOADER="", LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@loader_path/../Frameworks", "$(BUILT_PRODUCTS_DIR)"])

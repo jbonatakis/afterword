@@ -17,6 +17,8 @@ cp "$binary_dir/CallRecorder" "$stage_app/Contents/MacOS/CallRecorder"
 cp Configuration/Info.plist "$stage_app/Contents/Info.plist"
 cp -R "$binary_dir/KeyboardShortcuts_KeyboardShortcuts.bundle" "$stage_app/Contents/Resources/"
 ./Scripts/embed-transcription.sh "$stage_app"
+cp "$binary_dir/CallRecorderMCP" "$stage_app/Contents/Helpers/CallRecorderMCP"
+codesign --force --sign "$SIGNING_IDENTITY" --identifier io.local.callrecorder.mcp --options runtime "$stage_app/Contents/Helpers/CallRecorderMCP"
 codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements Configuration/CallRecorder.entitlements "$stage_app"
 codesign --verify --deep --strict "$stage_app"
 python3 - "$stage_app" "$app" "$stage_root/previous.app" <<'PY'
