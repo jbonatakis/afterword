@@ -73,14 +73,14 @@ struct RecordingLibraryView: View {
                 HStack {
                     Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
                     Spacer()
-                    if library.refreshing { ProgressView().controlSize(.mini) }
+                    if library.refreshing || library.searching { ProgressView().controlSize(.mini) }
                 }.font(.caption).foregroundStyle(.secondary).padding(12)
             }
             .navigationTitle(library.filter.rawValue)
             .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 380)
         } detail: {
             if let recording = library.selectedRecording {
-                RecordingDetail(recording: recording, query: library.search, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
+                RecordingDetail(recording: recording, query: library.resultQuery, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
                                 editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) }, cancelEditing: cancelInlineEditing)
                     .id(recording.id)
             } else {
@@ -91,6 +91,12 @@ struct RecordingLibraryView: View {
         .searchable(text: $library.search, placement: .toolbar, prompt: "Search recordings and transcripts")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    Toggle("Search previous transcript versions", isOn: $library.searchHistory)
+                    Divider()
+                    Text("Words match together · \"quoted phrases\" · prefix*")
+                } label: { Label("Search options", systemImage: library.searchHistory ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
+                    .help(library.searchHistory ? "Searching all saved transcript versions" : "Searching the latest saved transcript")
                 Button { library.refresh() } label: { Label("Refresh library", systemImage: "arrow.clockwise") }
                     .help("Refresh recordings and transcripts")
                 Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
@@ -260,7 +266,7 @@ private struct RecordingRow: View {
             }.font(.caption).foregroundStyle(.secondary)
             if library.transcriptDrafts[recording.id] != nil {
                 Label("Editing transcript", systemImage: "pencil").font(.caption).foregroundStyle(.secondary)
-            } else if let passage = recording.matchingPassage(library.search) {
+            } else if let passage = library.searchHits[recording.id]?.snippet {
                 Text(passage).font(.caption).lineLimit(3).foregroundStyle(.secondary)
             } else {
                 Label(recording.hasTranscript ? "Transcript available" : recording.transcripts.isEmpty ? "Not transcribed" : "Transcript needs attention",
@@ -418,6 +424,7 @@ private struct RecordingDetail: View {
         .onAppear { playback.select(recording); selectMatchingVersion() }
         .sheet(isPresented: $showingAttendance) { AttendanceEditor(recording: recording, version: version, library: library) }
         .onChange(of: query) { _, _ in selectMatchingVersion() }
+        .onChange(of: library.searchHits[recording.id]?.versionID) { _, _ in selectMatchingVersion() }
         .onChange(of: recording.transcripts.map(\.id)) { _, _ in versionID = nil; selectMatchingVersion() }
         .onChange(of: draft?.version.id) { _, _ in selectMatchingVersion() }
     }
@@ -434,12 +441,8 @@ private struct RecordingDetail: View {
         if let preferred = library.preferredTranscriptID, recording.transcripts.contains(where: { $0.id == preferred }) {
             versionID = preferred; library.preferredTranscriptID = nil; return
         }
-        guard !query.isEmpty else { return }
-        if let matching = recording.transcripts.first(where: { version in version.document?.paragraphs.contains {
-            $0.text.localizedStandardContains(query) || recording.speakerLabel(for: $0, version: version).localizedStandardContains(query)
-        } == true }) {
-            versionID = matching.id
-        }
+        guard !query.isEmpty else { versionID = recording.latestTranscript?.id; return }
+        versionID = library.searchHits[recording.id]?.versionID ?? recording.latestTranscript?.id
     }
 }
 
@@ -460,7 +463,7 @@ struct ReadableTranscript: View {
     let editParticipants: () -> Void
     private var firstMatch: Int? {
         query.isEmpty ? nil : paragraphs.first {
-            $0.text.localizedStandardContains(query) || $0.speakerLabel(automaticParticipant: automaticParticipant, participantNames: participantNames).localizedStandardContains(query)
+            !LibrarySearchQuery(query).highlightRanges(in: $0.text).isEmpty || !LibrarySearchQuery(query).highlightRanges(in: $0.speakerLabel(automaticParticipant: automaticParticipant, participantNames: participantNames)).isEmpty
         }?.id
     }
     var body: some View {
@@ -518,7 +521,7 @@ struct ReadableTranscript: View {
                                 }
                             }.id(paragraph.id)
                         }
-                        Text("“You” follows the microphone track. Other speaker names use the call’s participant assignments.")
+                        Text("“Recorder” follows the microphone track. Other speaker names use the call’s participant assignments.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: 760).padding(28).frame(maxWidth: .infinity)
                 }
@@ -529,14 +532,8 @@ struct ReadableTranscript: View {
     }
     private func highlighted(_ text: String) -> AttributedString {
         let result = NSMutableAttributedString(string: text)
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return AttributedString(result) }
-        let string = text as NSString
-        var search = NSRange(location: 0, length: string.length)
-        while search.length > 0 {
-            let range = string.range(of: query, options: [.caseInsensitive, .diacriticInsensitive], range: search)
-            guard range.location != NSNotFound, range.length > 0 else { break }
+        for range in LibrarySearchQuery(query).highlightRanges(in: text) {
             result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.3), range: range)
-            search = NSRange(location: NSMaxRange(range), length: string.length - NSMaxRange(range))
         }
         return AttributedString(result)
     }

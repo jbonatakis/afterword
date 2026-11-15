@@ -79,10 +79,13 @@ import RecorderCore
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
         require(library.recordings.count == 1 && library.selectedRecording?.id == recording.id, "Library failed to load fixture")
         library.search = "clear transcript"
+        await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.count == 1, "Transcript phrase search failed")
         library.search = "missing phrase"
+        await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.isEmpty, "Search did not filter results")
         library.search = ""; library.filter = .untranscribed
+        await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.isEmpty, "Needs transcription filter was wrong")
         library.filter = .all
         print("PASS async library refresh, initial selection, transcript search, and filters")
@@ -105,8 +108,10 @@ import RecorderCore
         library.cancelRename()
         require(library.selectedRecording?.name == "Product planning · weekly review", "Cancelling rename changed the title")
         library.search = "Roadmap"
+        await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.count == 1, "Tag search failed")
         library.search = "Alex"
+        await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.count == 1, "Participant search failed")
         var corrected = document.paragraphs.map(\.text)
         corrected[0] = "Let's build a library that makes our conversations easy to find and review."
@@ -129,12 +134,27 @@ import RecorderCore
         library.selection = nil; library.search = "no matching call"; await library.refresh()?.value
         require(library.transcriptDrafts[recording.id]?.text == corrected, "Navigating or refreshing lost inline edits")
         library.search = ""; library.selection = recording.id
+        await library.updateSearch(debounce: false)?.value
         await library.saveTranscriptDraft(for: recording)
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
         require(library.selectedRecording?.transcripts.count == 2, "Editing did not create a version")
         require(library.transcriptDrafts[recording.id] == nil && !library.hasUnsavedEdits, "Successful save left a dirty draft")
         require(library.preferredTranscriptID != nil, "Edited version was not selected")
         require(library.selectedRecording?.transcripts.contains { $0.document?.editing != nil } == true, "Edited version lacks its origin")
+        library.search = "clear transcript"
+        await library.updateSearch(debounce: false)?.value
+        require(library.visibleRecordings.isEmpty, "Search surfaced superseded text by default")
+        library.searchHistory = true
+        await library.updateSearch(debounce: false)?.value
+        require(library.visibleRecordings.count == 1 && library.searchHits[recording.id]?.versionID == originalVersion.id, "History search did not select the matching older version")
+        library.searchHistory = false
+        library.search = "clear transcript"
+        library.search = "conversations"
+        await library.updateSearch(debounce: false)?.value
+        await pump(0.25)
+        require(library.visibleRecordings.count == 1 && library.resultQuery == "conversations", "Stale search replaced the current result")
+        library.search = ""
+
         let namedDocument = library.recordings[0].transcripts.first { $0.document?.editing != nil }!.document!
         require(namedDocument.automaticParticipant == "Alex" && namedDocument.paragraphs[1].participant == "Samuel", "Saved transcript lost the frozen automatic name or renamed assignment")
         require(namedDocument.readableText.contains("Samuel · 00:00:18"), "Readable transcript omitted renamed speakers")
@@ -244,6 +264,7 @@ import RecorderCore
         let quickRecording = library.recordings[0], quickVersion = quickRecording.transcripts[0]
         let quickOriginal = try Data(contentsOf: quickVersion.url)
         library.search = "Taylor"
+        await library.updateSearch(debounce: false)?.value
         playback.seek(12.5)
         await library.assignParticipant("Morgan", to: 1, recording: quickRecording, version: quickVersion)
         require(library.transcriptDrafts[updated.id] == nil && !library.hasUnsavedEdits, "Quick speaker assignment opened transcript editing")
@@ -274,6 +295,7 @@ import RecorderCore
         await library.assignParticipant("Taylor", to: 1, recording: library.recordings[0], version: quickSaved)
         require(library.participantAssignments[updated.id] == nil && library.recordings[0].transcripts.count == quickCount + 1, "Retry did not save and clear the speaker error")
         library.search = ""
+        await library.updateSearch(debounce: false)?.value
         print("PASS immediate speaker save without text editing, original/text/timing preservation, search/playback stability, no-op choice, and failed-save retry")
 
         var stressSegments: [TranscriptSegment] = []

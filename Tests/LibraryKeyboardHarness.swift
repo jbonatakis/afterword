@@ -119,7 +119,7 @@ import RecorderCore
         await key("r", code: 15, window: window); await pump()
         require(library.renamingID == library.selection, "R stopped working after Escape")
         await key("\u{1b}", code: 53, window: window); await pump()
-        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Repeated rename/cancel lost focus")
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Repeated rename/cancel lost focus (active: \(NSApp.isActive), key: \(NSApp.keyWindow === window), visible: \(window.isVisible), responder: \(String(describing: window.firstResponder)))")
         print("PASS R, typing protection, Return save, and repeated Escape cancellation with focus preserved")
 
         let originalRecording = library.selectedRecording!

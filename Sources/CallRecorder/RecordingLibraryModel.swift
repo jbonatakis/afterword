@@ -14,8 +14,13 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var refreshing = false
     @Published private(set) var issues: [String] = []
     @Published var selection: String? { didSet { defaults.set(selection, forKey: "librarySelection") } }
-    @Published var search = ""
-    @Published var filter: LibraryFilter = .all
+    @Published var search = "" { didSet { updateSearch() } }
+    @Published var searchHistory = false { didSet { updateSearch() } }
+    @Published private(set) var resultQuery = ""
+    @Published private(set) var searching = false
+    @Published private(set) var searchHits: [String: LibrarySearchHit] = [:]
+    @Published private(set) var visibleRecordings: [LibraryRecording] = []
+    @Published var filter: LibraryFilter = .all { didSet { applyFilter() } }
     @Published var sidebarVisible = true
     @Published private(set) var roots: [URL] = []
     @Published private(set) var managing = false
@@ -28,14 +33,16 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var renaming = false
     private weak var recorder: RecordingCoordinator?
     private var currentDestination: URL
-    private var scan: Task<LibraryScan, Never>?
+    private var scan: Task<LibraryRefresh, Never>?
+    private var searchIndex: LibrarySearchIndex?
+    private var indexRoots: [URL] = []
+    private var searchTask: Task<Void, Never>?
+    private var searchGeneration = UUID()
+    private var matchedRecordings: [LibraryRecording] = []
     private var generation = UUID()
     private var subscriptions: Set<AnyCancellable> = []
     private let defaults: UserDefaults
 
-    var visibleRecordings: [LibraryRecording] {
-        recordings.filter { filter.includes($0) && $0.matches(search) }
-    }
     var selectedRecording: LibraryRecording? { visibleRecordings.first { $0.id == selection } }
 
     init(recorder: RecordingCoordinator, defaults: UserDefaults = .standard) {
@@ -59,16 +66,56 @@ struct ParticipantAssignmentStatus {
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots
-        let task = Task.detached(priority: .utility) { RecordingLibraryScanner.scan(roots: roots) }
+        let existing = indexRoots == roots ? searchIndex : nil
+        let task = Task.detached(priority: .utility) { () -> LibraryRefresh in
+            do {
+                let index = try existing ?? LibrarySearchIndex(roots: roots)
+                return LibraryRefresh(index: index, recordings: try index.synchronize(), error: nil, issues: index.issues)
+            } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
+        }
         scan = task
         return Task { [weak self] in
             let result = await task.value
             guard let self, self.generation == id else { return }
-            self.recordings = result.recordings; self.issues = result.issues
             self.refreshing = false; self.scan = nil
-            if self.selection == nil { self.selection = self.visibleRecordings.first?.id }
-            else if !self.recordings.contains(where: { $0.id == self.selection }) { self.selection = self.visibleRecordings.first?.id }
+            if let error = result.error { self.issues = [error]; return }
+            self.searchIndex = result.index; self.indexRoots = roots
+            self.recordings = result.recordings; self.issues = result.issues
+            await self.updateSearch(debounce: false)?.value
         }
+    }
+    @discardableResult func updateSearch(debounce: Bool = true) -> Task<Void, Never>? {
+        searchTask?.cancel()
+        let token = UUID(); searchGeneration = token
+        if LibrarySearchQuery(search).isEmpty {
+            searchHits = [:]; resultQuery = ""; searching = false
+            matchedRecordings = recordings; applyFilter(); return nil
+        }
+        guard let index = searchIndex else { return nil }
+        searching = true
+        let query = search, history = searchHistory
+        let task = Task { [weak self] in
+            if debounce { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) { Result { try index.search(query, allVersions: history) } }.value
+            guard let self, !Task.isCancelled, self.searchGeneration == token else { return }
+            self.searching = false
+            switch result {
+            case .success(let hits):
+                let byID = Dictionary(uniqueKeysWithValues: self.recordings.map { ($0.id, $0) })
+                self.searchHits = Dictionary(uniqueKeysWithValues: hits.map { ($0.recordingID, $0) })
+                self.resultQuery = query
+                self.matchedRecordings = hits.compactMap { byID[$0.recordingID] }
+                self.applyFilter()
+            case .failure(let error): self.issues = [error.localizedDescription]
+            }
+        }
+        searchTask = task
+        return task
+    }
+    private func applyFilter() {
+        visibleRecordings = matchedRecordings.filter { filter.includes($0) }
+        if !visibleRecordings.contains(where: { $0.id == selection }) { selection = visibleRecordings.first?.id }
     }
     private func beginManagement() throws {
         guard !managing else { throw RecorderError.message("Another change is still saving. Try again in a moment.") }
@@ -236,6 +283,13 @@ struct ParticipantAssignmentStatus {
         defaults.set(roots.map(\.path), forKey: "libraryFolders")
         refresh()
     }
+}
+
+private struct LibraryRefresh: Sendable {
+    let index: LibrarySearchIndex?
+    let recordings: [LibraryRecording]
+    let error: String?
+    var issues: [String] = []
 }
 
 enum LibraryFilter: String, CaseIterable, Identifiable {
