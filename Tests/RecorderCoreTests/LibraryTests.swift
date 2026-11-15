@@ -104,9 +104,9 @@ final class LibraryTests: XCTestCase {
         XCTAssertNil(recording.latestTranscript?.document)
         XCTAssertNotEqual(recording.latestTranscript?.error, nil)
         XCTAssertTrue(recording.hasTranscript)
-        XCTAssertTrue(recording.matches("CAFE project"))
+        XCTAssertTrue(recording.matches("CAFE project", allVersions: true))
         XCTAssertFalse(recording.matches("Never publish"))
-        XCTAssertEqual(recording.matchingPassage("café"), "Keep the café project.")
+        XCTAssertEqual(recording.matchingPassage("café", allVersions: true), "Keep the café project.")
         XCTAssertEqual(try Data(contentsOf: original), originalData)
     }
     func testMissingFolderIsReportedAndRemovedRecordingDisappears() throws {

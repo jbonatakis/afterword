@@ -4,7 +4,7 @@ import AVFoundation
 public enum TranscriptSource: String, Codable, Sendable {
     case microphone, system, mixed
     public var label: String {
-        switch self { case .microphone: return "You"; case .system: return "Other participants"; case .mixed: return "Mixed audio" }
+        switch self { case .microphone: return "Recorder"; case .system: return "Other participants"; case .mixed: return "Mixed audio" }
     }
 }
 

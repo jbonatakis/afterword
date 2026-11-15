@@ -50,12 +50,12 @@ final class ParticipantTests: XCTestCase {
         return try call()
     }
 
-    func testSingleParticipantIsCapturedForNewTranscriptsAndNeverChangesYouOrMixedAudio() throws {
+    func testSingleParticipantIsCapturedForNewTranscriptsAndNeverChangesRecorderOrMixedAudio() throws {
         let recording = try prepare(["Alex"]), version = try XCTUnwrap(recording.latestTranscript)
         let transcript = try XCTUnwrap(version.document)
         XCTAssertEqual(transcript.automaticParticipant, "Alex"); XCTAssertEqual(transcript.version, 3)
         XCTAssertEqual(transcript.paragraphs[1].speakerLabel(automaticParticipant: recording.automaticParticipant(for: version)), "Alex")
-        XCTAssertEqual(transcript.paragraphs[0].speakerLabel(automaticParticipant: "Alex"), "You")
+        XCTAssertEqual(transcript.paragraphs[0].speakerLabel(automaticParticipant: "Alex"), "Recorder")
         XCTAssertTrue(transcript.plainText.contains("Alex: First"))
         XCTAssertTrue(transcript.readableText.contains("Alex · 00:00:02"))
         let mixed = TranscriptSegment(source: .mixed, start: 0, end: 1, text: "Two voices", timing: "segment")

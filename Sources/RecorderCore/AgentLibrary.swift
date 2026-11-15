@@ -5,6 +5,20 @@ struct AgentCall {
     let recording: LibraryRecording
     let id: String
     let revision: String
+    init(recording: LibraryRecording, id: String, revision: String) {
+        self.recording = recording; self.id = id; self.revision = revision
+    }
+    init(recording: LibraryRecording, id: String) throws {
+        var payload: [String: Any] = ["title": recording.name, "date": AgentJSON.date(recording.date),
+            "details": try AgentJSON.object(recording.details), "information_readable": recording.detailsError == nil]
+        payload["duration"] = recording.duration
+        payload["versions"] = try recording.transcripts.map { version -> [String: Any] in
+            var item: [String: Any] = ["id": version.runName, "date": AgentJSON.date(version.date), "readable": version.document != nil]
+            if let document = version.document { item["document"] = try AgentJSON.object(document) }
+            return item
+        }
+        self.init(recording: recording, id: id, revision: AgentJSON.hash(try AgentJSON.data(payload)))
+    }
     func versionID(_ version: LibraryTranscript) -> String { AgentJSON.hash(id + "/" + version.runName) }
     func versionInfo(_ version: LibraryTranscript) -> [String: Any] {
         ["version_id": versionID(version), "created_at": AgentJSON.date(version.date),
@@ -20,8 +34,7 @@ struct AgentCall {
         return value
     }
     func speaker(_ paragraph: TranscriptParagraph, version: LibraryTranscript) -> String {
-        // "You" would refer to the agent or reader outside the recorder UI.
-        paragraph.source == .microphone ? "Recorder" : recording.speakerLabel(for: paragraph, version: version)
+        recording.speakerLabel(for: paragraph, version: version)
     }
     func paragraph(_ paragraph: TranscriptParagraph, version: LibraryTranscript) -> [String: Any] {
         let speaker = speaker(paragraph, version: version)
@@ -33,6 +46,8 @@ struct AgentCall {
 
 /// Exposes only saved content. Never accepts a caller-supplied filesystem path.
 public final class AgentLibrary {
+    private var index: LibrarySearchIndex?
+    private var indexedFolders: [String]?
     public let directory: URL
     public init(directory: URL = AgentAccessStore.directory) { self.directory = directory }
 
@@ -45,25 +60,15 @@ public final class AgentLibrary {
             throw AgentFailure("An allowed folder was replaced by a symbolic link. Review Agent Access settings.")
         }
         let scope = AgentJSON.hash(try AgentJSON.data(configuration.folders.sorted()))
-        let scan = RecordingLibraryScanner.scan(roots: roots, confined: true)
-        guard scan.issues.isEmpty else {
-            throw AgentFailure("An allowed folder could not be scanned completely. Check folder availability and file permissions, then retry. No change checkpoint was advanced.")
+        if indexedFolders != configuration.folders {
+            index = try LibrarySearchIndex(roots: roots, confined: true,
+                directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"))
+            indexedFolders = configuration.folders
         }
-        var seen = Set<String>()
-        let calls = try scan.recordings.compactMap { recording -> AgentCall? in
-            let id = try AgentJSON.identity(recording.url)
-            guard seen.insert(id).inserted else { return nil }
-            // Fingerprint the saved data used for resolution, not just file timestamps.
-            var payload: [String: Any] = ["title": recording.name, "date": AgentJSON.date(recording.date),
-                "details": try AgentJSON.object(recording.details), "information_readable": recording.detailsError == nil]
-            payload["duration"] = recording.duration
-            payload["versions"] = try recording.transcripts.map { version -> [String: Any] in
-                var item: [String: Any] = ["id": version.runName, "date": AgentJSON.date(version.date), "readable": version.document != nil]
-                if let document = version.document { item["document"] = try AgentJSON.object(document) }
-                return item
-            }
-            return AgentCall(recording: recording, id: id, revision: AgentJSON.hash(try AgentJSON.data(payload)))
-        }
+        guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
+        do { try index.synchronize() }
+        catch { throw AgentFailure("An allowed folder could not be indexed completely. Check folder availability and file permissions, then retry. No change checkpoint was advanced.") }
+        let calls = index.calls
         let revisions = Dictionary(uniqueKeysWithValues: calls.map { ($0.id, $0.revision) })
         let libraryRevision = AgentJSON.hash(try AgentJSON.data(revisions))
         let args = AgentArguments(arguments)
@@ -71,8 +76,13 @@ public final class AgentLibrary {
         switch name {
         case "list_calls":
             try args.checkRevision(libraryRevision)
-            let filtered = try filtered(calls, args: args)
-            result = try page(filtered.map(\.summary), args: args)
+            var filtered = try filtered(calls, args: args)
+            if let query = args.string("query"), !LibrarySearchQuery(query).isEmpty {
+                let hits = try index.search(query, allVersions: args.bool("all_versions"))
+                let positions = Dictionary(uniqueKeysWithValues: hits.enumerated().map { ($0.element.recordingID, $0.offset) })
+                filtered = filtered.filter { positions[$0.recording.id] != nil }.sorted { positions[$0.recording.id]! < positions[$1.recording.id]! }
+            }
+            result = try page(filtered, args: args) { $0.summary }
             result["library_revision"] = libraryRevision
         case "get_call":
             let call = try find(calls, args: args); try args.checkRevision(call.revision)
@@ -94,29 +104,35 @@ public final class AgentLibrary {
             if let start = args.number("start_seconds") { paragraphs = paragraphs.filter { $0.end >= start } }
             if let end = args.number("end_seconds") { paragraphs = paragraphs.filter { $0.start <= end } }
             if let start = args.number("start_seconds"), let end = args.number("end_seconds"), start > end { throw AgentFailure("start_seconds must not exceed end_seconds.") }
-            result = try page(paragraphs.map { call.paragraph($0, version: version) }, args: args)
+            result = try page(paragraphs, args: args) { call.paragraph($0, version: version) }
             result["call"] = call.summary; result["version"] = call.versionInfo(version)
         case "search_transcripts":
             try args.checkRevision(libraryRevision)
-            let query = args.string("query")!.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !query.isEmpty else { throw AgentFailure("query must not be empty.") }
-            var matches: [[String: Any]] = [], unreadable = Set<String>()
-            for call in try filtered(calls, args: args, filterQuery: false) {
-                if call.recording.detailsError != nil { unreadable.insert(call.id); continue }
-                let versions = args.bool("all_versions") ? call.recording.transcripts : Array(call.recording.transcripts.prefix(1))
-                for version in versions {
-                    guard let document = version.document else { unreadable.insert(call.id); continue }
-                    let paragraphs = document.paragraphs
-                    for (index, paragraph) in paragraphs.enumerated() where paragraph.text.localizedStandardContains(query) || call.speaker(paragraph, version: version).localizedStandardContains(query) {
-                        let context = max(0, index - 1)...min(paragraphs.count - 1, index + 1)
-                        matches.append(["call": call.summary, "version": call.versionInfo(version),
-                            "match": call.paragraph(paragraph, version: version),
-                            "context": context.map { call.paragraph(paragraphs[$0], version: version) }])
-                    }
-                }
+            let query = args.string("query")!
+            guard LibrarySearchQuery(query).expression != nil else { throw AgentFailure("query must contain a word or phrase.") }
+            let filtered = try filtered(calls, args: args)
+            let byID = Dictionary(uniqueKeysWithValues: filtered.map { ($0.id, $0) })
+            let passages = try index.passages(query, allVersions: args.bool("all_versions"), allowed: Set(byID.keys))
+            let offset = args.integer("offset", default: 0), limit = args.integer("limit", default: 40)
+            guard offset <= passages.count else { throw AgentFailure("offset exceeds the number of results. Restart pagination.") }
+            let end = min(passages.count, offset + limit)
+            var paragraphsByVersion: [String: [TranscriptParagraph]] = [:]
+            let items = passages[offset..<end].compactMap { passage -> [String: Any]? in
+                guard let call = byID[passage.callID], let version = call.recording.transcripts.first(where: { $0.id == passage.versionID }), let document = version.document else { return nil }
+                let paragraphs: [TranscriptParagraph]
+                if let cached = paragraphsByVersion[version.id] { paragraphs = cached }
+                else { paragraphs = document.paragraphs; paragraphsByVersion[version.id] = paragraphs }
+                return ["call": call.summary, "version": call.versionInfo(version),
+                    "match": call.paragraph(paragraphs[passage.matchingParagraphs[0]], version: version),
+                    "matches": passage.matchingParagraphs.map { call.paragraph(paragraphs[$0], version: version) },
+                    "context": passage.context.map { call.paragraph(paragraphs[$0], version: version) }]
             }
-            result = try page(matches, args: args); result["library_revision"] = libraryRevision
-            result["unreadable_call_ids"] = unreadable.sorted()
+            result = ["items": items, "total": passages.count, "library_revision": libraryRevision]
+            if end < passages.count { result["next_offset"] = end }
+            result["unreadable_call_ids"] = filtered.filter { call in
+                let versions = args.bool("all_versions") ? call.recording.transcripts : Array(call.recording.transcripts.prefix(1))
+                return call.recording.detailsError != nil || versions.contains { $0.document == nil }
+            }.map(\.id).sorted()
         case "get_changes":
             result = try AgentCheckpoints(directory: directory).changes(current: revisions, scope: scope,
                 cursor: args.string("cursor"), pageToken: args.string("page_token"), limit: args.integer("limit", default: 40))
@@ -135,7 +151,7 @@ public final class AgentLibrary {
         guard let call = calls.first(where: { $0.id == args.string("call_id") }) else { throw AgentFailure("Call not found in the allowed folders.") }
         return call
     }
-    private func filtered(_ calls: [AgentCall], args: AgentArguments, filterQuery: Bool = true) throws -> [AgentCall] {
+    private func filtered(_ calls: [AgentCall], args: AgentArguments) throws -> [AgentCall] {
         let from = try args.date("from"), to = try args.date("to")
         if let from, let to, from > to { throw AgentFailure("from must not be after to.") }
         return calls.filter { call in
@@ -144,15 +160,14 @@ public final class AgentLibrary {
             if let to, value.date >= to { return false }
             if let person = args.string("participant"), !value.details.participants.contains(where: { $0.localizedStandardContains(person) }) { return false }
             if let tag = args.string("tag"), !value.details.tags.contains(where: { $0.compare(tag, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) { return false }
-            if filterQuery, let query = args.string("query"), !value.matches(query) { return false }
             return true
         }
     }
-    private func page(_ items: [[String: Any]], args: AgentArguments) throws -> [String: Any] {
+    private func page<T>(_ items: [T], args: AgentArguments, transform: (T) -> [String: Any]) throws -> [String: Any] {
         let offset = args.integer("offset", default: 0), limit = args.integer("limit", default: 40)
         guard offset <= items.count else { throw AgentFailure("offset exceeds the number of results. Restart pagination.") }
         let end = min(items.count, offset + limit)
-        var result: [String: Any] = ["items": Array(items[offset..<end]), "total": items.count]
+        var result: [String: Any] = ["items": items[offset..<end].map(transform), "total": items.count]
         if end < items.count { result["next_offset"] = end }
         return result
     }

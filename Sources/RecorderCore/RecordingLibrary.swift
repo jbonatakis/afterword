@@ -2,7 +2,7 @@ import Foundation
 import AVFoundation
 
 /// A reading layout over the original segments. Timings and wording stay intact.
-public struct TranscriptParagraph: Identifiable, Sendable {
+public struct TranscriptParagraph: Identifiable, Codable, Sendable {
     public let id: Int
     public let segments: [TranscriptSegment]
     public var source: TranscriptSource { segments[0].source }
@@ -55,7 +55,7 @@ public extension Transcript {
     }
 }
 
-public struct LibraryAudioTrack: Identifiable, Sendable {
+public struct LibraryAudioTrack: Identifiable, Codable, Sendable {
     public let source: TranscriptSource
     public let url: URL
     public var id: String { source.rawValue }
@@ -64,7 +64,7 @@ public struct LibraryAudioTrack: Identifiable, Sendable {
     }
 }
 
-public struct LibraryTranscript: Identifiable, Sendable {
+public struct LibraryTranscript: Identifiable, Codable, Sendable {
     public let url: URL
     public let document: Transcript?
     public let error: String?
@@ -74,7 +74,7 @@ public struct LibraryTranscript: Identifiable, Sendable {
     public var runName: String { url.deletingLastPathComponent().lastPathComponent }
 }
 
-public struct LibraryRecording: Identifiable, Sendable {
+public struct LibraryRecording: Identifiable, Codable, Sendable {
     public let url: URL
     public let sourceName: String
     public let isDirectory: Bool
@@ -98,24 +98,26 @@ public struct LibraryRecording: Identifiable, Sendable {
     public func readableText(for version: LibraryTranscript) -> String? {
         version.document?.readableText(recordingName: name, automaticParticipant: automaticParticipant(for: version) ?? "", participantNames: details.participantNames(for: version))
     }
-    public func matches(_ query: String) -> Bool {
-        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    public func matches(_ query: String, allVersions: Bool = false) -> Bool {
+        let query = LibrarySearchQuery(query)
         let information = ([name, sourceName, details.description] + details.participants + details.tags).joined(separator: "\n")
-        return query.isEmpty || information.localizedStandardContains(query) || transcripts.contains {
-            version in version.document?.paragraphs.contains {
-                $0.text.localizedStandardContains(query) || speakerLabel(for: $0, version: version).localizedStandardContains(query)
-            } == true
+        let versions = allVersions ? transcripts : Array(transcripts.prefix(1))
+        return query.isEmpty || query.matches(information) || versions.contains { version in
+            let paragraphs = version.document?.paragraphs ?? []
+            return query.matches(information + "\n" + paragraphs.map(\.text).joined(separator: " ") + "\n" + paragraphs.map { speakerLabel(for: $0, version: version) }.joined(separator: " "))
         }
     }
-    public func matchingPassage(_ query: String) -> String? {
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        for version in transcripts {
+    public func matchingPassage(_ query: String, allVersions: Bool = false) -> String? {
+        let query = LibrarySearchQuery(query)
+        guard !query.isEmpty else { return nil }
+        for version in allVersions ? transcripts : Array(transcripts.prefix(1)) {
             if let paragraph = version.document?.paragraphs.first(where: {
-                $0.text.localizedStandardContains(query) || speakerLabel(for: $0, version: version).localizedStandardContains(query)
+                !query.highlightRanges(in: $0.text).isEmpty || !query.highlightRanges(in: speakerLabel(for: $0, version: version)).isEmpty
             }) { return paragraph.text }
         }
         return nil
     }
+
 }
 
 public struct LibraryScan: Sendable {
@@ -127,59 +129,73 @@ public struct LibraryScan: Sendable {
 /// are excluded; opening the library never writes to recordings or transcripts.
 public enum RecordingLibraryScanner {
     public static func scan(roots: [URL], confined: Bool = false) -> LibraryScan {
-        var result = LibraryScan(), visited = Set<String>()
+        let catalog = discover(roots: roots, confined: confined)
+        var result = LibraryScan(issues: catalog.issues)
+        for candidate in catalog.candidates {
+            if Task.isCancelled { break }
+            do { result.recordings.append(try load(candidate, confined: confined)) }
+            catch { result.issues.append("\(candidate.url.lastPathComponent): \(error.localizedDescription)") }
+        }
+        result.recordings.sort { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+        return result
+    }
+
+    // Discovery reads directory entries and stat information, never transcript bodies or audio.
+    static func discover(roots: [URL], confined: Bool) -> (candidates: [LibraryCandidate], issues: [String]) {
+        var candidates: [LibraryCandidate] = [], issues: [String] = [], visited = Set<String>()
         let fm = FileManager.default
         for root in roots {
-            if Task.isCancelled { break }
             do {
-                let children = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey], options: [.skipsHiddenFiles])
-                let candidates = audioTracks(in: root).isEmpty ? children : [root]
-                // Legacy files share their parent's Transcripts directory. Match
-                // the stored recording name so transcripts cannot cross calls.
-                let shared = try transcripts(in: root, confined: confined)
-                for candidate in candidates {
-                    if Task.isCancelled { break }
+                let children = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey], options: [.skipsHiddenFiles])
+                let entries = audioTracks(in: root).isEmpty ? children : [root]
+                for candidate in entries {
                     let url = candidate.resolvingSymlinksInPath().standardizedFileURL
                     if confined && (url != candidate.standardizedFileURL || !CallFileOperations.contains(root, url)) { continue }
                     guard visited.insert(url.path).inserted else { continue }
-                    let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .creationDateKey])
-                    let directory = values?.isDirectory == true
+                    let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+                    let directory = values.isDirectory == true
                     if confined && directory && !fm.isReadableFile(atPath: url.path) {
                         throw RecorderError.message("A library directory is unreadable.")
                     }
                     let tracks: [LibraryAudioTrack]
                     if directory { tracks = audioTracks(in: url) }
-                    else if values?.isRegularFile == true,
+                    else if values.isRegularFile == true,
                             ["m4a", "wav", "caf", "mp3", "aiff"].contains(url.pathExtension.lowercased()),
                             !RecordingTrack.allCases.contains(where: { $0.filename == url.lastPathComponent }) {
                         tracks = [.init(source: .mixed, url: url)]
                     } else { continue }
                     guard !tracks.isEmpty else { continue }
-                    let name = directory ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
-                    let versions = directory ? try transcripts(in: url, confined: confined) : shared.filter {
-                        $0.document?.recording == name && $0.document?.sources[TranscriptSource.mixed.rawValue] == url.lastPathComponent
+                    let transcriptDirectory = directory ? url : url.deletingLastPathComponent()
+                    let files = try transcriptFiles(in: transcriptDirectory, confined: confined)
+                    let details = CallDetailsStore.url(for: url, isDirectory: directory)
+                    if confined, let size = try? details.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 1_048_576 {
+                        throw RecorderError.message("Call information exceeds the agent access size limit.")
                     }
-                    var details = CallDetails(), detailsError: String?
-                    if confined {
-                        let file = CallDetailsStore.url(for: url, isDirectory: directory)
-                        if let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 1_048_576 {
-                            throw RecorderError.message("Call information exceeds the agent access size limit.")
-                        }
-                    }
-                    do { details = try CallDetailsStore.load(for: url, isDirectory: directory) }
-                    catch { detailsError = error.localizedDescription }
-                    let reader = tracks.lazy.compactMap { try? AVAudioFile(forReading: $0.url) }.first
-                    let duration = reader.map { Double($0.length) / $0.processingFormat.sampleRate }
-                    result.recordings.append(.init(url: url, sourceName: name, isDirectory: directory, details: details, detailsError: detailsError,
-                        date: recordingDate(name) ?? values?.creationDate ?? .distantPast,
-                        duration: duration?.isFinite == true ? duration : nil, tracks: tracks, transcripts: versions))
+                    let nodes = [url, details, transcriptDirectory.appendingPathComponent("Transcripts")] + tracks.map(\.url) + files.flatMap { [$0.deletingLastPathComponent(), $0] }
+                    candidates.append(try LibraryCandidate(url: url, isDirectory: directory, tracks: tracks, transcriptFiles: files, nodes: nodes))
                 }
-            } catch {
-                result.issues.append("\(root.lastPathComponent): \(error.localizedDescription)")
-            }
+            } catch { issues.append("\(root.lastPathComponent): \(error.localizedDescription)") }
         }
-        result.recordings.sort { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
-        return result
+        return (candidates, issues)
+    }
+
+    static func load(_ candidate: LibraryCandidate, confined: Bool) throws -> LibraryRecording {
+        let url = candidate.url, directory = candidate.isDirectory
+        let name = directory ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
+        let versions = readTranscripts(candidate.transcriptFiles).filter {
+            directory || ($0.document?.recording == name && $0.document?.sources[TranscriptSource.mixed.rawValue] == url.lastPathComponent)
+        }
+        var details = CallDetails(), detailsError: String?
+        do { details = try CallDetailsStore.load(for: url, isDirectory: directory) }
+        catch { detailsError = error.localizedDescription }
+        let reader = candidate.tracks.lazy.compactMap { try? AVAudioFile(forReading: $0.url) }.first
+        let duration = reader.map { Double($0.length) / $0.processingFormat.sampleRate }
+        guard try candidate.currentFingerprint() == candidate.fingerprint else {
+            throw RecorderError.message("A recording changed while it was being read. Refresh to retry.")
+        }
+        return .init(url: url, sourceName: name, isDirectory: directory, details: details, detailsError: detailsError,
+            date: recordingDate(name) ?? (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast,
+            duration: duration?.isFinite == true ? duration : nil, tracks: candidate.tracks, transcripts: versions)
     }
 
     private static func audioTracks(in directory: URL) -> [LibraryAudioTrack] {
@@ -194,6 +210,10 @@ public enum RecordingLibraryScanner {
     }
 
     static func transcripts(in directory: URL, confined: Bool) throws -> [LibraryTranscript] {
+        readTranscripts(try transcriptFiles(in: directory, confined: confined))
+    }
+
+    private static func transcriptFiles(in directory: URL, confined: Bool) throws -> [URL] {
         let root = directory.appendingPathComponent("Transcripts", isDirectory: true)
         if confined && root.resolvingSymlinksInPath().standardizedFileURL != root.standardizedFileURL { return [] }
         let runs: [URL]
@@ -213,10 +233,15 @@ public enum RecordingLibraryScanner {
                 }
             }
         }
-        return runs.compactMap { run -> LibraryTranscript? in
+        return runs.compactMap { run in
             if confined && run.resolvingSymlinksInPath().standardizedFileURL != run.standardizedFileURL { return nil }
             let url = run.appendingPathComponent("Transcript.json")
-            guard PrivateFiles.isRegular(url) else { return nil }
+            return PrivateFiles.isRegular(url) ? url : nil
+        }.sorted { $0.path < $1.path }
+    }
+
+    private static func readTranscripts(_ files: [URL]) -> [LibraryTranscript] {
+        files.map { url in
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             do {
                 let document = try Transcript.read(from: url)

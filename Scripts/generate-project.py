@@ -61,7 +61,7 @@ for name in target_names:
     phases.append(phase(name + ":frameworks", "PBXFrameworksBuildPhase", links))
     values = {"PRODUCT_NAME": name, "PRODUCT_BUNDLE_IDENTIFIER": "io.local.callrecorder." + name.lower(), "SKIP_INSTALL": "YES", "GENERATE_INFOPLIST_FILE": "YES", "SWIFT_VERSION": "5.0"}
     if name == "RecorderCore":
-        values.update(DEFINES_MODULE="YES", MACH_O_TYPE="mh_dylib", DYLIB_INSTALL_NAME_BASE="@rpath", INSTALL_PATH="$(LOCAL_LIBRARY_DIR)/Frameworks")
+        values.update(OTHER_LDFLAGS=["$(inherited)", "-lsqlite3"], DEFINES_MODULE="YES", MACH_O_TYPE="mh_dylib", DYLIB_INSTALL_NAME_BASE="@rpath", INSTALL_PATH="$(LOCAL_LIBRARY_DIR)/Frameworks")
     if name == "CallRecorderMCP":
         values.update(PRODUCT_BUNDLE_IDENTIFIER="io.local.callrecorder.mcp", GENERATE_INFOPLIST_FILE="NO", ENABLE_HARDENED_RUNTIME="YES", OTHER_CODE_SIGN_FLAGS="--identifier io.local.callrecorder.mcp")
     if name == "CallRecorder":

@@ -67,7 +67,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual(items(transcript).map { $0["speaker"] as? String }, ["Recorder", "Corinne", "Recorder"])
         XCTAssertTrue(try XCTUnwrap(items(transcript)[1]["reference"] as? String).contains("00:00:02"))
         XCTAssertEqual(try items(service.call("search_transcripts", arguments: ["query": "CAFE", "participant": "cor", "tag": "roadmap"])).count, 1)
-        XCTAssertEqual(try items(service.call("search_transcripts", arguments: ["query": "Recorder"])).count, 2)
+        XCTAssertEqual(try items(service.call("search_transcripts", arguments: ["query": "Recorder"])).count, 1)
         let details = try service.call("get_call", arguments: ["call_id": callID])
         let versionID = try XCTUnwrap((details["versions"] as? [[String: Any]])?.first?["version_id"] as? String)
         try fixture(text: "A revised plan.", run: "second", created: "2026-11-14T15:00:00Z")
