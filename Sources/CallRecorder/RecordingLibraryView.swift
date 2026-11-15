@@ -94,7 +94,7 @@ struct RecordingLibraryView: View {
                 Menu {
                     Toggle("Search previous transcript versions", isOn: $library.searchHistory)
                     Divider()
-                    Text("Words match together · \"quoted phrases\" · prefix*")
+                    Text("Matches word beginnings · \"exact words or phrases\"")
                 } label: { Label("Search options", systemImage: library.searchHistory ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
                     .help(library.searchHistory ? "Searching all saved transcript versions" : "Searching the latest saved transcript")
                 Button { library.refresh() } label: { Label("Refresh library", systemImage: "arrow.clockwise") }

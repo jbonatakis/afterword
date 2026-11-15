@@ -1,7 +1,8 @@
 import Foundation
 
 /// A deliberately small query language shared by the library and MCP. Words
-/// are ANDed, quotes preserve a phrase, and a trailing * requests a prefix.
+/// are ANDed and match prefixes as you type; quotes preserve exact words/phrases.
+/// An explicit trailing * remains supported, but is no longer required.
 /// User input is never passed through as executable FTS syntax.
 public struct LibrarySearchQuery: Sendable {
     struct Term: Sendable { let words: [String]; let prefix: Bool }
@@ -20,7 +21,7 @@ public struct LibrarySearchQuery: Sendable {
             }
             let chunk = string.substring(with: match.range(at: 2))
             let words = Self.tokens(chunk).map(\.word)
-            return words.enumerated().map { Term(words: [$0.element], prefix: chunk.hasSuffix("*") && $0.offset == words.count - 1) }
+            return words.map { Term(words: [$0], prefix: true) }
         }
     }
     private static func tokens(_ text: String) -> [(word: String, range: NSRange)] {

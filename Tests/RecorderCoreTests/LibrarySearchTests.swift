@@ -51,12 +51,13 @@ final class LibrarySearchTests: XCTestCase {
         XCTAssertFalse(LibrarySearchQuery("\"cafe project\"").matches("Café is a project"))
         XCTAssertTrue(LibrarySearchQuery("\"cafe project\"").matches("The café project"))
         XCTAssertTrue(LibrarySearchQuery("proj*").matches("project"))
-        XCTAssertFalse(LibrarySearchQuery("proj").matches("project"))
+        XCTAssertTrue(LibrarySearchQuery("proj").matches("project"))
+        XCTAssertFalse(LibrarySearchQuery("\"proj\"").matches("project"))
         XCTAssertTrue(LibrarySearchQuery("\"unclosed phrase").matches("unclosed phrase"))
         XCTAssertFalse(LibrarySearchQuery("OR").matches("project"))
         XCTAssertNil(LibrarySearchQuery("***").expression)
         let text = "☕️ CAFE\u{301} and projects"
-        let ranges = LibrarySearchQuery("cafe proj*").highlightRanges(in: text)
+        let ranges = LibrarySearchQuery("caf proj").highlightRanges(in: text)
         XCTAssertEqual(ranges.map { (text as NSString).substring(with: $0) }, ["CAFE\u{301}", "projects"])
     }
     func testSharedSearchDefaultsToLatestAndFindsPhrasesAcrossParagraphs() throws {
@@ -66,10 +67,11 @@ final class LibrarySearchTests: XCTestCase {
         let phrase = try XCTUnwrap(index.search("\"cafe project\"").first)
         XCTAssertEqual(phrase.paragraphIDs, [0, 1])
         XCTAssertEqual(try index.search("proj*").count, 1)
-        XCTAssertTrue(try index.search("proj").isEmpty)
+        XCTAssertEqual(try index.search("proj").count, 1)
+        XCTAssertTrue(try index.search("\"proj\"").isEmpty)
         XCTAssertTrue(try index.search("title:unknown OR *").isEmpty)
         let service = try service()
-        for query in ["  PROJECT cafe  ", "\"cafe project\"", "proj*", "Recorder"] {
+        for query in ["  PROJECT cafe  ", "\"cafe project\"", "proj*", "proj", "rec"] {
             XCTAssertEqual(try service.call("list_calls", arguments: ["query": query])["total"] as? Int, 1)
             XCTAssertEqual(try service.call("search_transcripts", arguments: ["query": query])["total"] as? Int, 1)
         }
@@ -79,6 +81,30 @@ final class LibrarySearchTests: XCTestCase {
         XCTAssertEqual(try index.search("cafe", allVersions: true).count, 1)
         XCTAssertEqual(try service.call("list_calls", arguments: ["query": "cafe"])["total"] as? Int, 0)
         XCTAssertEqual(try service.call("list_calls", arguments: ["query": "cafe", "all_versions": true])["total"] as? Int, 1)
+    }
+    func testTypingPrefixesFindsNamesAndTextWithMatchingPassagesInLibraryAndMCP() throws {
+        let named = try fixture()
+        try CallDetailsStore.writeInitial(.init(participants: ["Bellamy"]), to: named.appendingPathComponent("CallDetails.json"))
+        let spoken = try fixture("Call-2026-11-14_10-00-00", text: ["Bellamy approved the plan."])
+        let index = try index(); try index.synchronize()
+        let service = try service()
+        for query in ["bellam", "bellamy", "  BELLAM  ", "bellam*"] {
+            let hits = try index.search(query)
+            XCTAssertEqual(Set(hits.map(\.recordingID)), Set([named.path, spoken.path]))
+            XCTAssertEqual(hits.first { $0.recordingID == named.path }?.paragraphIDs, [1])
+            XCTAssertTrue(hits.first { $0.recordingID == spoken.path }?.snippet?.contains("Bellamy") == true)
+            XCTAssertEqual(try service.call("list_calls", arguments: ["query": query])["total"] as? Int, 2)
+            XCTAssertEqual(try service.call("search_transcripts", arguments: ["query": query])["total"] as? Int, 2)
+        }
+        XCTAssertEqual(try index.search("bellam proj").map(\.recordingID), [named.path])
+        XCTAssertEqual(try service.call("search_transcripts", arguments: ["query": "bellam proj"])["total"] as? Int, 1)
+        for query in ["\"bellam\"", "ellam"] {
+            XCTAssertTrue(try index.search(query).isEmpty)
+            XCTAssertEqual(try service.call("search_transcripts", arguments: ["query": query])["total"] as? Int, 0)
+        }
+        let text = "Bellamy approved the plan."
+        XCTAssertEqual(LibrarySearchQuery("bellam").highlightRanges(in: text).map { (text as NSString).substring(with: $0) }, ["Bellamy"])
+        try index.synchronize(); XCTAssertEqual(index.lastLoadedCount, 0)
     }
     func testIncrementalRefreshRestartRenameAndDeletionWithoutSourceWrites() throws {
         let call = try fixture()
