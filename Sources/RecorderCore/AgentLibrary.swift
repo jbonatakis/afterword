@@ -12,6 +12,8 @@ struct AgentCall {
         var payload: [String: Any] = ["title": recording.name, "date": AgentJSON.date(recording.date),
             "details": try AgentJSON.object(recording.details), "information_readable": recording.detailsError == nil]
         payload["duration"] = recording.duration
+        if let summary = recording.summary { payload["summary"] = try AgentJSON.object(summary) }
+        payload["summary_readable"] = recording.summaryError == nil
         payload["versions"] = try recording.transcripts.map { version -> [String: Any] in
             var item: [String: Any] = ["id": version.runName, "date": AgentJSON.date(version.date), "readable": version.document != nil]
             if let document = version.document { item["document"] = try AgentJSON.object(document) }
@@ -28,6 +30,7 @@ struct AgentCall {
         var value: [String: Any] = ["call_id": id, "revision": revision, "title": recording.name,
             "recorded_at": AgentJSON.date(recording.date), "participants": recording.details.participants,
             "tags": recording.details.tags, "has_transcript": recording.hasTranscript,
+            "has_summary": recording.summary?.current != nil, "summary_readable": recording.summaryError == nil,
             "information_readable": recording.detailsError == nil]
         value["duration_seconds"] = recording.duration
         value["latest_version"] = recording.latestTranscript.map(versionInfo)
@@ -35,6 +38,13 @@ struct AgentCall {
     }
     func speaker(_ paragraph: TranscriptParagraph, version: LibraryTranscript) -> String {
         recording.speakerLabel(for: paragraph, version: version)
+    }
+    func summaryInfo(_ version: CallSummaryVersion, includeText: Bool = false) -> [String: Any] {
+        var result: [String: Any] = ["revision_id": version.id, "created_at": AgentJSON.date(version.createdAt),
+                                   "author": version.author, "source_changed": version.sourceChanged(in: recording)]
+        if let run = version.sourceTranscript { result["source_version_id"] = AgentJSON.hash(id + "/" + run) }
+        if includeText { result["markdown"] = version.markdown }
+        return result
     }
     func paragraph(_ paragraph: TranscriptParagraph, version: LibraryTranscript) -> [String: Any] {
         let speaker = speaker(paragraph, version: version)
@@ -82,16 +92,25 @@ public final class AgentLibrary {
         case "list_calls":
             var searchRevision = libraryRevision
             var searchStatus = index.semanticStatus(allVersions: args.bool("all_versions"))
+            var matchingHits: [String: LibrarySearchHit] = [:]
             var filtered = try filtered(calls, args: args)
             if args.string("query") != nil || args.string("speaker") != nil {
                 let search = try index.hybridSearch(args.string("query") ?? "", allVersions: args.bool("all_versions"), speaker: args.string("speaker"), keywordOnly: args.string("mode") == "keyword", recordingIDs: Set(filtered.map { $0.recording.id }))
                 let hits = search.hits; searchStatus = search.status
+                matchingHits = Dictionary(uniqueKeysWithValues: hits.map { ($0.recordingID, $0) })
                 searchRevision = AgentJSON.hash(libraryRevision + search.revision)
                 let positions = Dictionary(uniqueKeysWithValues: hits.enumerated().map { ($0.element.recordingID, $0.offset) })
                 filtered = filtered.filter { positions[$0.recording.id] != nil }.sorted { positions[$0.recording.id]! < positions[$1.recording.id]! }
             }
             try args.checkRevision(searchRevision)
-            result = try page(filtered, args: args) { $0.summary }
+            result = try page(filtered, args: args) { call in
+                var item = call.summary
+                if let hit = matchingHits[call.recording.id], let snippet = hit.snippet {
+                    item["match_source"] = hit.summaryMatch ? "summary" : "transcript"
+                    item["match_text"] = snippet
+                }
+                return item
+            }
             result["library_revision"] = searchRevision
             result["search_status"] = try AgentJSON.object(searchStatus)
         case "get_call":
@@ -99,6 +118,14 @@ public final class AgentLibrary {
             result = call.summary
             result["description"] = call.recording.details.description
             result["versions"] = call.recording.transcripts.map(call.versionInfo)
+            let summaryVersions = call.recording.summary?.versions ?? []
+            let selectedSummary = args.string("summary_revision_id").flatMap { id in summaryVersions.first { $0.id == id } } ?? (args.string("summary_revision_id") == nil ? summaryVersions.first : nil)
+            if args.string("summary_revision_id") != nil && selectedSummary == nil { throw AgentFailure("Summary version not found. Read get_call for available summary_versions.") }
+            result["summary"] = selectedSummary.map { call.summaryInfo($0, includeText: true) } ?? NSNull() as Any
+            let summaryPage = try page(summaryVersions, args: AgentArguments(["offset": args.integer("summary_offset", default: 0), "limit": args.integer("summary_limit", default: 40)])) { call.summaryInfo($0) }
+            result["summary_versions"] = summaryPage["items"]
+            result["summary_version_count"] = summaryPage["total"]
+            result["next_summary_offset"] = summaryPage["next_offset"]
             result["attendees"] = call.recording.details.callAttendees.map {
                 ["name": $0.name, "kind": $0.kind.rawValue, "attendance": $0.attendance.rawValue]
             }
@@ -145,13 +172,31 @@ public final class AgentLibrary {
                 let versions = args.bool("all_versions") ? call.recording.transcripts : Array(call.recording.transcripts.prefix(1))
                 return call.recording.detailsError != nil || versions.contains { $0.document == nil }
             }.map(\.id).sorted()
+        case "save_call_summary":
+            guard configuration.allowSummaryWrites else { throw AgentFailure("Summary writes are disabled. Enable Allow agents to save summaries in Afterword Settings → Agent Access.") }
+            let call = try find(calls, args: args); try args.checkRevision(call.revision)
+            guard call.recording.detailsError == nil,
+                  let version = call.recording.transcripts.first(where: { call.versionID($0) == args.string("source_version_id") }), version.document != nil else {
+                throw AgentFailure("A readable source transcript is required. Read get_transcript before saving a summary.")
+            }
+            let saved = try CallSummaryStore.save(args.string("markdown")!, for: call.recording, source: version, author: "agent") {
+                guard try AgentAccessStore.load(directory: self.directory) == configuration,
+                      roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }),
+                      roots.contains(where: { CallFileOperations.contains($0, call.recording.url) }),
+                      try AgentJSON.identity(call.recording.url) == call.id else {
+                    throw AgentFailure("Access or the call changed before saving. Read the call again before retrying.")
+                }
+            }
+            var updated = call.recording; updated.summary = saved
+            let updatedCall = try AgentCall(recording: updated, id: call.id)
+            result = ["call": updatedCall.summary, "summary": updatedCall.summaryInfo(saved.current!, includeText: true)]
         case "get_changes":
             result = try AgentCheckpoints(directory: directory).changes(current: revisions, scope: scope,
                 cursor: args.string("cursor"), pageToken: args.string("page_token"), limit: args.integer("limit", default: 40))
         default: throw AgentFailure("Unknown tool.")
         }
         // A running client loses access on its next request without needing to restart.
-        guard try AgentAccessStore.load(directory: directory) == configuration else {
+        guard try name == "save_call_summary" || AgentAccessStore.load(directory: directory) == configuration else {
             index.stopSemanticSearch()
             throw AgentFailure("Agent access settings changed during this request. Retry.")
         }

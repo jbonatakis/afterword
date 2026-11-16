@@ -1,5 +1,13 @@
 # Implementation decisions
 
+## Editable call summaries (version 0.15)
+
+`CallSummaryStore` owns one JSON document per call containing current Markdown and immutable previous versions. Native edits and `save_call_summary` use the same file lock, re-read the saved call, and reject a mismatched content revision. Publication uses a private temporary file and directory-relative atomic rename; symlink paths are rejected and MCP access is rechecked before publication. The app keeps failed drafts available instead of replacing them during refresh. Summary files and locks are included in whole-call Trash operations, including legacy single-file recordings.
+
+Each summary records its source transcript run and a fingerprint of the transcript plus resolved speaker labels. The reader flags a changed/latest-missing source. Native prose edits preserve that provenance; the MCP tool requires an explicit source transcript version. Summaries are rendered with native SwiftUI text for common Markdown blocks, without loading HTML or remote resources. The Summary and Transcript tabs share playback and call information; saved history remains readable and copyable.
+
+The FTS5 cache uses a new v2 filename and a separate summary column. Current summaries contribute to library and `list_calls` keyword results, with explicit summary evidence; transcript-only and speaker-filtered searches exclude that field. Historical summaries are not searched, and semantic chunks remain transcript passages. Saved summary changes participate in call revisions and durable change checkpoints. MCP tools remain client-agnostic; summary writes require a separate default-off capability in the existing allowed-folder configuration.
+
 ## Native recording library (version 0.6)
 
 A retained `NSWindowController` hosts the three-column SwiftUI `NavigationSplitView`, with SwiftUI providing its toolbar and search field. The app is a regular Dock application; Settings remains a SwiftUI scene. The app delegate owns the recorder, library model, playback model, main window controller, and native status item independently of window visibility. Closing the window pauses review playback without touching capture. Dock reopen, the File menu, and the popover's Library button present the same window, including deminiaturizing and activating it. Window geometry is autosaved explicitly; scene restoration is not responsible for main-window lifetime. App termination keeps the existing stop/save confirmation.

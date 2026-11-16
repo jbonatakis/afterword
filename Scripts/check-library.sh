@@ -18,7 +18,7 @@ PLIST
 xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     -module-cache-path "$PWD/.build/module-cache" -I "$binary_dir/Modules" \
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation -lsqlite3 -framework Carbon -framework IOKit -framework EventKit \
-    "${1:-Tests/LibraryHarness.swift}" Sources/Afterword/EmbeddingSettings.swift Sources/Afterword/RecordingLibraryModel.swift Sources/Afterword/RecordingLibraryView.swift Sources/Afterword/RecordingLibraryWindow.swift Sources/Afterword/LibraryKeyboard.swift Sources/Afterword/CallEditors.swift Sources/Afterword/AttendanceEditor.swift Sources/Afterword/CalendarCoordinator.swift Sources/Afterword/CalendarViews.swift \
+    "${1:-Tests/LibraryHarness.swift}" Sources/Afterword/CallSummaryView.swift Sources/Afterword/EmbeddingSettings.swift Sources/Afterword/RecordingLibraryModel.swift Sources/Afterword/RecordingLibraryView.swift Sources/Afterword/RecordingLibraryWindow.swift Sources/Afterword/LibraryKeyboard.swift Sources/Afterword/CallEditors.swift Sources/Afterword/AttendanceEditor.swift Sources/Afterword/CalendarCoordinator.swift Sources/Afterword/CalendarViews.swift \
     Sources/Afterword/RecordingCoordinator.swift Sources/Afterword/RecordingShortcut.swift Sources/Afterword/TranscriptionCoordinator.swift \
     "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
     "$binary_dir"/KeyboardShortcuts.build/*.swift.o -o "$app/Contents/MacOS/LibraryCheck"

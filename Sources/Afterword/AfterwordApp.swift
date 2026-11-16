@@ -36,7 +36,7 @@ import RecorderCore
         if library.hasUnsavedEdits {
             showLibrary()
             let alert = NSAlert(); alert.messageText = "Discard unsaved edits and quit?"
-            alert.informativeText = "There are unsaved call or transcript edits in the library."
+            alert.informativeText = "There are unsaved call, summary, or transcript edits in the library."
             alert.addButton(withTitle: "Keep Editing"); alert.addButton(withTitle: "Discard Edits and Quit")
             guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         }

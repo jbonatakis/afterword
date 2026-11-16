@@ -33,6 +33,7 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var managing = false
     @Published var preferredTranscriptID: String?
     @Published private(set) var transcriptDrafts: [String: TranscriptDraft] = [:]
+    @Published private(set) var summaryDrafts: [String: SummaryDraft] = [:]
     @Published private(set) var participantAssignments: [String: ParticipantAssignmentStatus] = [:]
     @Published private(set) var renamingID: String?
     @Published var renameText = ""
@@ -228,7 +229,7 @@ struct ParticipantAssignmentStatus {
         renaming = false
     }
     func beginTranscriptEditing(_ recording: LibraryRecording, version: LibraryTranscript, paragraph: Int? = nil) {
-        guard !managing, version.document?.paragraphs.isEmpty == false else { return }
+        guard !managing, summaryDrafts[recording.id] == nil, version.document?.paragraphs.isEmpty == false else { return }
         participantAssignments[recording.id] = nil
         if transcriptDrafts[recording.id] == nil { transcriptDrafts[recording.id] = TranscriptDraft(version: version, focusedParagraph: paragraph, details: recording.details) }
     }
@@ -271,11 +272,33 @@ struct ParticipantAssignmentStatus {
         draft.saving = false
     }
     var hasUnsavedEdits: Bool {
-        transcriptDrafts.values.contains { $0.changed } || renamingID.flatMap { id in recordings.first { $0.id == id } }.map { $0.name != renameText } == true
+        summaryDrafts.values.contains { $0.changed } || transcriptDrafts.values.contains { $0.changed } || renamingID.flatMap { id in recordings.first { $0.id == id } }.map { $0.name != renameText } == true
+    }
+    func beginSummaryEditing(_ recording: LibraryRecording) {
+        guard !managing, recording.summaryError == nil, transcriptDrafts[recording.id] == nil, summaryDrafts[recording.id] == nil else { return }
+        summaryDrafts[recording.id] = SummaryDraft(recording: recording)
+    }
+    func cancelSummaryEditing(_ recording: LibraryRecording) {
+        guard summaryDrafts[recording.id]?.saving != true else { return }
+        summaryDrafts[recording.id] = nil
+    }
+    func saveSummaryDraft(for recording: LibraryRecording) async {
+        guard !managing, let draft = summaryDrafts[recording.id], draft.changed, !draft.saving else { return }
+        draft.saving = true; draft.error = nil
+        do {
+            try beginManagement()
+            let snapshot = draft.recording, text = draft.markdown
+            _ = try await Task.detached(priority: .userInitiated) {
+                try CallSummaryStore.save(text, for: snapshot, source: snapshot.summary == nil ? snapshot.latestTranscript : nil)
+            }.value
+            summaryDrafts[recording.id] = nil
+            await finishManagement()?.value
+        } catch { finishManagement(); draft.error = error.localizedDescription }
+        draft.saving = false
     }
     func moveToTrash(_ recording: LibraryRecording, version: LibraryTranscript? = nil, playback: RecordingPlayback,
                      trash: (@Sendable (URL) throws -> URL)? = nil) async throws {
-        guard transcriptDrafts[recording.id] == nil, renamingID != recording.id else {
+        guard transcriptDrafts[recording.id] == nil, summaryDrafts[recording.id] == nil, renamingID != recording.id else {
             throw RecorderError.message("Save or cancel your edits before moving this item to Trash.")
         }
         guard let recorder, !recorder.locked else { throw RecorderError.message("Finish recording before moving items to Trash.") }

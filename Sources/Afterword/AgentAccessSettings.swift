@@ -16,7 +16,12 @@ struct AgentAccessSettings: View {
                 Toggle("Enable agent access", isOn: Binding(get: { configuration.enabled }, set: { enabled in
                     var next = configuration; next.enabled = enabled; save(next)
                 }))
-                Text("Let MCP clients search and read saved call information and transcripts from the folders you select.")
+                Text("Let MCP clients search and read saved call information, summaries, and transcripts from the folders you select.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Allow agents to save summaries", isOn: Binding(get: { configuration.allowSummaryWrites }, set: { allowed in
+                    var next = configuration; next.allowSummaryWrites = allowed; save(next)
+                })).disabled(!configuration.enabled)
+                Text("Agents can create and update summaries in allowed folders. Previous versions are kept, and newer edits are protected from being overwritten.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Allowed recording folders") {
@@ -46,7 +51,7 @@ struct AgentAccessSettings: View {
                 Text("Clients launch this executable with no arguments. The server works while Afterword is closed. Access changes apply to subsequent requests.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Access is read-only. Your connected client controls which model receives retrieved text, including whether it uses a cloud service.")
+            Text("Audio, transcripts, and call details remain read-only. Your connected client controls which model receives retrieved text, including whether it uses a cloud service.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }

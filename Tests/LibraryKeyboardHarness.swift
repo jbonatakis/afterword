@@ -8,6 +8,7 @@ import RecorderCore
 /// generated audio. Never opens user recordings or starts capture.
 @main struct LibraryKeyboardHarness {
     @MainActor static func main() {
+        setbuf(stdout, nil)
         NSApplication.shared.setActivationPolicy(.regular)
         Task { @MainActor in
             do { try await run(); exit(0) }
@@ -67,7 +68,8 @@ import RecorderCore
         defer { recorder.transcription.shutdown() }
         let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
         defer { library.shutdown() }
-        await library.refresh()?.value
+        for _ in 0..<100 where library.refreshing { await pump(0.05) }
+        require(!library.recordings.isEmpty, "Initial library scan failed: \(library.issues)")
         let states = CurrentValueSubject<RecordingState, Never>(.idle)
         let playback = RecordingPlayback(states: states.eraseToAnyPublisher())
         defer { playback.shutdown() }
@@ -194,6 +196,48 @@ import RecorderCore
         pasteboard.clearContents(); pasteboard.writeObjects(previousItems)
         require(copied?.contains("Corrected transcript") == true, "Copy shortcut ignored the displayed version")
         print("PASS transcript edit focus, Command-S, version creation, and readable copy")
+
+        let summaryRecording = library.selectedRecording!
+        library.beginSummaryEditing(summaryRecording); await pump()
+        require(library.summaryDrafts[summaryRecording.id]?.changed == false, "Summary did not open a clean draft")
+        await key("\u{1b}", code: 53, window: window); await pump()
+        require(library.summaryDrafts[summaryRecording.id] == nil && window.firstResponder === list, "Summary Escape lost list focus")
+        library.beginSummaryEditing(summaryRecording); await pump()
+        guard let summaryEditor = window.firstResponder as? NSTextView, summaryEditor.isEditable else { fatalError("Summary editor did not receive focus") }
+        let summaryText = "## Summary\n\nA **cobalt** decision with a clear follow-up.\n\n- Ship the project.\n- Review the result.\n\n| Owner | Action |\n|---|---|\n| Sam | Review the rollout |\n| You | Send the update |"
+        summaryEditor.insertText(summaryText, replacementRange: summaryEditor.selectedRange()); await pump()
+        require(library.hasUnsavedEdits && !window.canPerform(.trash), "Summary draft did not protect unsaved edits")
+        await key("s", code: 1, flags: .command, window: window)
+        for _ in 0..<50 { await pump(0.1); if library.summaryDrafts[summaryRecording.id] == nil { break } }
+        require(library.summaryDrafts[summaryRecording.id] == nil && library.selectedRecording?.summary?.current?.markdown == summaryText,
+                "Command-S did not save summary: \(library.summaryDrafts[summaryRecording.id]?.error ?? "unknown")")
+        require(!library.hasUnsavedEdits && window.firstResponder === list, "Summary save did not restore list focus")
+        let summaryView = window.contentView!
+        summaryView.layoutSubtreeIfNeeded()
+        let summaryBitmap = summaryView.bitmapImageRepForCachingDisplay(in: summaryView.bounds)!
+        summaryView.cacheDisplay(in: summaryView.bounds, to: summaryBitmap)
+        try summaryBitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/summary-library.png"))
+        library.search = "cobal"; await library.updateSearch(debounce: false)?.value; await pump()
+        require(library.visibleRecordings.count == 1 && library.searchHits[summaryRecording.id]?.summaryMatch == true, "Summary keyword search did not select summary evidence")
+        library.search = ""; await library.updateSearch(debounce: false)?.value; await pump()
+        let summarySnapshot = library.selectedRecording!
+        library.beginSummaryEditing(summarySnapshot); await pump()
+        library.summaryDrafts[summaryRecording.id]!.markdown = "An unsaved local correction"
+        _ = try CallSummaryStore.save("Saved by another writer", for: summarySnapshot, source: summarySnapshot.latestTranscript, author: "agent")
+        await library.refresh()?.value; await pump()
+        await key("s", code: 1, flags: .command, window: window); await pump(0.6)
+        require(library.summaryDrafts[summaryRecording.id]?.error != nil && library.summaryDrafts[summaryRecording.id]?.markdown == "An unsaved local correction",
+                "A concurrent summary write lost the local draft")
+        require(library.selectedRecording?.summary?.current?.markdown == "Saved by another writer", "The stale draft overwrote a newer summary")
+        await key("\u{1b}", code: 53, window: window); await pump()
+        require(window.attachedSheet != nil, "Summary Escape did not ask before discarding edits")
+        await key("\u{1b}", code: 53, window: window.attachedSheet!); await pump()
+        require(library.summaryDrafts[summaryRecording.id] != nil, "Keep Editing discarded summary changes")
+        await key("\u{1b}", code: 53, window: window); await pump()
+        await key("\r", code: 36, window: window.attachedSheet!); await pump()
+        require(library.summaryDrafts[summaryRecording.id] == nil && window.firstResponder === list, "Discarding summary changes lost focus")
+        require(library.selectedRecording?.summary?.versions.count == 2, "Summary history was not retained")
+        print("PASS summary Markdown, Command-S, search, conflict preservation, history, Escape confirmation, and list focus")
 
         await key("i", code: 34, flags: .command, window: window); await pump()
         require(window.attachedSheet != nil, "Command-I did not open details")

@@ -39,9 +39,9 @@ async def check(executable):
         }))
         transcript_original = transcript_file.read_bytes()
         access = state / "Access.json"
-        def settings(enabled):
+        def settings(enabled, writes=False):
             pending = state / "pending.json"
-            pending.write_text(json.dumps({"version": 1, "enabled": enabled, "folders": [str(root)]}))
+            pending.write_text(json.dumps({"version": 1, "enabled": enabled, "folders": [str(root)], "allowSummaryWrites": writes}))
             pending.replace(access)
         settings(True)
         parameters = StdioServerParameters(command=str(executable), args=["--state-directory", str(state)])
@@ -50,8 +50,8 @@ async def check(executable):
                 initialized = await session.initialize()
                 assert initialized.serverInfo.name == "afterword"
                 tools = await session.list_tools()
-                assert {tool.name for tool in tools.tools} == {"list_calls", "search_transcripts", "get_call", "get_transcript", "get_changes"}
-                assert all(tool.annotations.readOnlyHint for tool in tools.tools)
+                assert {tool.name for tool in tools.tools} == {"list_calls", "search_transcripts", "get_call", "get_transcript", "get_changes", "save_call_summary"}
+                assert all(tool.annotations.readOnlyHint == (tool.name != "save_call_summary") for tool in tools.tools)
                 result = await session.call_tool("list_calls", {})
                 assert not result.isError
                 calls = result.structuredContent["items"]
@@ -67,6 +67,35 @@ async def check(executable):
                 cursor = baseline.structuredContent["cursor"]
                 same = await session.call_tool("get_changes", {"cursor": cursor})
                 assert same.structuredContent["changes"] == []
+                # A write must be explicitly enabled and use a current call revision.
+                summary_args = {"call_id": call_id, "expected_revision": info.structuredContent["revision"],
+                                "source_version_id": info.structuredContent["versions"][0]["version_id"],
+                                "markdown": "## Summary\n\nCobalt follow-up — keep the café plan. " + "é" * 33000}
+                denied = await session.call_tool("save_call_summary", summary_args)
+                assert denied.isError
+                settings(True, writes=True)
+                saved = await session.call_tool("save_call_summary", summary_args)
+                assert not saved.isError, saved
+                assert saved.structuredContent["summary"]["markdown"] == summary_args["markdown"]
+                first_summary = saved.structuredContent["summary"]["revision_id"]
+                conflict = await session.call_tool("save_call_summary", summary_args)
+                assert conflict.isError
+                summary_search = await session.call_tool("list_calls", {"query": "cobal", "mode": "keyword"})
+                assert summary_search.structuredContent["items"][0]["match_source"] == "summary"
+                spoken = await session.call_tool("search_transcripts", {"query": "cobalt", "mode": "keyword"})
+                assert spoken.structuredContent["total"] == 0
+                changes = await session.call_tool("get_changes", {"cursor": cursor})
+                assert changes.structuredContent["changes"][0]["change"] == "updated"
+                summary_args.update(expected_revision=saved.structuredContent["call"]["revision"], markdown="Revised summary")
+                edited = await session.call_tool("save_call_summary", summary_args)
+                assert not edited.isError
+                old = await session.call_tool("get_call", {"call_id": call_id, "summary_revision_id": first_summary})
+                assert len(old.structuredContent["summary_versions"]) == 2
+                assert old.structuredContent["summary"]["markdown"].startswith("## Summary")
+                summary_args["expected_revision"] = edited.structuredContent["call"]["revision"]
+                settings(True)
+                revoked_write = await session.call_tool("save_call_summary", summary_args)
+                assert revoked_write.isError
                 settings(False)
                 revoked = await session.call_tool("list_calls", {})
                 assert revoked.isError and "disabled" in revoked.content[0].text
@@ -100,7 +129,7 @@ async def check(executable):
         assert child.returncode == 0
         assert responses[0]["id"] == "unicode-é" and responses[0]["result"] == {}
         assert responses[1]["error"]["code"] == -32700 and len(responses) == 2
-        print("PASS official MCP client initialization, discovery, tool calls, checkpoint restart, live revocation, framing, and EOF")
+        print("PASS official MCP client initialization, discovery, summary writes/history/conflicts, checkpoint restart, live revocation, framing, and EOF")
 
 
 if __name__ == "__main__":

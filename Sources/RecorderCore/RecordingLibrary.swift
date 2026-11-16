@@ -85,6 +85,8 @@ public struct LibraryRecording: Identifiable, Codable, Sendable {
     public let duration: Double?
     public let tracks: [LibraryAudioTrack]
     public let transcripts: [LibraryTranscript]
+    public var summary: CallSummary? = nil
+    public var summaryError: String? = nil
     public var id: String { url.path }
     public var latestTranscript: LibraryTranscript? { transcripts.first }
     public var hasTranscript: Bool { transcripts.contains { $0.document != nil } }
@@ -100,7 +102,7 @@ public struct LibraryRecording: Identifiable, Codable, Sendable {
     }
     public func matches(_ query: String, allVersions: Bool = false) -> Bool {
         let query = LibrarySearchQuery(query)
-        let information = ([name, sourceName, details.description] + details.participants + details.tags).joined(separator: "\n")
+        let information = ([name, sourceName, details.description, summary?.current?.markdown ?? ""] + details.participants + details.tags).joined(separator: "\n")
         let versions = allVersions ? transcripts : Array(transcripts.prefix(1))
         return query.isEmpty || query.matches(information) || versions.contains { version in
             let paragraphs = version.document?.paragraphs ?? []
@@ -171,7 +173,8 @@ public enum RecordingLibraryScanner {
                     if confined, let size = try? details.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 1_048_576 {
                         throw RecorderError.message("Call information exceeds the agent access size limit.")
                     }
-                    let nodes = [url, details, transcriptDirectory.appendingPathComponent("Transcripts")] + tracks.map(\.url) + files.flatMap { [$0.deletingLastPathComponent(), $0] }
+                    let summary = CallSummaryStore.url(for: url, isDirectory: directory)
+                    let nodes = [url, details, summary, transcriptDirectory.appendingPathComponent("Transcripts")] + tracks.map(\.url) + files.flatMap { [$0.deletingLastPathComponent(), $0] }
                     candidates.append(try LibraryCandidate(url: url, isDirectory: directory, tracks: tracks, transcriptFiles: files, nodes: nodes))
                 }
             } catch { issues.append("\(root.lastPathComponent): \(error.localizedDescription)") }
@@ -188,6 +191,9 @@ public enum RecordingLibraryScanner {
         var details = CallDetails(), detailsError: String?
         do { details = try CallDetailsStore.load(for: url, isDirectory: directory) }
         catch { detailsError = error.localizedDescription }
+        var summary: CallSummary?, summaryError: String?
+        do { summary = try CallSummaryStore.load(for: url, isDirectory: directory) }
+        catch { summaryError = error.localizedDescription }
         let reader = candidate.tracks.lazy.compactMap { try? AVAudioFile(forReading: $0.url) }.first
         let duration = reader.map { Double($0.length) / $0.processingFormat.sampleRate }
         guard try candidate.currentFingerprint() == candidate.fingerprint else {
@@ -195,7 +201,8 @@ public enum RecordingLibraryScanner {
         }
         return .init(url: url, sourceName: name, isDirectory: directory, details: details, detailsError: detailsError,
             date: recordingDate(name) ?? (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast,
-            duration: duration?.isFinite == true ? duration : nil, tracks: candidate.tracks, transcripts: versions)
+            duration: duration?.isFinite == true ? duration : nil, tracks: candidate.tracks, transcripts: versions,
+            summary: summary, summaryError: summaryError)
     }
 
     private static func audioTracks(in directory: URL) -> [LibraryAudioTrack] {

@@ -186,7 +186,7 @@ public enum CallFileOperations {
         try validateRecording(recording)
         if recording.isDirectory {
             let children = try FileManager.default.contentsOfDirectory(at: recording.url, includingPropertiesForKeys: nil)
-            let allowed = Set(RecordingTrack.allCases.map(\.filename) + ["Transcripts", "CallDetails.json", ".DS_Store"])
+            let allowed = Set(RecordingTrack.allCases.map(\.filename) + ["Transcripts", "CallDetails.json", "Summary.json", ".Summary.json.lock", ".DS_Store"])
             guard children.allSatisfy({ allowed.contains($0.lastPathComponent) }) else {
                 throw RecorderError.message("This folder also contains other files. Use Show in Finder to review and move it to Trash.")
             }
@@ -195,6 +195,9 @@ public enum CallFileOperations {
         var urls = [recording.url]
         let details = CallDetailsStore.url(for: recording.url, isDirectory: false)
         if FileManager.default.fileExists(atPath: details.path) { urls.append(details) }
+        for summaryFile in [CallSummaryStore.url(for: recording.url, isDirectory: false), CallSummaryStore.lockURL(for: recording.url, isDirectory: false)] {
+            if FileManager.default.fileExists(atPath: summaryFile.path) { urls.append(summaryFile) }
+        }
         // Re-read shared runs: a scan held by the UI can predate a completed transcription.
         let versions = RecordingLibraryScanner.transcripts(in: recording.url.deletingLastPathComponent()).filter {
             $0.document?.recording == recording.sourceName && $0.document?.sources[TranscriptSource.mixed.rawValue] == recording.url.lastPathComponent

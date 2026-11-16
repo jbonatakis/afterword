@@ -35,6 +35,7 @@ public struct LibrarySearchHit: Sendable {
     public let paragraphIDs: [Int]
     public let snippet: String?
     public let score: Double
+    public var summaryMatch: Bool = false
 }
 
 /// One bounded passage with shared context, not a separate copy for every hit.
@@ -67,7 +68,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         self.roots = roots; self.confined = confined
         let scope = AgentJSON.hash(roots.map { $0.standardizedFileURL.path }.sorted().joined(separator: "\n") + ":\(confined)")
         try PrivateFiles.directory(directory)
-        db = try SearchDatabase(url: directory.appendingPathComponent("v1-" + scope + ".sqlite"))
+        db = try SearchDatabase(url: directory.appendingPathComponent("v2-" + scope + ".sqlite"))
     }
 
     /// Stat every saved delivery, decode/hash only changed calls. No source writes.
@@ -132,7 +133,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             let paragraphs = recording.detailsError == nil ? version?.document?.paragraphs ?? [] : []
             let speakers = version.map { v in paragraphs.map { call.speaker($0, version: v) } } ?? []
             try db.execute("INSERT INTO versions VALUES (?, ?, ?, ?, ?)", [key, call.id, version?.id ?? "", position == 0 ? "1" : "0", String(paragraphs.count)])
-            try db.execute("INSERT INTO documents VALUES (?, ?, ?, ?, ?)", [key, recording.name, metadata, speakers.joined(separator: "\n"), paragraphs.map(\.text).joined(separator: " ")])
+            try db.execute("INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?)", [key, recording.name, metadata, speakers.joined(separator: "\n"), paragraphs.map(\.text).joined(separator: " "), recording.summary?.current?.markdown ?? ""])
             for (i, paragraph) in paragraphs.enumerated() {
                 try db.execute("INSERT INTO passages VALUES (?, ?, ?, ?)", [key, String(paragraph.id), speakers[i], paragraph.text])
             }
@@ -141,10 +142,10 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     private func versions(_ query: LibrarySearchQuery, allVersions: Bool, transcriptsOnly: Bool) throws -> [[String]] {
         guard let expression = query.expression else { return [] }
         let rows = try db.rows("""
-            SELECT versions.key, call_id, path, paragraph_count, bm25(documents, 0, 5, 2, 1, 1)
+            SELECT versions.key, call_id, path, paragraph_count, bm25(documents, 0, 5, 2, 1, 1, 2), snippet(documents, 5, '', '', ' … ', 28)
             FROM documents JOIN versions ON versions.key = documents.id
             WHERE documents MATCH ? AND (? = '1' OR latest = 1)
-            ORDER BY bm25(documents, 0, 5, 2, 1, 1), call_id, versions.key
+            ORDER BY bm25(documents, 0, 5, 2, 1, 1, 2), call_id, versions.key
             """, [transcriptsOnly ? "{speakers body} : (\(expression))" : expression, allVersions ? "1" : "0"])
         return rows.sorted { a, b in
             let left = Double(a[4]) ?? 0, right = Double(b[4]) ?? 0
@@ -173,7 +174,9 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         return rows.compactMap { row in
             guard seen.insert(row[1]).inserted, let call = cached[row[1]]?.call else { return nil }
             let paragraphs = evidence[row[0]] ?? []
-            return .init(recordingID: call.recording.id, versionID: row[2].isEmpty ? nil : row[2], paragraphIDs: paragraphs.map(\.id), snippet: paragraphs.first?.text, score: Double(row[4]) ?? 0)
+            let summaryMatch = paragraphs.isEmpty && !query.highlightRanges(in: call.recording.summary?.current?.markdown ?? "").isEmpty
+            return .init(recordingID: call.recording.id, versionID: summaryMatch || row[2].isEmpty ? nil : row[2], paragraphIDs: paragraphs.map(\.id),
+                         snippet: summaryMatch ? "Summary · " + row[5] : paragraphs.first?.text, score: Double(row[4]) ?? 0, summaryMatch: summaryMatch)
         }
     }
     func passages(_ text: String, allVersions: Bool, allowed: Set<String>) throws -> [LibrarySearchPassage] {
@@ -240,7 +243,7 @@ final class SearchDatabase {
         try execute("CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, fingerprint TEXT, revision TEXT, snapshot TEXT)")
         try execute("CREATE TABLE IF NOT EXISTS versions (key TEXT PRIMARY KEY, call_id TEXT, path TEXT, latest INTEGER, paragraph_count INTEGER)")
         try execute("CREATE INDEX IF NOT EXISTS versions_call ON versions(call_id)")
-        try execute("CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(id UNINDEXED, title, metadata, speakers, body, tokenize=\"unicode61 remove_diacritics 2 tokenchars '_'\")")
+        try execute("CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(id UNINDEXED, title, metadata, speakers, body, summary, tokenize=\"unicode61 remove_diacritics 2 tokenchars '_'\")")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS passages USING fts5(key UNINDEXED, paragraph UNINDEXED, speaker, body, tokenize=\"unicode61 remove_diacritics 2 tokenchars '_'\")")
     }
     deinit { sqlite3_close(handle) }

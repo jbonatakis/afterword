@@ -201,7 +201,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual((response["result"] as? [String: Any])?["protocolVersion"] as? String, "2025-11-25")
         XCTAssertNil(try server.handle(AgentJSON.data(["jsonrpc": "2.0", "method": "notifications/initialized"])))
         let tools = try request("tools/list")["result"] as? [String: Any]
-        XCTAssertEqual((tools?["tools"] as? [[String: Any]])?.count, 5)
+        XCTAssertEqual((tools?["tools"] as? [[String: Any]])?.count, 6)
         XCTAssertTrue(try request("tools/call", params: ["name": "delete_call"])["error"] != nil)
         try AgentAccessStore.save(.init(), directory: state)
         let failure = try request("tools/call", params: ["name": "list_calls"])["result"] as? [String: Any]
@@ -210,4 +210,155 @@ final class AgentAccessTests: XCTestCase {
         let invalid = try XCTUnwrap(server.handle(Data("garbage".utf8)))
         XCTAssertTrue(String(decoding: invalid, as: UTF8.self).contains("-32700"))
     }
+    private func enableSummaryWrites(_ enabled: Bool = true) throws {
+        try AgentAccessStore.save(.init(enabled: true, folders: [root.path], allowSummaryWrites: enabled), directory: state)
+    }
+    private func summaryArguments(_ text: String = "## Decision\nShip the cobalt initiative.") throws -> [String: Any] {
+        let call = try service.call("get_call", arguments: ["call_id": id()])
+        return ["call_id": call["call_id"]!, "expected_revision": call["revision"]!,
+                "source_version_id": (call["versions"] as! [[String: Any]])[0]["version_id"]!, "markdown": text]
+    }
+    func testSummaryAccessDefaultsOffAndWriteAnnotations() throws {
+        try fixture()
+        let arguments = try summaryArguments()
+        XCTAssertFalse(try AgentAccessStore.load(directory: state).allowSummaryWrites)
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        let oldSettings = Data("{\"version\":1,\"enabled\":true,\"folders\":[]}".utf8)
+        XCTAssertFalse(try JSONDecoder().decode(AgentAccessConfiguration.self, from: oldSettings).allowSummaryWrites)
+        let definition = AgentTools.definitions.first { $0["name"] as? String == "save_call_summary" }!
+        XCTAssertEqual((definition["annotations"] as? [String: Bool])?["readOnlyHint"], false)
+        XCTAssertTrue(AgentTools.definitions.filter { $0["name"] as? String != "save_call_summary" }.allSatisfy { ($0["annotations"] as? [String: Bool])?["readOnlyHint"] == true })
+        try enableSummaryWrites()
+        _ = try service.call("save_call_summary", arguments: arguments)
+        let next = try summaryArguments("Updated")
+        try enableSummaryWrites(false)
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: next))
+        try AgentAccessStore.save(.init(enabled: true, folders: [], allowSummaryWrites: true), directory: state)
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: next))
+    }
+    func testSummaryRoundTripHistorySearchChangesAndSourcePreservation() throws {
+        let folder = try fixture()
+        let audio = try Data(contentsOf: folder.appendingPathComponent("Mixed.m4a"))
+        let transcript = try Data(contentsOf: folder.appendingPathComponent("Transcripts/first/Transcript.json"))
+        try enableSummaryWrites()
+        let baseline = try service.call("get_changes", arguments: [:])
+        let originalArgs = try summaryArguments()
+        let saved = try service.call("save_call_summary", arguments: originalArgs)
+        let summary = saved["summary"] as! [String: Any]
+        XCTAssertEqual(summary["markdown"] as? String, originalArgs["markdown"] as? String)
+        XCTAssertEqual(summary["source_changed"] as? Bool, false)
+        let search = try service.call("list_calls", arguments: ["query": "cobal", "mode": "keyword"])
+        XCTAssertEqual(items(search).count, 1)
+        XCTAssertEqual(items(search)[0]["match_source"] as? String, "summary")
+        XCTAssertTrue(try items(service.call("search_transcripts", arguments: ["query": "cobalt", "mode": "keyword"])).isEmpty)
+        XCTAssertTrue(try items(service.call("list_calls", arguments: ["query": "cobalt", "speaker": "Recorder", "mode": "keyword"])).isEmpty)
+        let changed = try service.call("get_changes", arguments: ["cursor": baseline["cursor"]!])
+        XCTAssertEqual((changed["changes"] as? [[String: Any]])?.first?["change"] as? String, "updated")
+        _ = try service.call("save_call_summary", arguments: summaryArguments("Updated summary"))
+        let callID = try id()
+        service = AgentLibrary(directory: state)
+        let info = try service.call("get_call", arguments: ["call_id": callID])
+        XCTAssertEqual((info["summary_versions"] as? [[String: Any]])?.count, 2)
+        let historyPage = try service.call("get_call", arguments: ["call_id": callID, "summary_limit": 1])
+        XCTAssertEqual(historyPage["summary_version_count"] as? Int, 2)
+        XCTAssertEqual(historyPage["next_summary_offset"] as? Int, 1)
+        let nextPage = try service.call("get_call", arguments: ["call_id": callID, "summary_offset": 1, "summary_limit": 1, "expected_revision": historyPage["revision"]!])
+        XCTAssertEqual((nextPage["summary_versions"] as? [[String: Any]])?.first?["revision_id"] as? String, summary["revision_id"] as? String)
+        let old = try service.call("get_call", arguments: ["call_id": callID, "summary_revision_id": summary["revision_id"]!])
+        XCTAssertEqual((old["summary"] as? [String: Any])?["markdown"] as? String, originalArgs["markdown"] as? String)
+        XCTAssertTrue(try items(service.call("list_calls", arguments: ["query": "cobalt", "all_versions": true, "mode": "keyword"])).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("Mixed.m4a")), audio)
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("Transcripts/first/Transcript.json")), transcript)
+        let permissions = try FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent("Summary.json").path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.intValue, 0o600)
+    }
+    func testSummaryRejectsStaleAgentAndNativeEdits() throws {
+        let folder = try fixture(); try enableSummaryWrites()
+        let agentDraft = try summaryArguments()
+        let nativeDraft = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [root]).recordings.first)
+        _ = try CallSummaryStore.save("Native draft wins", for: nativeDraft, source: nativeDraft.latestTranscript)
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: agentDraft))
+        XCTAssertThrowsError(try CallSummaryStore.save("Stale native edit", for: nativeDraft, source: nativeDraft.latestTranscript))
+        XCTAssertEqual(try CallSummaryStore.load(for: folder, isDirectory: true)?.current?.markdown, "Native draft wins")
+        let beforeSourceChange = try summaryArguments()
+        try fixture(text: "Changed transcript text")
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: beforeSourceChange))
+        XCTAssertEqual(try CallSummaryStore.load(for: folder, isDirectory: true)?.versions.count, 1)
+    }
+    func testSummaryTracksSourceAndResolvedSpeakerChanges() throws {
+        let folder = try fixture(); try enableSummaryWrites()
+        try CallDetailsStore.writeInitial(.init(participants: ["Avery"]), to: folder.appendingPathComponent("CallDetails.json"))
+        _ = try service.call("save_call_summary", arguments: summaryArguments())
+        func stale() throws -> Bool { (try service.call("get_call", arguments: ["call_id": id()])["summary"] as! [String: Any])["source_changed"] as! Bool }
+        try CallDetailsStore.writeInitial(.init(title: "Renamed", participants: ["Avery"]), to: folder.appendingPathComponent("CallDetails.json"))
+        XCTAssertFalse(try stale())
+        try CallDetailsStore.writeInitial(.init(participants: ["Bellamy"]), to: folder.appendingPathComponent("CallDetails.json"))
+        XCTAssertTrue(try stale())
+        let recording = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [root]).recordings.first)
+        _ = try CallSummaryStore.save("A manual correction", for: recording, source: nil)
+        XCTAssertTrue(try stale())
+        _ = try service.call("save_call_summary", arguments: summaryArguments("Regenerated with Bellamy"))
+        XCTAssertFalse(try stale())
+        try fixture(run: "new", created: "2026-11-14T00:00:00Z")
+        XCTAssertTrue(try stale())
+    }
+    func testSummaryRefusesCorruptFilesLinksAndInvalidArguments() throws {
+        let folder = try fixture(); try enableSummaryWrites()
+        var arguments = try summaryArguments()
+        for text in ["  ", "bad\0text", String(repeating: "x", count: 65_537)] {
+            arguments["markdown"] = text
+            XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        }
+        arguments = try summaryArguments()
+        arguments["source_version_id"] = "unknown"
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        arguments = try summaryArguments(); arguments.removeValue(forKey: "expected_revision")
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        let file = folder.appendingPathComponent("Summary.json"), outside = temporary.appendingPathComponent("outside.txt")
+        try Data("do not change".utf8).write(to: outside)
+        arguments = try summaryArguments()
+        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: outside)
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        XCTAssertEqual(try String(contentsOf: outside), "do not change")
+        try FileManager.default.removeItem(at: file)
+        try Data("broken JSON".utf8).write(to: file)
+        arguments = try summaryArguments()
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        XCTAssertEqual(try String(contentsOf: file), "broken JSON")
+        try FileManager.default.removeItem(at: file)
+        let lock = CallSummaryStore.lockURL(for: folder, isDirectory: true)
+        try FileManager.default.removeItem(at: lock)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: outside)
+        arguments = try summaryArguments()
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: arguments))
+        XCTAssertEqual(try String(contentsOf: outside), "do not change")
+    }
+    func testSummaryConcurrentWritersCannotOverwriteEachOther() throws {
+        let folder = try fixture()
+        let recording = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [root]).recordings.first)
+        let lock = NSLock()
+        var successes = 0
+        DispatchQueue.concurrentPerform(iterations: 2) { index in
+            do {
+                _ = try CallSummaryStore.save("Writer \(index)", for: recording, source: recording.latestTranscript)
+                lock.lock(); successes += 1; lock.unlock()
+            } catch { }
+        }
+        XCTAssertEqual(successes, 1)
+        XCTAssertEqual(try CallSummaryStore.load(for: folder, isDirectory: true)?.versions.count, 1)
+        let updated = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [root]).recordings.first)
+        XCTAssertEqual(try CallFileOperations.trashPlan(for: updated).urls.map(\.path), [folder.path])
+    }
+    func testSummaryRechecksAuthorizationBeforePublishing() throws {
+        let folder = try fixture()
+        let recording = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [root]).recordings.first)
+        var checks = 0
+        XCTAssertThrowsError(try CallSummaryStore.save("Must not be published", for: recording, source: recording.latestTranscript) {
+            checks += 1
+            if checks == 2 { throw RecorderError.message("Access revoked while preparing the write") }
+        })
+        XCTAssertEqual(checks, 2)
+        XCTAssertNil(try CallSummaryStore.load(for: folder, isDirectory: true))
+    }
+
 }

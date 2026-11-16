@@ -6,8 +6,17 @@ public struct AgentAccessConfiguration: Codable, Equatable {
     public var version = 1
     public var enabled: Bool
     public var folders: [String]
-    public init(enabled: Bool = false, folders: [String] = []) {
-        self.enabled = enabled; self.folders = folders
+    public var allowSummaryWrites: Bool
+    public init(enabled: Bool = false, folders: [String] = [], allowSummaryWrites: Bool = false) {
+        self.enabled = enabled; self.folders = folders; self.allowSummaryWrites = allowSummaryWrites
+    }
+    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        folders = try values.decode([String].self, forKey: .folders)
+        allowSummaryWrites = try values.decodeIfPresent(Bool.self, forKey: .allowSummaryWrites) ?? false
     }
 }
 
