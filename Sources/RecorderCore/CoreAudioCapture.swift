@@ -77,7 +77,7 @@ public final class CoreAudioCapture {
             guard tapFormat.mChannelsPerFrame == 2 else { throw RecorderError.message("System audio tap did not expose stereo audio.") }
             let description: [String: Any] = [
                 kAudioAggregateDeviceNameKey: "Afterword session",
-                kAudioAggregateDeviceUIDKey: "io.local.callrecorder.session.\(UUID().uuidString)",
+                kAudioAggregateDeviceUIDKey: "io.local.afterword.session.\(UUID().uuidString)",
                 kAudioAggregateDeviceIsPrivateKey: true,
                 // A stacked/multi-output aggregate omits the input-only mic on macOS 15.8.1.
                 // Use an ordinary aggregate; both source spans were verified via HAL.

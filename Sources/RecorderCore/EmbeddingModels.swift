@@ -21,7 +21,7 @@ public struct EmbeddingSettings: Codable, Equatable, Sendable {
     public var modelID = EmbeddingModel.catalog[1].id
     public init() {}
     public var model: EmbeddingModel { EmbeddingModel.catalog.first { $0.id == modelID } ?? EmbeddingModel.catalog[1] }
-    public static var directory: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Call Recorder/Embeddings", isDirectory: true) }
+    public static var directory: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Afterword/Embeddings", isDirectory: true) }
     public static func modelRoot(_ directory: URL = directory) -> URL { directory.appendingPathComponent("Models", isDirectory: true) }
     public static func load(directory: URL = directory) throws -> Self {
         let file = directory.appendingPathComponent("Settings.json")

@@ -16,12 +16,12 @@ xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     -module-cache-path "$PWD/.build/module-cache" -I "$binary_dir/Modules" \
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation -framework AppKit \
     Tests/HardwareCaptureHarness.swift "$binary_dir"/RecorderCore.build/*.swift.o \
-    "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o -o "$app/Contents/MacOS/CallRecorder"
+    "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o -o "$app/Contents/MacOS/Afterword"
 cp Configuration/Info.plist "$app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.local.callrecorder.capturecheck' "$app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleName Call Recorder Capture Check' "$app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Call Recorder Capture Check' "$app/Contents/Info.plist"
-codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements Configuration/CallRecorder.entitlements "$app"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.local.afterword.capturecheck' "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleName Afterword Capture Check' "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Afterword Capture Check' "$app/Contents/Info.plist"
+codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements Configuration/Afterword.entitlements "$app"
 log="$PWD/build/capture-check.log"
 : > "$log"
 open -n -W "$app" --args --preview "$2" "$log"

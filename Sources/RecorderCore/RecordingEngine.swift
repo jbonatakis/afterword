@@ -10,7 +10,7 @@ public enum EngineEvent {
 }
 
 public final class RecordingEngine {
-    private let queue = DispatchQueue(label: "io.local.callrecorder.audio-worker", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "io.local.afterword.audio-worker", qos: .userInitiated)
     private let onEvent: (EngineEvent) -> Void
     private var capture: CoreAudioCapture?
     private var pipeline: AudioPipeline?

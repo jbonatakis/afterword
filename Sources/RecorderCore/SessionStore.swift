@@ -95,7 +95,7 @@ public final class SessionStore {
     // 0 = selected microphone, 1 = system left, 2 = system right.
     public static let sourcePCMFormat = PCMFormats.make(sampleRate: 48_000, channels: 3)!
     public static var defaultRoot: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Call Recorder/Sessions", isDirectory: true)
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Afterword/Sessions", isDirectory: true)
     }
     public let directory: URL
     public private(set) var manifest: SessionManifest

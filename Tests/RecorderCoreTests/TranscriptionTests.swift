@@ -92,7 +92,7 @@ final class TranscriptionTests: XCTestCase {
         }
     }
     func testBleedReductionDefaultsOnAndExplicitOffSurvivesReload() throws {
-        let name = "CallRecorder-EchoPreferences-" + UUID().uuidString
+        let name = "Afterword-EchoPreferences-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         XCTAssertTrue(SpeakerBleedReduction.preference(in: defaults))

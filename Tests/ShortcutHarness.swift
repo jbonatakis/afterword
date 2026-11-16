@@ -28,7 +28,7 @@ import RecorderCore
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let previousApp = NSWorkspace.shared.frontmostApplication
-        let rawName = "CallRecorderShortcutCheck_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let rawName = "AfterwordShortcutCheck_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let name = KeyboardShortcuts.Name(rawName, initial: initial)
         let shortcut = RecordingShortcut(name: name)
         defer {

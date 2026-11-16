@@ -52,7 +52,7 @@ import RecorderCore
     }
 }
 
-@main struct CallRecorderApp: App {
+@main struct AfterwordApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
         Settings {

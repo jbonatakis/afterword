@@ -29,7 +29,7 @@ The library and MCP return current source passages rather than generated answers
 
 ## Storage
 
-`~/Library/Application Support/Call Recorder/Embeddings` contains `Settings.json`, `Models/`, `Vectors-v1.sqlite`, and process-coordination lock files. The vector database stores model-space keys, text hashes, and vectors, not transcript text. Private temporary inference files are removed after each batch; an abrupt parent-process crash can leave a private `.worker-*` directory, which may be removed while helpers are stopped. This is not encryption or secure deletion.
+`~/Library/Application Support/Afterword/Embeddings` contains `Settings.json`, `Models/`, `Vectors-v1.sqlite`, and process-coordination lock files. The vector database stores model-space keys, text hashes, and vectors, not transcript text. Private temporary inference files are removed after each batch; an abrupt parent-process crash can leave a private `.worker-*` directory, which may be removed while helpers are stopped. This is not encryption or secure deletion.
 
 The model-space key includes weights, pooling, query preprocessing, and chunk-format version. Vectors are read only for chunks currently visible in the source index; cached vectors do not grant access to deleted calls or revoked folders. Model removal keeps reusable vectors but prevents semantic use until the model is installed again. Clearing the vector database while helpers are stopped rebuilds it from saved JSON. Custom MCP `--state-directory` isolates embedding settings/models/cache under `Embeddings` in that directory.
 
@@ -43,7 +43,7 @@ Core tests use injected vectors and cover cache reuse/invalidation, model-space 
 
 ```sh
 uv run --with mcp==1.28.1 Scripts/check-embedding-mcp.py \
-  'build/Afterword.app/Contents/Helpers/CallRecorderMCP' build/embedding-models
+  'build/Afterword.app/Contents/Helpers/AfterwordMCP' build/embedding-models
 ```
 
 `Tests/EmbeddingBenchmark.swift` exports current-version chunks to an explicitly chosen private local artifact. `Scripts/benchmark-embeddings.py` compares the two downloaded models locally against the source anchors. Neither uploads recordings or changes production settings. Run `python3 Scripts/benchmark-embeddings.py CORPUS.json CASES.json`. Supply a private JSON array of question and source-anchor string pairs for that corpus. With only a corpus path, the runner reads the adjacent `CORPUS.cases.json` file.

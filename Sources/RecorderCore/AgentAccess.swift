@@ -14,7 +14,7 @@ public struct AgentAccessConfiguration: Codable, Equatable {
 /// Shared by the app and its stdio helper. Read on every tool call, never cached.
 public enum AgentAccessStore {
     public static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Call Recorder/MCP", isDirectory: true)
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Afterword/MCP", isDirectory: true)
     }
     public static func load(directory: URL = directory) throws -> AgentAccessConfiguration {
         let url = directory.appendingPathComponent("Access.json")

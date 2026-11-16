@@ -3,7 +3,7 @@
 set -euo pipefail
 requested="${SIGNING_IDENTITY:-${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-Call Recorder Local Development}}}"
 if [[ "$requested" == - ]]; then
-    echo 'Call Recorder requires a persistent signing certificate. Run Scripts/setup-local-signing.sh or set SIGNING_IDENTITY to an existing certificate.' >&2
+    echo 'Afterword requires a persistent signing certificate. Run Scripts/setup-local-signing.sh or set SIGNING_IDENTITY to an existing certificate.' >&2
     exit 1
 fi
 identities="$(security find-identity -v -p codesigning)"

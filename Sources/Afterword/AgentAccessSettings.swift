@@ -7,7 +7,7 @@ struct AgentAccessSettings: View {
     @State private var configuration = AgentAccessConfiguration()
     @State private var error: String?
     @State private var loaded = false
-    private var server: String { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/CallRecorderMCP").path }
+    private var server: String { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AfterwordMCP").path }
     private var folders: [String] { Array(Set(library.roots.map(\.path) + configuration.folders)).sorted() }
 
     var body: some View {

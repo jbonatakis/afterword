@@ -13,7 +13,7 @@ if security find-certificate -c "$name" "$keychain" >/dev/null 2>&1; then
     exit 1
 fi
 umask 077
-temporary="$(mktemp -d "${TMPDIR:-/tmp}/call-recorder-signing.XXXXXX")"
+temporary="$(mktemp -d "${TMPDIR:-/tmp}/afterword-signing.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 cat > "$temporary/certificate.cnf" <<'CONFIG'
 [req]

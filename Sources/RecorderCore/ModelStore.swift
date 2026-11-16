@@ -8,7 +8,7 @@ public struct InstalledSpeechModel: Sendable {
 
 public enum ModelStore {
     public static var defaultRoot: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Call Recorder/Models", isDirectory: true)
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Afterword/Models", isDirectory: true)
     }
     public static func ownedURL(_ model: SpeechModel, root: URL = defaultRoot) -> URL {
         root.appendingPathComponent(model.filename)

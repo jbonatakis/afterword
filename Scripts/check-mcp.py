@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual stdio executable using the official MCP Python client.
 
-Run: uv run --with mcp==1.28.1 Scripts/check-mcp.py /path/to/CallRecorderMCP
+Run: uv run --with mcp==1.28.1 Scripts/check-mcp.py /path/to/AfterwordMCP
 Uses synthetic audio and temporary access settings, never the user's library.
 """
 import asyncio
@@ -18,7 +18,7 @@ from mcp.client.stdio import stdio_client
 
 
 async def check(executable):
-    with tempfile.TemporaryDirectory(prefix="call-recorder-mcp-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="afterword-mcp-") as temporary:
         base = Path(temporary).resolve()
         root, state = base / "calls", base / "state"
         root.mkdir(); state.mkdir()
@@ -48,7 +48,7 @@ async def check(executable):
         async with stdio_client(parameters) as (read, write):
             async with ClientSession(read, write) as session:
                 initialized = await session.initialize()
-                assert initialized.serverInfo.name == "call-recorder"
+                assert initialized.serverInfo.name == "afterword"
                 tools = await session.list_tools()
                 assert {tool.name for tool in tools.tools} == {"list_calls", "search_transcripts", "get_call", "get_transcript", "get_changes"}
                 assert all(tool.annotations.readOnlyHint for tool in tools.tools)

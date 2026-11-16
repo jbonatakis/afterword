@@ -50,7 +50,7 @@ public final class TranscriptionJob: @unchecked Sendable {
         progress(.init("Checking \(model.name)…"))
         try ModelStore.verify(modelURL, model: model, cancelled: { self.isCancelled })
         try checkCancellation()
-        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("CallRecorder-ASR-" + UUID().uuidString)
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("Afterword-ASR-" + UUID().uuidString)
         try PrivateFiles.directory(temporary)
         defer { try? FileManager.default.removeItem(at: temporary) }
         struct Request: Encodable { let model: String; let language: String; let tracks: [TranscriptionTrack]; let reduceSpeakerBleed: Bool }

@@ -89,7 +89,7 @@ final class SemanticSearchEngine: @unchecked Sendable {
     typealias Provider = ([String], EmbeddingModel, URL, () -> Bool) throws -> [[Float]]
     let directory: URL
     private let lock = NSRecursiveLock()
-    private let queue = DispatchQueue(label: "io.local.callrecorder.embeddings", qos: .utility)
+    private let queue = DispatchQueue(label: "io.local.afterword.embeddings", qos: .utility)
     private let provider: Provider
     private var chunks: [SemanticChunk] = []
     private var settings = EmbeddingSettings()

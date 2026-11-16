@@ -25,7 +25,7 @@
 			"path" = "RecorderCore.framework";
 			"sourceTree" = "BUILT_PRODUCTS_DIR";
 		};
-		"07A9811ECEF2A85EE35974E2" = {
+		"8B62441A0978E76626707F57" = {
 			"isa" = "PBXFileReference";
 			"explicitFileType" = "wrapper.application";
 			"path" = "Afterword.app";
@@ -37,10 +37,10 @@
 			"path" = "RecorderCoreTests.xctest";
 			"sourceTree" = "BUILT_PRODUCTS_DIR";
 		};
-		"66B5FD19747CFEBE4210B077" = {
+		"96E27D17E72808CAF443A10F" = {
 			"isa" = "PBXFileReference";
 			"explicitFileType" = "compiled.mach-o.executable";
-			"path" = "CallRecorderMCP";
+			"path" = "AfterwordMCP";
 			"sourceTree" = "BUILT_PRODUCTS_DIR";
 		};
 		"AAEED3F6C8B6F46C4884D4D3" = {
@@ -101,7 +101,7 @@
 			"name" = "Debug";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "CaptureBridge";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.capturebridge";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.capturebridge";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "YES";
 				"SWIFT_VERSION" = "5.0";
@@ -112,7 +112,7 @@
 			"name" = "Release";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "CaptureBridge";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.capturebridge";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.capturebridge";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "YES";
 				"SWIFT_VERSION" = "5.0";
@@ -414,7 +414,7 @@
 			"name" = "Debug";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "RecorderCore";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercore";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.recordercore";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "YES";
 				"SWIFT_VERSION" = "5.0";
@@ -430,7 +430,7 @@
 			"name" = "Release";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "RecorderCore";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercore";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.recordercore";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "YES";
 				"SWIFT_VERSION" = "5.0";
@@ -458,291 +458,291 @@
 			"productReference" = "64F9D4288FD7EFB91CB67D7F";
 			"productType" = "com.apple.product-type.framework";
 		};
-		"4B568A54C9F929A85E4873B1" = {
+		"9F74241DCB68C6E07BB81D04" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorderMCP/main.swift";
+			"path" = "Sources/AfterwordMCP/main.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"53140EC3F1DDC0DD4E28F80B" = {
+		"D0269590C74FC51670188956" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "4B568A54C9F929A85E4873B1";
+			"fileRef" = "9F74241DCB68C6E07BB81D04";
 		};
-		"AF5756C724AE6763AD1E5DD3" = {
+		"F436D504BD8865AD77869CBA" = {
 			"isa" = "PBXGroup";
-			"children" = ("4B568A54C9F929A85E4873B1");
-			"name" = "CallRecorderMCP";
+			"children" = ("9F74241DCB68C6E07BB81D04");
+			"name" = "AfterwordMCP";
 			"sourceTree" = "<group>";
 		};
-		"6F890DC318DD2595078E468F" = {
+		"B5E3DCC825F25DBBC9B4AF4A" = {
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = 2147483647;
-			"files" = ("53140EC3F1DDC0DD4E28F80B");
+			"files" = ("D0269590C74FC51670188956");
 			"runOnlyForDeploymentPostprocessing" = 0;
 		};
-		"885E88C8E116A52F4AEC429A" = {
+		"BEFB607AFBCE7A631DDA746D" = {
 			"isa" = "PBXContainerItemProxy";
 			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
 			"proxyType" = 1;
 			"remoteGlobalIDString" = "F9DF7460351A56700C10CB0C";
 			"remoteInfo" = "RecorderCore";
 		};
-		"106F9B68D28B0CBB11051E36" = {
+		"5BE8A941D36B2A5638C6F97B" = {
 			"isa" = "PBXTargetDependency";
 			"target" = "F9DF7460351A56700C10CB0C";
-			"targetProxy" = "885E88C8E116A52F4AEC429A";
+			"targetProxy" = "BEFB607AFBCE7A631DDA746D";
 		};
-		"18027F42FC9475282CB92E71" = {
+		"EDD776D310B75E89A79625E1" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "64F9D4288FD7EFB91CB67D7F";
 		};
-		"936C52D5D638B905FF539D55" = {
+		"8A2EC42160631EA749C78CED" = {
 			"isa" = "PBXFrameworksBuildPhase";
 			"buildActionMask" = 2147483647;
-			"files" = ("18027F42FC9475282CB92E71");
+			"files" = ("EDD776D310B75E89A79625E1");
 			"runOnlyForDeploymentPostprocessing" = 0;
 		};
-		"2139F25A919CE6C90412AAC8" = {
+		"239BCFDFDFA4689BA495B566" = {
 			"isa" = "XCBuildConfiguration";
 			"name" = "Debug";
 			"buildSettings" = {
-				"PRODUCT_NAME" = "CallRecorderMCP";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.mcp";
+				"PRODUCT_NAME" = "AfterwordMCP";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.mcp";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"SWIFT_VERSION" = "5.0";
 				"ENABLE_HARDENED_RUNTIME" = "YES";
-				"OTHER_CODE_SIGN_FLAGS" = "--identifier io.local.callrecorder.mcp";
+				"OTHER_CODE_SIGN_FLAGS" = "--identifier io.local.afterword.mcp";
 			};
 		};
-		"D8B2095B17779E48122E6803" = {
+		"ED61F00792385CDC89DEEC8F" = {
 			"isa" = "XCBuildConfiguration";
 			"name" = "Release";
 			"buildSettings" = {
-				"PRODUCT_NAME" = "CallRecorderMCP";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.mcp";
+				"PRODUCT_NAME" = "AfterwordMCP";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.mcp";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"SWIFT_VERSION" = "5.0";
 				"ENABLE_HARDENED_RUNTIME" = "YES";
-				"OTHER_CODE_SIGN_FLAGS" = "--identifier io.local.callrecorder.mcp";
+				"OTHER_CODE_SIGN_FLAGS" = "--identifier io.local.afterword.mcp";
 			};
 		};
-		"D8FBF2884097DAA961FD42F2" = {
+		"104826A4F7B30A9991E7D17C" = {
 			"isa" = "XCConfigurationList";
-			"buildConfigurations" = ("2139F25A919CE6C90412AAC8", "D8B2095B17779E48122E6803");
+			"buildConfigurations" = ("239BCFDFDFA4689BA495B566", "ED61F00792385CDC89DEEC8F");
 			"defaultConfigurationIsVisible" = 0;
 			"defaultConfigurationName" = "Release";
 		};
-		"9F5FB7B007BF631DB50A2C09" = {
+		"BDA0A2F6D03F5C03D4C17032" = {
 			"isa" = "PBXNativeTarget";
-			"buildConfigurationList" = "D8FBF2884097DAA961FD42F2";
-			"buildPhases" = ("6F890DC318DD2595078E468F", "936C52D5D638B905FF539D55");
+			"buildConfigurationList" = "104826A4F7B30A9991E7D17C";
+			"buildPhases" = ("B5E3DCC825F25DBBC9B4AF4A", "8A2EC42160631EA749C78CED");
 			"buildRules" = ();
-			"dependencies" = ("106F9B68D28B0CBB11051E36");
-			"name" = "CallRecorderMCP";
-			"productName" = "CallRecorderMCP";
-			"productReference" = "66B5FD19747CFEBE4210B077";
+			"dependencies" = ("5BE8A941D36B2A5638C6F97B");
+			"name" = "AfterwordMCP";
+			"productName" = "AfterwordMCP";
+			"productReference" = "96E27D17E72808CAF443A10F";
 			"productType" = "com.apple.product-type.tool";
 		};
-		"99E156C5E2E128544BA1C6E2" = {
+		"D27728BD72BFD27D5313860C" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/AgentAccessSettings.swift";
+			"path" = "Sources/Afterword/AfterwordApp.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"D415495672AC14541C8CA7D1" = {
+		"E011B26676BE33E7E4D9F9EC" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "99E156C5E2E128544BA1C6E2";
+			"fileRef" = "D27728BD72BFD27D5313860C";
 		};
-		"F4ED54E166C098145BBADF14" = {
+		"024B946AC1362512CC1549E8" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/AttendanceEditor.swift";
+			"path" = "Sources/Afterword/AgentAccessSettings.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"0D85EA724032AB88862B1173" = {
+		"6562911C70BA53ECA31D5E06" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "F4ED54E166C098145BBADF14";
+			"fileRef" = "024B946AC1362512CC1549E8";
 		};
-		"97DF5734D73DF67F7B84B3E4" = {
+		"554547479D5E4BDCF26482BE" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/CalendarCoordinator.swift";
+			"path" = "Sources/Afterword/AttendanceEditor.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"5F51E9BC84FF7AD88A14AF65" = {
+		"9DBC1FDC73E69C7DD98F1B2B" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "97DF5734D73DF67F7B84B3E4";
+			"fileRef" = "554547479D5E4BDCF26482BE";
 		};
-		"D37C8058228160048EAABA58" = {
+		"8D5577F13A57B0D82496056B" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/CalendarViews.swift";
+			"path" = "Sources/Afterword/CalendarCoordinator.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"A980214A4C270A5732BDCADA" = {
+		"5C722BAEB81DB4E23FD564C8" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "D37C8058228160048EAABA58";
+			"fileRef" = "8D5577F13A57B0D82496056B";
 		};
-		"0F63217BD2C1B395E1285C98" = {
+		"50DE78648335C95CDD90FDEA" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/CallEditors.swift";
+			"path" = "Sources/Afterword/CalendarViews.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"4E6DF079C76CD8DF02315E7A" = {
+		"2E9DDEE1C86E974833EF202B" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "0F63217BD2C1B395E1285C98";
+			"fileRef" = "50DE78648335C95CDD90FDEA";
 		};
-		"4E6EBDE1515E280F37D29F63" = {
+		"B6C8DC21BE0710E4CD1D56A2" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/CallRecorderApp.swift";
+			"path" = "Sources/Afterword/CallEditors.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"890E14D6D1ED1A2DB09D0BF9" = {
+		"3D9550936FC675C104759B04" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "4E6EBDE1515E280F37D29F63";
+			"fileRef" = "B6C8DC21BE0710E4CD1D56A2";
 		};
-		"0D6C8EAA8C9552CC8A2E00AD" = {
+		"9714FDFFFD720E53CB99D81B" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/EmbeddingSettings.swift";
+			"path" = "Sources/Afterword/EmbeddingSettings.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"65F0B8FC65705A6E8D2FA407" = {
+		"68E34EA33C5A4BF9483D2378" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "0D6C8EAA8C9552CC8A2E00AD";
+			"fileRef" = "9714FDFFFD720E53CB99D81B";
 		};
-		"0E407CD4B1A5E125EA912B18" = {
+		"3FDED9F64C5F9208B2A28DA2" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/LibraryKeyboard.swift";
+			"path" = "Sources/Afterword/LibraryKeyboard.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"08AB6CD396D293EA80332B8B" = {
+		"721B05F1500E51D1EF116BF1" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "0E407CD4B1A5E125EA912B18";
+			"fileRef" = "3FDED9F64C5F9208B2A28DA2";
 		};
-		"E994BB616A583BC6BB5B0B71" = {
+		"4DB56C1F0FE90EF3D2EE8975" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/RecorderStatusItem.swift";
+			"path" = "Sources/Afterword/RecorderStatusItem.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"FCE2826336609A48B1043BF7" = {
+		"49B77CE2B5215A3AB5A6F0CF" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "E994BB616A583BC6BB5B0B71";
+			"fileRef" = "4DB56C1F0FE90EF3D2EE8975";
 		};
-		"5E70290BBB7CF0EABBA0097A" = {
+		"218B7E1983581236ED47C244" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/RecordingCoordinator.swift";
+			"path" = "Sources/Afterword/RecordingCoordinator.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"B58B5846B16FEEDFEA1B4F10" = {
+		"44E3F250AA728BB5F50B4B32" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "5E70290BBB7CF0EABBA0097A";
+			"fileRef" = "218B7E1983581236ED47C244";
 		};
-		"2815994C06AD69AFCB1B4CC0" = {
+		"0BB525AA93B19A8A5FA506EC" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/RecordingLibraryModel.swift";
+			"path" = "Sources/Afterword/RecordingLibraryModel.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"43DAD1C887F6BBE090BD0CB7" = {
+		"051A8197FF3E400561828147" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "2815994C06AD69AFCB1B4CC0";
+			"fileRef" = "0BB525AA93B19A8A5FA506EC";
 		};
-		"E4668A4E035EDD24AD9455C6" = {
+		"05C07F6D80D44A1FA2645F7F" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/RecordingLibraryView.swift";
+			"path" = "Sources/Afterword/RecordingLibraryView.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"7E3A3C43707B8C11F5A7BC38" = {
+		"ABA5701F1BF43CEAB20D5289" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "E4668A4E035EDD24AD9455C6";
+			"fileRef" = "05C07F6D80D44A1FA2645F7F";
 		};
-		"85F8FB0B1220841C0B3FCB18" = {
+		"2E97E735C7F93AAD9835B4DF" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/RecordingLibraryWindow.swift";
+			"path" = "Sources/Afterword/RecordingLibraryWindow.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"F1C3118E7FBFC94C5FF16DC9" = {
+		"D6E75ADDEEBF62591A6AB5BC" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "85F8FB0B1220841C0B3FCB18";
+			"fileRef" = "2E97E735C7F93AAD9835B4DF";
 		};
-		"AC800BD42A735B213E186F93" = {
+		"72419806DDAA68841626E6E4" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/RecordingShortcut.swift";
+			"path" = "Sources/Afterword/RecordingShortcut.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"EB9F6130CB01493B66E0707A" = {
+		"4B49D5F44481BEAF3E573940" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "AC800BD42A735B213E186F93";
+			"fileRef" = "72419806DDAA68841626E6E4";
 		};
-		"D3E20C2993BC54777FEA3B1D" = {
+		"50C8E48FF63B6C36B642C72B" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/CallRecorder/TranscriptionCoordinator.swift";
+			"path" = "Sources/Afterword/TranscriptionCoordinator.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"BE2FEE68AE19505D661B8497" = {
+		"E50866E923B0E0EB08AC6D6C" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "D3E20C2993BC54777FEA3B1D";
+			"fileRef" = "50C8E48FF63B6C36B642C72B";
 		};
-		"5B555829F67E7DFD8CC6A9AB" = {
+		"EC322AD6147F3CA9B989C49C" = {
 			"isa" = "PBXGroup";
-			"children" = ("99E156C5E2E128544BA1C6E2", "F4ED54E166C098145BBADF14", "97DF5734D73DF67F7B84B3E4", "D37C8058228160048EAABA58", "0F63217BD2C1B395E1285C98", "4E6EBDE1515E280F37D29F63", "0D6C8EAA8C9552CC8A2E00AD", "0E407CD4B1A5E125EA912B18", "E994BB616A583BC6BB5B0B71", "5E70290BBB7CF0EABBA0097A", "2815994C06AD69AFCB1B4CC0", "E4668A4E035EDD24AD9455C6", "85F8FB0B1220841C0B3FCB18", "AC800BD42A735B213E186F93", "D3E20C2993BC54777FEA3B1D");
-			"name" = "CallRecorder";
+			"children" = ("D27728BD72BFD27D5313860C", "024B946AC1362512CC1549E8", "554547479D5E4BDCF26482BE", "8D5577F13A57B0D82496056B", "50DE78648335C95CDD90FDEA", "B6C8DC21BE0710E4CD1D56A2", "9714FDFFFD720E53CB99D81B", "3FDED9F64C5F9208B2A28DA2", "4DB56C1F0FE90EF3D2EE8975", "218B7E1983581236ED47C244", "0BB525AA93B19A8A5FA506EC", "05C07F6D80D44A1FA2645F7F", "2E97E735C7F93AAD9835B4DF", "72419806DDAA68841626E6E4", "50C8E48FF63B6C36B642C72B");
+			"name" = "Afterword";
 			"sourceTree" = "<group>";
 		};
-		"B348DF387218E1225273FABC" = {
+		"CD141EA5AC919A908A2D074B" = {
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = 2147483647;
-			"files" = ("D415495672AC14541C8CA7D1", "0D85EA724032AB88862B1173", "5F51E9BC84FF7AD88A14AF65", "A980214A4C270A5732BDCADA", "4E6DF079C76CD8DF02315E7A", "890E14D6D1ED1A2DB09D0BF9", "65F0B8FC65705A6E8D2FA407", "08AB6CD396D293EA80332B8B", "FCE2826336609A48B1043BF7", "B58B5846B16FEEDFEA1B4F10", "43DAD1C887F6BBE090BD0CB7", "7E3A3C43707B8C11F5A7BC38", "F1C3118E7FBFC94C5FF16DC9", "EB9F6130CB01493B66E0707A", "BE2FEE68AE19505D661B8497");
+			"files" = ("E011B26676BE33E7E4D9F9EC", "6562911C70BA53ECA31D5E06", "9DBC1FDC73E69C7DD98F1B2B", "5C722BAEB81DB4E23FD564C8", "2E9DDEE1C86E974833EF202B", "3D9550936FC675C104759B04", "68E34EA33C5A4BF9483D2378", "721B05F1500E51D1EF116BF1", "49B77CE2B5215A3AB5A6F0CF", "44E3F250AA728BB5F50B4B32", "051A8197FF3E400561828147", "ABA5701F1BF43CEAB20D5289", "D6E75ADDEEBF62591A6AB5BC", "4B49D5F44481BEAF3E573940", "E50866E923B0E0EB08AC6D6C");
 			"runOnlyForDeploymentPostprocessing" = 0;
 		};
-		"D2B72637CE72F92220E2EE75" = {
+		"9185849559FE7FDBA23A4BE9" = {
 			"isa" = "PBXContainerItemProxy";
 			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
 			"proxyType" = 1;
 			"remoteGlobalIDString" = "F9DF7460351A56700C10CB0C";
 			"remoteInfo" = "RecorderCore";
 		};
-		"06EE3360EB079FCEEEA88B9A" = {
+		"2DD319B3B63259FB0019E79F" = {
 			"isa" = "PBXTargetDependency";
 			"target" = "F9DF7460351A56700C10CB0C";
-			"targetProxy" = "D2B72637CE72F92220E2EE75";
+			"targetProxy" = "9185849559FE7FDBA23A4BE9";
 		};
-		"9498964798AF8CB2E0542A95" = {
+		"B405235A340928C9FCC0D194" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "64F9D4288FD7EFB91CB67D7F";
 		};
-		"71FC8CB23AFFF775969CD20E" = {
+		"2B7CA725BD4EB3985B54C851" = {
 			"isa" = "PBXContainerItemProxy";
 			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
 			"proxyType" = 1;
-			"remoteGlobalIDString" = "9F5FB7B007BF631DB50A2C09";
-			"remoteInfo" = "CallRecorderMCP";
+			"remoteGlobalIDString" = "BDA0A2F6D03F5C03D4C17032";
+			"remoteInfo" = "AfterwordMCP";
 		};
-		"AB3FBF3DB92A8BDA017D255F" = {
+		"6F9331DCD788AD335599E862" = {
 			"isa" = "PBXTargetDependency";
-			"target" = "9F5FB7B007BF631DB50A2C09";
-			"targetProxy" = "71FC8CB23AFFF775969CD20E";
+			"target" = "BDA0A2F6D03F5C03D4C17032";
+			"targetProxy" = "2B7CA725BD4EB3985B54C851";
 		};
 		"D5EEC68F00155FCD4785313C" = {
 			"isa" = "PBXBuildFile";
 			"productRef" = "A01D6AEEDD0EBC19F2AAF5C9";
 		};
-		"D5BA4C66303D550DB7FE049C" = {
+		"61B8AB937A6CA5F49D1E20C2" = {
 			"isa" = "PBXFrameworksBuildPhase";
 			"buildActionMask" = 2147483647;
-			"files" = ("9498964798AF8CB2E0542A95", "D5EEC68F00155FCD4785313C");
+			"files" = ("B405235A340928C9FCC0D194", "D5EEC68F00155FCD4785313C");
 			"runOnlyForDeploymentPostprocessing" = 0;
 		};
 		"749B28E42C337FE32B54FA1D" = {
@@ -752,7 +752,7 @@
 				"ATTRIBUTES" = ("CodeSignOnCopy", "RemoveHeadersOnCopy");
 			};
 		};
-		"B010F490339D132A9BE9E543" = {
+		"FF737A0E5C5A0EB2D2B8FA3A" = {
 			"isa" = "PBXCopyFilesBuildPhase";
 			"buildActionMask" = 2147483647;
 			"files" = ("749B28E42C337FE32B54FA1D");
@@ -761,23 +761,23 @@
 			"dstSubfolderSpec" = 10;
 			"name" = "Embed Frameworks";
 		};
-		"E3278076FBCAA21C8AD626AA" = {
+		"9D6DB91CD3C07053C060CE2F" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "66B5FD19747CFEBE4210B077";
+			"fileRef" = "96E27D17E72808CAF443A10F";
 			"settings" = {
 				"ATTRIBUTES" = ("CodeSignOnCopy");
 			};
 		};
-		"A95C0817225CDF834A6A4687" = {
+		"C4FD04250B33AF85AA27898A" = {
 			"isa" = "PBXCopyFilesBuildPhase";
 			"buildActionMask" = 2147483647;
-			"files" = ("E3278076FBCAA21C8AD626AA");
+			"files" = ("9D6DB91CD3C07053C060CE2F");
 			"runOnlyForDeploymentPostprocessing" = 0;
 			"dstPath" = "Contents/Helpers";
 			"dstSubfolderSpec" = 1;
 			"name" = "Embed MCP server";
 		};
-		"6044D2C55F7DF76073211819" = {
+		"2D1D8725AEA4A42DCEF466C5" = {
 			"isa" = "PBXShellScriptBuildPhase";
 			"buildActionMask" = 2147483647;
 			"files" = ();
@@ -787,57 +787,57 @@
 			"shellScript" = "set -euo pipefail\ncd \"$SRCROOT\"\n./Scripts/build-transcription.sh\n./Scripts/build-embedding.sh\n./Scripts/embed-transcription.sh \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n./Scripts/embed-embedding.sh \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
 			"alwaysOutOfDate" = 1;
 		};
-		"AE5E41BE18896D5BE49BED74" = {
+		"DE0358E626901B2BC3882398" = {
 			"isa" = "XCBuildConfiguration";
 			"name" = "Debug";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "Afterword";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword";
 				"SKIP_INSTALL" = "NO";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"SWIFT_VERSION" = "5.0";
-				"PRODUCT_MODULE_NAME" = "CallRecorder";
-				"EXECUTABLE_NAME" = "CallRecorder";
+				"PRODUCT_MODULE_NAME" = "Afterword";
+				"EXECUTABLE_NAME" = "Afterword";
 				"INFOPLIST_FILE" = "Configuration/Info.plist";
-				"CODE_SIGN_ENTITLEMENTS" = "Configuration/CallRecorder.entitlements";
+				"CODE_SIGN_ENTITLEMENTS" = "Configuration/Afterword.entitlements";
 				"ENABLE_HARDENED_RUNTIME" = "YES";
 				"ENABLE_APP_SANDBOX" = "NO";
 				"ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
 			};
 		};
-		"AF523061A612FEF3AD16B467" = {
+		"DD6F3C66228FB0ADDB413846" = {
 			"isa" = "XCBuildConfiguration";
 			"name" = "Release";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "Afterword";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword";
 				"SKIP_INSTALL" = "NO";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"SWIFT_VERSION" = "5.0";
-				"PRODUCT_MODULE_NAME" = "CallRecorder";
-				"EXECUTABLE_NAME" = "CallRecorder";
+				"PRODUCT_MODULE_NAME" = "Afterword";
+				"EXECUTABLE_NAME" = "Afterword";
 				"INFOPLIST_FILE" = "Configuration/Info.plist";
-				"CODE_SIGN_ENTITLEMENTS" = "Configuration/CallRecorder.entitlements";
+				"CODE_SIGN_ENTITLEMENTS" = "Configuration/Afterword.entitlements";
 				"ENABLE_HARDENED_RUNTIME" = "YES";
 				"ENABLE_APP_SANDBOX" = "NO";
 				"ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
 			};
 		};
-		"D9DAB6ECC98B253727302B59" = {
+		"07228A360E88A6422CE54712" = {
 			"isa" = "XCConfigurationList";
-			"buildConfigurations" = ("AE5E41BE18896D5BE49BED74", "AF523061A612FEF3AD16B467");
+			"buildConfigurations" = ("DE0358E626901B2BC3882398", "DD6F3C66228FB0ADDB413846");
 			"defaultConfigurationIsVisible" = 0;
 			"defaultConfigurationName" = "Release";
 		};
-		"C97F2FAC8F644316093B1CC8" = {
+		"D01B303410C7BD4836079517" = {
 			"isa" = "PBXNativeTarget";
-			"buildConfigurationList" = "D9DAB6ECC98B253727302B59";
-			"buildPhases" = ("B348DF387218E1225273FABC", "D5BA4C66303D550DB7FE049C", "B010F490339D132A9BE9E543", "A95C0817225CDF834A6A4687", "6044D2C55F7DF76073211819");
+			"buildConfigurationList" = "07228A360E88A6422CE54712";
+			"buildPhases" = ("CD141EA5AC919A908A2D074B", "61B8AB937A6CA5F49D1E20C2", "FF737A0E5C5A0EB2D2B8FA3A", "C4FD04250B33AF85AA27898A", "2D1D8725AEA4A42DCEF466C5");
 			"buildRules" = ();
-			"dependencies" = ("06EE3360EB079FCEEEA88B9A", "AB3FBF3DB92A8BDA017D255F");
-			"name" = "CallRecorder";
+			"dependencies" = ("2DD319B3B63259FB0019E79F", "6F9331DCD788AD335599E862");
+			"name" = "Afterword";
 			"productName" = "Afterword";
-			"productReference" = "07A9811ECEF2A85EE35974E2";
+			"productReference" = "8B62441A0978E76626707F57";
 			"productType" = "com.apple.product-type.application";
 			"packageProductDependencies" = ("A01D6AEEDD0EBC19F2AAF5C9");
 		};
@@ -1010,7 +1010,7 @@
 			"name" = "Debug";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "RecorderCoreTests";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercoretests";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.recordercoretests";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "YES";
 				"SWIFT_VERSION" = "5.0";
@@ -1024,7 +1024,7 @@
 			"name" = "Release";
 			"buildSettings" = {
 				"PRODUCT_NAME" = "RecorderCoreTests";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.callrecorder.recordercoretests";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "io.local.afterword.recordercoretests";
 				"SKIP_INSTALL" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "YES";
 				"SWIFT_VERSION" = "5.0";
@@ -1056,10 +1056,10 @@
 			"path" = "Configuration/Info.plist";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"1BC87CDBAF651D72D949F60A" = {
+		"66AC251786182E6EA2E48152" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "text.plist.entitlements";
-			"path" = "Configuration/CallRecorder.entitlements";
+			"path" = "Configuration/Afterword.entitlements";
 			"sourceTree" = "SOURCE_ROOT";
 		};
 		"BCFA14070C8F570C520EF850" = {
@@ -1076,19 +1076,19 @@
 		};
 		"18FD7FD8A86AE7DB07FFE101" = {
 			"isa" = "PBXGroup";
-			"children" = ("93DE64BA23D71186D904CD31", "1BC87CDBAF651D72D949F60A", "BCFA14070C8F570C520EF850", "AA4ACA445B3FBAF47CDE31AC");
+			"children" = ("93DE64BA23D71186D904CD31", "66AC251786182E6EA2E48152", "BCFA14070C8F570C520EF850", "AA4ACA445B3FBAF47CDE31AC");
 			"name" = "Configuration";
 			"sourceTree" = "<group>";
 		};
 		"00C45FD35CB0F9C5F764F070" = {
 			"isa" = "PBXGroup";
-			"children" = ("03F95B20E6E799B100D8C0F1", "64F9D4288FD7EFB91CB67D7F", "07A9811ECEF2A85EE35974E2", "23BBD1F4144DF706A6A89F84", "66B5FD19747CFEBE4210B077");
+			"children" = ("03F95B20E6E799B100D8C0F1", "64F9D4288FD7EFB91CB67D7F", "8B62441A0978E76626707F57", "23BBD1F4144DF706A6A89F84", "96E27D17E72808CAF443A10F");
 			"name" = "Products";
 			"sourceTree" = "<group>";
 		};
 		"DF891E785808226D241F246E" = {
 			"isa" = "PBXGroup";
-			"children" = ("C60BB3B9F23EC21C202DC1EB", "F3C896CF7F8B7C562F1DCA1F", "AF5756C724AE6763AD1E5DD3", "5B555829F67E7DFD8CC6A9AB", "F9F0A3D2FE7E594BB26E75C8", "18FD7FD8A86AE7DB07FFE101", "00C45FD35CB0F9C5F764F070");
+			"children" = ("C60BB3B9F23EC21C202DC1EB", "F3C896CF7F8B7C562F1DCA1F", "F436D504BD8865AD77869CBA", "EC322AD6147F3CA9B989C49C", "F9F0A3D2FE7E594BB26E75C8", "18FD7FD8A86AE7DB07FFE101", "00C45FD35CB0F9C5F764F070");
 			"sourceTree" = "<group>";
 		};
 		"AB52CB08E0FDF02BF6C67C33" = {
@@ -1154,7 +1154,7 @@
 			"productRefGroup" = "00C45FD35CB0F9C5F764F070";
 			"projectDirPath" = "";
 			"projectRoot" = "";
-			"targets" = ("482FCA0D14E7049883ADEE2C", "F9DF7460351A56700C10CB0C", "9F5FB7B007BF631DB50A2C09", "C97F2FAC8F644316093B1CC8", "95E1E3894F698A22137D9998");
+			"targets" = ("482FCA0D14E7049883ADEE2C", "F9DF7460351A56700C10CB0C", "BDA0A2F6D03F5C03D4C17032", "D01B303410C7BD4836079517", "95E1E3894F698A22137D9998");
 			"packageReferences" = ("B071B5D28A3EE8F67B67E4E1");
 		};
 	};

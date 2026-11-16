@@ -42,7 +42,7 @@ def verify_updates(previous, updated):
         raise RuntimeError("The helper must have a stable identity distinct from its parent app")
     run("codesign", "--verify", "--strict", "-R=" + old_helper, str(updated / helper_path))
 
-    with tempfile.TemporaryDirectory(prefix="call-recorder-signing-check-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="afterword-signing-check-") as temporary:
         impostor = Path(temporary) / "Same Identifier.app"
         shutil.copytree(updated, impostor, symlinks=True)
         run("codesign", "--force", "--sign", "-", "--preserve-metadata=identifier,entitlements,flags", str(impostor))

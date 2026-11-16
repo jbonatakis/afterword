@@ -1,5 +1,7 @@
 # Call Recorder — agent implementation specification
 
+> Historical specification under the original working name. The current product, package, and project are Afterword; current behavior and paths are documented in README.md.
+
 **Version:** 1.1  
 **Prepared:** November 12, 2026  
 **Revised:** November 13, 2026  

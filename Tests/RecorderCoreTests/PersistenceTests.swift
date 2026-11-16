@@ -8,7 +8,7 @@ final class PersistenceTests: XCTestCase {
     var root: URL!
     var destination: URL!
     override func setUpWithError() throws {
-        root = FileManager.default.temporaryDirectory.appendingPathComponent("CallRecorderTests-\(UUID().uuidString)")
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("AfterwordTests-\(UUID().uuidString)")
         destination = root.appendingPathComponent("output")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
     }

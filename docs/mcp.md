@@ -2,9 +2,9 @@
 
 Afterword includes a local, client-agnostic, read-only MCP server. Enable **Settings → Agent Access** and select allowed recording folders. Access starts disabled, with no allowed folders. New library folders are not automatically exposed.
 
-The server keeps its stable `call-recorder` implementation name and advertises **Afterword** as its display title. Existing `build/Call Recorder.app/…` commands resolve through a compatibility link; new paths use `build/Afterword.app/…`.
+The server advertises `afterword` as its implementation name and **Afterword** as its display title. Its executable is `build/Afterword.app/Contents/Helpers/AfterwordMCP`. After renaming the repository, update clients to use this executable at the new absolute path and reconnect them.
 
-The **Copy Server Path** button copies the bundled `Contents/Helpers/CallRecorderMCP` executable. Configure your MCP client to launch that command with no arguments, using **stdio**. Supply the executable path as a command value, not an unquoted shell string. No network listener, account connection, runtime installation, or running app window is required. Clients that require a remote HTTP endpoint cannot connect directly to this local executable.
+The **Copy Server Path** button copies the bundled `Contents/Helpers/AfterwordMCP` executable. Configure your MCP client to launch that command with no arguments, using **stdio**. Supply the executable path as a command value, not an unquoted shell string. No network listener, account connection, runtime installation, or running app window is required. Clients that require a remote HTTP endpoint cannot connect directly to this local executable.
 
 The server implements the [MCP 2025-11-25 stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), including initialization, ping, tool discovery, tool calls, and structured results with a text fallback. It also negotiates the compatible 2025-06-18 protocol. Unsupported versions are offered 2025-11-25 during initialization. It advertises no prompts, resources, mutations, or subscriptions.
 
@@ -44,7 +44,7 @@ Call `get_changes` without a cursor to obtain the current baseline. Follow `next
 
 `removed` means the call is no longer visible in the allowed folders. It may have been deleted, moved out, or had access revoked. Removal entries contain only IDs. A missing/unreadable allowed root fails the scan instead of reporting mass deletion. Interrupted baseline pagination can be restarted without consuming any changes. Change cursors describe content checkpoints, not an audit log: changes made and reversed between scans are not reported.
 
-Checkpoints contain only call IDs, revision hashes, and an access-scope hash. They are saved privately in `~/Library/Application Support/Call Recorder/MCP/Checkpoints`. Checkpoints older than 30 days may be pruned. Unknown, expired, or corrupt cursors fail explicitly; recover by obtaining a full baseline. Clearing this directory invalidates saved cursors but does not alter calls.
+Checkpoints contain only call IDs, revision hashes, and an access-scope hash. They are saved privately in `~/Library/Application Support/Afterword/MCP/Checkpoints`. Checkpoints older than 30 days may be pruned. Unknown, expired, or corrupt cursors fail explicitly; recover by obtaining a full baseline. Clearing this directory invalidates saved cursors but does not alter calls.
 
 ## Access and lifecycle
 
@@ -52,7 +52,7 @@ Checkpoints contain only call IDs, revision hashes, and an access-scope hash. Th
 
 The helper scans only published library entries and does not follow symlinked call folders or transcript directories. It accepts opaque call/version IDs, never client-supplied recording paths. Hidden staging directories stay excluded. Folder scans fail on oversized transcript JSON (16 MiB) or call metadata (1 MiB), rather than loading unbounded input. There is no source-file polling, recording control, transcription trigger, automatic source refresh schedule, or source-file write. When enabled, local embedding work can continue in bounded background batches after a request.
 
-The app and server maintain rebuildable, scope-specific search databases in `~/Library/Caches/Call Recorder/Search`. These caches contain derived text and saved call snapshots; they never override JSON source files or grant access to a revoked folder. Each request checks allowed sources using file identity, size, mtime, and ctime, then decodes/indexes/hashes only changed calls. Same-size edits preserving mtime are detected through ctime. An unavailable allowed folder fails the request rather than serving stale results. SQLite transactions coordinate writers; searches reject a snapshot that another helper replaced mid-request. Clearing the cache with readers closed rebuilds it on the next request. A custom `--state-directory` keeps its text cache under `Search` and isolates semantic settings/models/vectors under `Embeddings` there.
+The app and server maintain rebuildable, scope-specific search databases in `~/Library/Caches/Afterword/Search`. These caches contain derived text and saved call snapshots; they never override JSON source files or grant access to a revoked folder. Each request checks allowed sources using file identity, size, mtime, and ctime, then decodes/indexes/hashes only changed calls. Same-size edits preserving mtime are detected through ctime. An unavailable allowed folder fails the request rather than serving stale results. SQLite transactions coordinate writers; searches reject a snapshot that another helper replaced mid-request. Clearing the cache with readers closed rebuilds it on the next request. A custom `--state-directory` keeps its text cache under `Search` and isolates semantic settings/models/vectors under `Embeddings` there.
 
 Independent helper processes can share the private checkpoint store; a file lock and atomic writes coordinate access. Closing the MCP client's stdin exits the helper. Diagnostic output belongs on stderr; stdout contains only protocol messages. For isolated testing or a separate explicitly configured library, `--state-directory /absolute/path` selects another settings/checkpoint directory, still disabled until its access file enables it.
 
@@ -65,7 +65,7 @@ Independent helper processes can share the private checkpoint store; a file lock
 The process check uses the official MCP Python client against synthetic audio and temporary settings:
 
 ```sh
-uv run --with mcp==1.28.1 Scripts/check-mcp.py 'build/Afterword.app/Contents/Helpers/CallRecorderMCP'
+uv run --with mcp==1.28.1 Scripts/check-mcp.py 'build/Afterword.app/Contents/Helpers/AfterwordMCP'
 ```
 
-The bundled helper is signed with the persistent app signing certificate under its own `io.local.callrecorder.mcp` identifier.
+The bundled helper is signed with the persistent app signing certificate under its own `io.local.afterword.mcp` identifier.

@@ -27,7 +27,7 @@ import RecorderCore
         popover.behavior = .transient
         popover.delegate = self
         popover.contentViewController = hosting
-        item.autosaveName = "CallRecorderStatusItem"
+        item.autosaveName = "AfterwordStatusItem"
         item.button?.target = self
         item.button?.action = #selector(togglePopover)
         item.button?.imagePosition = .imageLeading

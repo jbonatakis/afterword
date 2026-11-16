@@ -97,7 +97,7 @@ public final class AgentRPCServer {
             initialized = true
             return result(["protocolVersion": requested == "2025-06-18" ? requested : "2025-11-25",
                            "capabilities": ["tools": ["listChanged": false]],
-                           "serverInfo": ["name": "call-recorder", "title": "Afterword", "version": "1.2.1"]])
+                           "serverInfo": ["name": "afterword", "title": "Afterword", "version": "1.2.2"]])
         }
         guard ready else { return error(id, -32002, "Initialize the MCP connection first") }
         switch method {

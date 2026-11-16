@@ -49,7 +49,7 @@ struct LibrarySearchPassage {
 /// connection protects app tasks; SQLite transactions protect helper processes.
 public final class LibrarySearchIndex: @unchecked Sendable {
     public static var cacheDirectory: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Call Recorder/Search", isDirectory: true)
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Afterword/Search", isDirectory: true)
     }
     private let roots: [URL]
     private let confined: Bool
