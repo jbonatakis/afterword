@@ -30,7 +30,7 @@ import RecorderCore
         if library.managing {
             showLibrary()
             let alert = NSAlert(); alert.messageText = "A change is still saving"
-            alert.informativeText = "Wait for it to finish, then quit Call Recorder."; alert.runModal()
+            alert.informativeText = "Wait for it to finish, then quit Afterword."; alert.runModal()
             return .terminateCancel
         }
         if library.hasUnsavedEdits {
@@ -113,7 +113,7 @@ struct RecorderView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Call Recorder").font(.headline)
+                    Text("Afterword").font(.headline)
                     Label(recorder.title, systemImage: recorder.state == .recording ? "record.circle" : "waveform")
                         .font(.caption).foregroundStyle(recorder.state == .recording ? .red : .secondary)
                 }
@@ -199,7 +199,7 @@ struct RecorderView: View {
                 Spacer()
                 Menu {
                     Button("Copy diagnostics") { recorder.copyDiagnostics() }
-                    Button("Quit Call Recorder") { NSApp.terminate(nil) }
+                    Button("Quit Afterword") { NSApp.terminate(nil) }
                 } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
             }.font(.caption)
         }.fixedSize(horizontal: false, vertical: true).padding(20)

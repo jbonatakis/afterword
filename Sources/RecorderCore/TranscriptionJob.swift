@@ -44,7 +44,7 @@ public final class TranscriptionJob: @unchecked Sendable {
     private func execute(recording: URL, model: SpeechModel, modelURL: URL, worker: URL, language: String, reduceSpeakerBleed: Bool,
                          progress: @escaping @Sendable (TranscriptionProgress) -> Void) throws -> URL {
         try checkCancellation()
-        guard FileManager.default.isExecutableFile(atPath: worker.path) else { throw RecorderError.message("The transcription worker is missing. Rebuild or reinstall Call Recorder.") }
+        guard FileManager.default.isExecutableFile(atPath: worker.path) else { throw RecorderError.message("The transcription worker is missing. Rebuild or reinstall Afterword.") }
         let input = try TranscriptionInput.resolve(recording)
         let bleedReduction = SpeakerBleedReduction.resolve(enabled: reduceSpeakerBleed, input: input)
         progress(.init("Checking \(model.name)…"))
@@ -111,7 +111,7 @@ public final class TranscriptionJob: @unchecked Sendable {
                 case "error": throw RecorderError.message(event["message"] as? String ?? "Local transcription failed.")
                 case "done":
                     guard let result = try? JSONDecoder().decode(TranscriptionCompletion.self, from: line) else {
-                        throw RecorderError.message("The transcription worker could not confirm the cleanup setting. Rebuild or reinstall Call Recorder.")
+                        throw RecorderError.message("The transcription worker could not confirm the cleanup setting. Rebuild or reinstall Afterword.")
                     }
                     try result.validate(expected: bleedReduction)
                     completion = result

@@ -56,7 +56,7 @@ public final class AgentLibrary {
         let configuration = try AgentAccessStore.load(directory: directory)
         guard configuration.enabled else {
             index?.stopSemanticSearch(); index = nil; indexedFolders = nil
-            throw AgentFailure("Agent access is disabled. Enable it in Call Recorder Settings → Agent Access.")
+            throw AgentFailure("Agent access is disabled. Enable it in Afterword Settings → Agent Access.")
         }
         let roots = configuration.folders.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
         guard roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }) else {

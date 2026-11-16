@@ -23,7 +23,7 @@ struct CalendarSettings: View {
                 } else {
                     Button("Connect macOS Calendar") { Task { await calendar.connect() } }.disabled(calendar.loading)
                 }
-                Text("Call Recorder must stay running to show reminders. You can close its windows. Recording starts only when you choose it.")
+                Text("Afterword must stay running to show reminders. You can close its windows. Recording starts only when you choose it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if calendar.authorized {

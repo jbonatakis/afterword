@@ -1,4 +1,4 @@
-Call Recorder includes transcribe.cpp 0.4.2, revision
+Afterword includes transcribe.cpp 0.4.2, revision
 275cd50d2c4104c204009a197ac091b9687668e5, by Handy and contributors:
 https://github.com/handy-computer/transcribe.cpp
 It incorporates GGML. Their MIT licenses are included in this directory.

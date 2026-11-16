@@ -43,7 +43,7 @@ struct AgentAccessSettings: View {
                 Button("Copy Server Path") {
                     NSPasteboard.general.clearContents(); NSPasteboard.general.setString(server, forType: .string)
                 }
-                Text("Clients launch this executable with no arguments. The server works while Call Recorder is closed. Access changes apply to subsequent requests.")
+                Text("Clients launch this executable with no arguments. The server works while Afterword is closed. Access changes apply to subsequent requests.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text("Access is read-only. Your connected client controls which model receives retrieved text, including whether it uses a cloud service.")

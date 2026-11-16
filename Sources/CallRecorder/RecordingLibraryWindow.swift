@@ -11,7 +11,7 @@ import SwiftUI
         self.library = library; self.playback = playback
         let window = LibraryCommandWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.title = "Call Recorder"
+        window.title = "Afterword"
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         window.minSize = NSSize(width: 940, height: 660)

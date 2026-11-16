@@ -35,7 +35,7 @@ public struct TranscriptionCompletion: Decodable, Sendable {
 
     public func validate(expected: SpeakerBleedReduction) throws {
         guard speakerBleedReductionApplied == (expected == .enabled) else {
-            throw RecorderError.message("Speaker bleed reduction did not match the selected setting. No transcript was saved. Rebuild or reinstall Call Recorder.")
+            throw RecorderError.message("Speaker bleed reduction did not match the selected setting. No transcript was saved. Rebuild or reinstall Afterword.")
         }
         if speakerBleedReductionApplied {
             guard let details = echoCancellation, !details.engine.isEmpty,

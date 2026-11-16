@@ -55,7 +55,7 @@ struct RecordingShortcutSettings: View {
     var body: some View {
         Section("Keyboard shortcut") {
             KeyboardShortcuts.Recorder("Start / stop recording", name: shortcut.name) { _ in shortcut.refreshAfterEditing() }
-            Text("Works in other apps while Call Recorder is running. Click the field and press your shortcut; clear it to disable. Holding the keys triggers only once, when released.")
+            Text("Works in other apps while Afterword is running. Click the field and press your shortcut; clear it to disable. Holding the keys triggers only once, when released.")
                 .font(.caption).foregroundStyle(.secondary)
             if let issue = shortcut.issue {
                 Text(issue).font(.caption).foregroundStyle(.orange)

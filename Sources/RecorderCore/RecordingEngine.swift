@@ -115,7 +115,7 @@ public final class RecordingEngine {
         catch { checkpointSucceeded = false; failure = failure ?? error.localizedDescription; store?.recordError(error.localizedDescription) }
         let cleanupErrors = capture?.close() ?? []
         if !cleanupErrors.isEmpty {
-            failure = ([failure].compactMap { $0 } + cleanupErrors + ["Quit Call Recorder if the audio privacy indicator remains active."]).joined(separator: "\n")
+            failure = ([failure].compactMap { $0 } + cleanupErrors + ["Quit Afterword if the audio privacy indicator remains active."]).joined(separator: "\n")
             store?.recordError(failure!)
         }
         capture = nil; pipeline = nil

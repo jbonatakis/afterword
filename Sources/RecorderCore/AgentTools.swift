@@ -97,7 +97,7 @@ public final class AgentRPCServer {
             initialized = true
             return result(["protocolVersion": requested == "2025-06-18" ? requested : "2025-11-25",
                            "capabilities": ["tools": ["listChanged": false]],
-                           "serverInfo": ["name": "call-recorder", "version": "1.2.0"]])
+                           "serverInfo": ["name": "call-recorder", "title": "Afterword", "version": "1.2.1"]])
         }
         guard ready else { return error(id, -32002, "Initialize the MCP connection first") }
         switch method {
@@ -113,7 +113,7 @@ public final class AgentRPCServer {
                 return result(["content": [["type": "text", "text": text]], "structuredContent": value, "isError": false])
             } catch {
                 // Do not expose arbitrary filesystem paths in errors from Foundation.
-                let message = (error as? AgentFailure)?.message ?? "Agent access could not read its settings or library. Check Call Recorder and retry."
+                let message = (error as? AgentFailure)?.message ?? "Agent access could not read its settings or library. Check Afterword and retry."
                 return result(["content": [["type": "text", "text": message]], "isError": true])
             }
         default: return error(id, -32601, "Method not found")

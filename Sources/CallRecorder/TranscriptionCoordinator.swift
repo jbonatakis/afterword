@@ -76,7 +76,7 @@ import RecorderCore
     }
     func remove(_ model: SpeechModel) {
         guard !busy, downloadingID != model.id, installed[model.id]?.shared == false else { return }
-        do { try ModelStore.remove(model); downloadMessage = "Removed \(model.name) from Call Recorder." }
+        do { try ModelStore.remove(model); downloadMessage = "Removed \(model.name) from Afterword." }
         catch { downloadMessage = error.localizedDescription }
         refreshModels()
     }

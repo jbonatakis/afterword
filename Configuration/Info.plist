@@ -2,16 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
     <key>CFBundleIdentifier</key><string>io.local.callrecorder</string>
-    <key>CFBundleName</key><string>Call Recorder</string>
-    <key>CFBundleDisplayName</key><string>Call Recorder</string>
+    <key>CFBundleName</key><string>Afterword</string>
+    <key>CFBundleDisplayName</key><string>Afterword</string>
     <key>CFBundleExecutable</key><string>CallRecorder</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.14.0</string>
-    <key>CFBundleVersion</key><string>25</string>
-    <key>NSCalendarsFullAccessUsageDescription</key><string>Call Recorder reads selected calendars to suggest recording upcoming calls and fill in participants. It never changes your calendar events.</string>
+    <key>CFBundleShortVersionString</key><string>0.14.1</string>
+    <key>CFBundleVersion</key><string>26</string>
+    <key>NSCalendarsFullAccessUsageDescription</key><string>Afterword reads selected calendars to suggest recording upcoming calls and fill in participants. It never changes your calendar events.</string>
     <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>LSUIElement</key><false/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>Call Recorder records the microphone you choose alongside system audio when you start a recording or explicitly test audio. Recordings are saved locally.</string>
-    <key>NSAudioCaptureUsageDescription</key><string>Call Recorder captures audio from other apps and notifications when you start a recording or explicitly test audio. Your microphone and system audio are saved locally as separate tracks and a playback mix.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Afterword records the microphone you choose alongside system audio when you start a recording or explicitly test audio. Recordings are saved locally.</string>
+    <key>NSAudioCaptureUsageDescription</key><string>Afterword captures audio from other apps and notifications when you start a recording or explicitly test audio. Your microphone and system audio are saved locally as separate tracks and a playback mix.</string>
 </dict></plist>

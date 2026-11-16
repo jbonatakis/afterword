@@ -43,7 +43,7 @@ Core tests use injected vectors and cover cache reuse/invalidation, model-space 
 
 ```sh
 uv run --with mcp==1.28.1 Scripts/check-embedding-mcp.py \
-  'build/Call Recorder.app/Contents/Helpers/CallRecorderMCP' build/embedding-models
+  'build/Afterword.app/Contents/Helpers/CallRecorderMCP' build/embedding-models
 ```
 
 `Tests/EmbeddingBenchmark.swift` exports current-version chunks to an explicitly chosen private local artifact. `Scripts/benchmark-embeddings.py` compares the two downloaded models locally against the source anchors. Neither uploads recordings or changes production settings. Run `python3 Scripts/benchmark-embeddings.py CORPUS.json CASES.json`. Supply a private JSON array of question and source-anchor string pairs for that corpus. With only a corpus path, the runner reads the adjacent `CORPUS.cases.json` file.

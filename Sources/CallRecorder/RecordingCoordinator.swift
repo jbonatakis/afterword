@@ -208,7 +208,7 @@ import RecorderCore
     func copyDiagnostics() {
         let formatJSON = (try? JSONEncoder().encode(lastFormats)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         let text = """
-        Call Recorder \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development") (local diagnostics; no audio)
+        Afterword \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development") (local diagnostics; no audio)
         OS: \(ProcessInfo.processInfo.operatingSystemVersionString)
         State: \(state.rawValue)
         Selection: \(selection == .systemDefault ? "System default" : "Explicit device UID (redacted)")
@@ -233,14 +233,14 @@ import RecorderCore
         }
         guard locked else { return .terminateNow }
         let alert = NSAlert(); alert.messageText = "Stop recording and save before quitting?"
-        alert.informativeText = isPreview ? "The audio test will stop. No audio from the test is saved." : "Your recording will be finalized before Call Recorder quits."
+        alert.informativeText = isPreview ? "The audio test will stop. No audio from the test is saved." : "Your recording will be finalized before Afterword quits."
         alert.addButton(withTitle: "Stop and save"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
         quitting = true; stop(); return .terminateLater
     }
     private func acquireSleepAssertion() {
         guard !hasSleepAssertion else { return }
-        hasSleepAssertion = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Call Recorder is capturing audio" as CFString, &sleepAssertion) == kIOReturnSuccess
+        hasSleepAssertion = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Afterword is capturing audio" as CFString, &sleepAssertion) == kIOReturnSuccess
     }
     private func releaseSleepAssertion() { if hasSleepAssertion { IOPMAssertionRelease(sleepAssertion); hasSleepAssertion = false } }
 }

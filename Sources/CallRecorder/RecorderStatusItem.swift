@@ -57,7 +57,7 @@ import RecorderCore
     private func refreshLabel() {
         guard let button = item.button else { return }
         let symbol = recorder.state == .recording ? "record.circle.fill" : recorder.state == .previewing ? "waveform" : "waveform.circle"
-        let label = recorder.state == .recording ? "Call Recorder, Recording, \(recorder.elapsed)" : "Call Recorder, \(recorder.title)"
+        let label = recorder.state == .recording ? "Afterword, Recording, \(recorder.elapsed)" : "Afterword, \(recorder.title)"
         if previousSymbol != symbol {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             image?.isTemplate = true

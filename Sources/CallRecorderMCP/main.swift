@@ -8,7 +8,7 @@ if arguments.isEmpty { directory = AgentAccessStore.directory }
 else if arguments.count == 2, arguments[0] == "--state-directory", arguments[1].hasPrefix("/") {
     directory = URL(fileURLWithPath: arguments[1], isDirectory: true)
 } else {
-    FileHandle.standardError.write(Data("Usage: CallRecorderMCP [--state-directory /absolute/path]\nLocal read-only MCP server over stdio. Access is configured in Call Recorder Settings.\n".utf8))
+    FileHandle.standardError.write(Data("Usage: CallRecorderMCP [--state-directory /absolute/path]\nLocal read-only MCP server over stdio. Access is configured in Afterword Settings.\n".utf8))
     exit(arguments == ["--help"] ? 0 : 2)
 }
 signal(SIGPIPE, SIG_IGN)

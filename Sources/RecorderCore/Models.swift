@@ -16,8 +16,8 @@ public enum RecorderError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .message(let s): return s
-        case .microphonePermission: return "Microphone permission is required. Open System Settings → Privacy & Security → Microphone and enable Call Recorder."
-        case .systemAudioPermission(let operation): return "System audio access was refused during \(operation). Open System Settings → Privacy & Security and find the screen/system audio recording controls. Enable Call Recorder, then try again."
+        case .microphonePermission: return "Microphone permission is required. Open System Settings → Privacy & Security → Microphone and enable Afterword."
+        case .systemAudioPermission(let operation): return "System audio access was refused during \(operation). Open System Settings → Privacy & Security and find the screen/system audio recording controls. Enable Afterword, then try again."
         case .osStatus(let operation, let code):
             let bytes = (0..<4).map { UInt8(truncatingIfNeeded: UInt32(bitPattern: code) >> (24 - $0 * 8)) }
             let fourCC = bytes.allSatisfy { $0 >= 32 && $0 < 127 } ? String(bytes: bytes, encoding: .ascii)! : ""

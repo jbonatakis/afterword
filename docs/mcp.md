@@ -1,6 +1,8 @@
 # MCP access
 
-Call Recorder includes a local, client-agnostic, read-only MCP server. Enable **Settings → Agent Access** and select allowed recording folders. Access starts disabled, with no allowed folders. New library folders are not automatically exposed.
+Afterword includes a local, client-agnostic, read-only MCP server. Enable **Settings → Agent Access** and select allowed recording folders. Access starts disabled, with no allowed folders. New library folders are not automatically exposed.
+
+The server keeps its stable `call-recorder` implementation name and advertises **Afterword** as its display title. Existing `build/Call Recorder.app/…` commands resolve through a compatibility link; new paths use `build/Afterword.app/…`.
 
 The **Copy Server Path** button copies the bundled `Contents/Helpers/CallRecorderMCP` executable. Configure your MCP client to launch that command with no arguments, using **stdio**. Supply the executable path as a command value, not an unquoted shell string. No network listener, account connection, runtime installation, or running app window is required. Clients that require a remote HTTP endpoint cannot connect directly to this local executable.
 
@@ -63,7 +65,7 @@ Independent helper processes can share the private checkpoint store; a file lock
 The process check uses the official MCP Python client against synthetic audio and temporary settings:
 
 ```sh
-uv run --with mcp==1.28.1 Scripts/check-mcp.py 'build/Call Recorder.app/Contents/Helpers/CallRecorderMCP'
+uv run --with mcp==1.28.1 Scripts/check-mcp.py 'build/Afterword.app/Contents/Helpers/CallRecorderMCP'
 ```
 
 The bundled helper is signed with the persistent app signing certificate under its own `io.local.callrecorder.mcp` identifier.

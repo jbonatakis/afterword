@@ -15,7 +15,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.2</string>
 <key>LSUIElement</key><true/>
-<key>NSCalendarsFullAccessUsageDescription</key><string>Read your selected work calendar to check whether meeting links, attendee names, emails, and groups are available for Call Recorder. This probe does not change calendar events.</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Read your selected work calendar to check whether meeting links, attendee names, emails, and groups are available for Afterword. This probe does not change calendar events.</string>
 </dict></plist>
 PLIST
 cat > "$PWD/build/calendar-spike/entitlements.plist" <<'PLIST'

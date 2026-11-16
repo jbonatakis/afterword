@@ -31,7 +31,7 @@ target_ids = {name: ident("target:" + name) for name in target_names}
 shortcut_package = add("package:KeyboardShortcuts", "XCLocalSwiftPackageReference", relativePath="Vendor/KeyboardShortcuts")
 shortcut_product = add("package-product:KeyboardShortcuts", "XCSwiftPackageProductDependency", productName="KeyboardShortcuts")
 products = {}
-product_kinds = {"CaptureBridge": ("libCaptureBridge.a", "archive.ar", "com.apple.product-type.library.static"), "RecorderCore": ("RecorderCore.framework", "wrapper.framework", "com.apple.product-type.framework"), "CallRecorder": ("Call Recorder.app", "wrapper.application", "com.apple.product-type.application"), "RecorderCoreTests": ("RecorderCoreTests.xctest", "wrapper.cfbundle", "com.apple.product-type.bundle.unit-test")}
+product_kinds = {"CaptureBridge": ("libCaptureBridge.a", "archive.ar", "com.apple.product-type.library.static"), "RecorderCore": ("RecorderCore.framework", "wrapper.framework", "com.apple.product-type.framework"), "CallRecorder": ("Afterword.app", "wrapper.application", "com.apple.product-type.application"), "RecorderCoreTests": ("RecorderCoreTests.xctest", "wrapper.cfbundle", "com.apple.product-type.bundle.unit-test")}
 product_kinds["CallRecorderMCP"] = ("CallRecorderMCP", "compiled.mach-o.executable", "com.apple.product-type.tool")
 for name, (path, kind, _) in product_kinds.items():
     products[name] = add("product:" + name, "PBXFileReference", explicitFileType=kind, path=path, sourceTree="BUILT_PRODUCTS_DIR")
@@ -65,7 +65,7 @@ for name in target_names:
     if name == "CallRecorderMCP":
         values.update(PRODUCT_BUNDLE_IDENTIFIER="io.local.callrecorder.mcp", GENERATE_INFOPLIST_FILE="NO", ENABLE_HARDENED_RUNTIME="YES", OTHER_CODE_SIGN_FLAGS="--identifier io.local.callrecorder.mcp")
     if name == "CallRecorder":
-        values.update(PRODUCT_NAME="Call Recorder", PRODUCT_MODULE_NAME="CallRecorder", EXECUTABLE_NAME="CallRecorder", PRODUCT_BUNDLE_IDENTIFIER="io.local.callrecorder", SKIP_INSTALL="NO", GENERATE_INFOPLIST_FILE="NO", INFOPLIST_FILE="Configuration/Info.plist", CODE_SIGN_ENTITLEMENTS="Configuration/CallRecorder.entitlements", ENABLE_HARDENED_RUNTIME="YES", ENABLE_APP_SANDBOX="NO")
+        values.update(PRODUCT_NAME="Afterword", PRODUCT_MODULE_NAME="CallRecorder", EXECUTABLE_NAME="CallRecorder", PRODUCT_BUNDLE_IDENTIFIER="io.local.callrecorder", SKIP_INSTALL="NO", GENERATE_INFOPLIST_FILE="NO", INFOPLIST_FILE="Configuration/Info.plist", CODE_SIGN_ENTITLEMENTS="Configuration/CallRecorder.entitlements", ENABLE_HARDENED_RUNTIME="YES", ENABLE_APP_SANDBOX="NO")
         embed = build("embed:RecorderCore", products["RecorderCore"], settings={"ATTRIBUTES": ["CodeSignOnCopy", "RemoveHeadersOnCopy"]})
         phases.append(phase(name + ":embed", "PBXCopyFilesBuildPhase", [embed], dstPath="", dstSubfolderSpec=10, name="Embed Frameworks"))
         helper = build("embed:CallRecorderMCP", products["CallRecorderMCP"], settings={"ATTRIBUTES": ["CodeSignOnCopy"]})

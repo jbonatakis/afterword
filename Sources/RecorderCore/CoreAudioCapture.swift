@@ -67,7 +67,7 @@ public final class CoreAudioCapture {
             inputID = input.device.objectID
             guard input.device.channels.indices.contains(input.channel) else { throw RecorderError.message("Choose a valid microphone channel.") }
             let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [try HAL.ownProcess()])
-            desc.name = "Call Recorder system audio"
+            desc.name = "Afterword system audio"
             desc.isPrivate = true
             desc.muteBehavior = .unmuted
             try HAL.check(AudioHardwareCreateProcessTap(desc, &tap), "Create system audio tap")
@@ -76,7 +76,7 @@ public final class CoreAudioCapture {
             let tapFormat = try HAL.value(tap, kAudioTapPropertyFormat, initial: AudioStreamBasicDescription())
             guard tapFormat.mChannelsPerFrame == 2 else { throw RecorderError.message("System audio tap did not expose stereo audio.") }
             let description: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "Call Recorder session",
+                kAudioAggregateDeviceNameKey: "Afterword session",
                 kAudioAggregateDeviceUIDKey: "io.local.callrecorder.session.\(UUID().uuidString)",
                 kAudioAggregateDeviceIsPrivateKey: true,
                 // A stacked/multi-output aggregate omits the input-only mic on macOS 15.8.1.

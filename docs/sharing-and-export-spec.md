@@ -1,4 +1,4 @@
-# Call Recorder sharing and export specification
+# Afterword sharing and export specification
 
 **Status:** Proposed
 
@@ -16,7 +16,7 @@ Add a Share button that prepares a readable transcript, optionally includes the 
 2. Click **Share** beside the call’s title. The row context menu and **Call → Share…** open the same flow. Use **Command–Shift–E** as the keyboard shortcut and add it to the shortcut reference.
 3. A compact sharing panel shows the call title, selected transcript version, export options, and a preview. The first-use default is a **PDF transcript**, with **Include recording** off.
 4. Choose **Share…**, **Save…**, or **Copy text**. Share opens the native macOS picker for the prepared content; Save opens the appropriate native save dialog.
-5. Choose the destination and finish in that app. Call Recorder does not select recipients or channels, infer recipients from calendar guests, or automate Send.
+5. Choose the destination and finish in that app. Afterword does not select recipients or channels, infer recipients from calendar guests, or automate Send.
 
 The native picker provides the available destinations for the actual payload. Mail, Messages, AirDrop, Notes, and third-party services depend on system configuration and supported content. Do not hard-code a list of supposedly available destinations. [Apple documents this filtering behavior](https://support.apple.com/en-ca/guide/mac-help/mh40614/mac).
 
@@ -93,7 +93,7 @@ For one saved file, use `NSSavePanel`. For transcript plus audio, let the user c
 
 Sharing a completed call remains available while another call is recording. The active, unfinished recording is unavailable for export. Save/export work must not stop capture, trigger transcription, or alter gain settings.
 
-Escape closes the current sharing UI without falling through to rename/transcript cancellation. On cancellation, restore the originating library focus; return to the editor when cancelling the unsaved-edit choice. Once the user switches to a destination app, do not reactivate Call Recorder to show a completion message. Block library letter and deletion shortcuts while a sharing panel or picker owns keyboard focus.
+Escape closes the current sharing UI without falling through to rename/transcript cancellation. On cancellation, restore the originating library focus; return to the editor when cancelling the unsaved-edit choice. Once the user switches to a destination app, do not reactivate Afterword to show a completion message. Block library letter and deletion shortcuts while a sharing panel or picker owns keyboard focus.
 
 Report file-generation and handoff errors with a retry path that preserves the selected options. If a source disappears during preparation, stop and identify the missing item rather than silently exporting less content. Show selected file sizes; let the destination report its own attachment limits. Cancelling a picker or destination composer is not an error.
 
@@ -109,7 +109,7 @@ Use precise status messages: **Copied**, **Saved to…**, or **Opened in…** wh
 6. Slack copy-and-open preserves the full text and does not send. Dragging the prepared files into a Slack composer attaches the intended files; the user chooses the conversation and sends. No real messages are sent during automated verification.
 7. Cancellation, destination failure, app quit/reopen, and slow attachment reads do not prematurely remove files. Cache cleanup touches only expired inactive export directories. Source files remain unchanged.
 8. Repeated Share → Escape → keyboard navigation works without tests forcibly reactivating or refocusing the app between keys. Sharing does not recreate the library window or interrupt a recording.
-9. Export preparation and saving work offline. Any network use belongs to the explicitly chosen destination app; Call Recorder adds no upload service or new account connection.
+9. Export preparation and saving work offline. Any network use belongs to the explicitly chosen destination app; Afterword adds no upload service or new account connection.
 
 ## Follow-up scope
 
