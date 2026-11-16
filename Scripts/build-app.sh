@@ -5,6 +5,7 @@ SIGNING_IDENTITY="$(./Scripts/signing-identity.sh)"
 export SIGNING_IDENTITY
 configuration="${CONFIGURATION:-release}"
 ./Scripts/build-transcription.sh
+./Scripts/build-embedding.sh
 ./Scripts/swift-command.sh build -c "$configuration"
 binary_dir="$(./Scripts/swift-command.sh build -c "$configuration" --show-bin-path)"
 app="$PWD/build/Call Recorder.app"
@@ -17,6 +18,7 @@ cp "$binary_dir/CallRecorder" "$stage_app/Contents/MacOS/CallRecorder"
 cp Configuration/Info.plist "$stage_app/Contents/Info.plist"
 cp -R "$binary_dir/KeyboardShortcuts_KeyboardShortcuts.bundle" "$stage_app/Contents/Resources/"
 ./Scripts/embed-transcription.sh "$stage_app"
+./Scripts/embed-embedding.sh "$stage_app"
 cp "$binary_dir/CallRecorderMCP" "$stage_app/Contents/Helpers/CallRecorderMCP"
 codesign --force --sign "$SIGNING_IDENTITY" --identifier io.local.callrecorder.mcp --options runtime "$stage_app/Contents/Helpers/CallRecorderMCP"
 codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements Configuration/CallRecorder.entitlements "$stage_app"
