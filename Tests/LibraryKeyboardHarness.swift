@@ -65,7 +65,8 @@ import RecorderCore
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
         let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json")); recorder.shortcut.shutdown()
         defer { recorder.transcription.shutdown() }
-        let library = RecordingLibraryModel(recorder: recorder)
+        let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
+        defer { library.shutdown() }
         await library.refresh()?.value
         let states = CurrentValueSubject<RecordingState, Never>(.idle)
         let playback = RecordingPlayback(states: states.eraseToAnyPublisher())
@@ -110,7 +111,7 @@ import RecorderCore
         titleEditor.selectAll(nil); titleEditor.insertText("Renamed r e call", replacementRange: titleEditor.selectedRange())
         await key("\r", code: 36, window: window); await pump(0.7)
         require(library.selectedRecording?.name == "Renamed r e call" && library.renamingID == nil, "Return did not save rename")
-        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Return lost library/list focus")
+        require(NSApp.isActive && NSApp.keyWindow === window && window.firstResponder === list, "Return lost library/list focus (active: \(NSApp.isActive), key: \(NSApp.keyWindow === window), responder: \(String(describing: window.firstResponder)), list: \(list))")
         await key("r", code: 15, window: window); await pump()
         await key("\u{1b}", code: 53, window: window); await pump()
         require(library.renamingID == nil, "Escape did not cancel rename")

@@ -75,7 +75,8 @@ import RecorderCore
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
         let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json")); recorder.shortcut.shutdown()
         defer { recorder.transcription.shutdown() }
-        let library = RecordingLibraryModel(recorder: recorder)
+        let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
+        defer { library.shutdown() }
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
         require(library.recordings.count == 1 && library.selectedRecording?.id == recording.id, "Library failed to load fixture")
         library.search = "clear transcript"
@@ -196,6 +197,22 @@ import RecorderCore
             window.orderOut(nil)
         }
         print("PASS own-view rendering at default and minimum sizes; no screen capture or live audio capture")
+        require(!library.embeddings.settings.enabled, "Semantic search was not opt-in")
+        library.embeddings.change(enabled: true)
+        library.pollSemanticSearch()
+        for _ in 0..<40 { await pump(0.05); if library.semanticStatus?.state == "missing_model" { break } }
+        require(library.semanticStatus?.state == "missing_model", "Missing embedding model did not show keyword fallback")
+        let searchSettings = NSHostingView(rootView: EmbeddingSettingsView(library: library, embeddings: library.embeddings))
+        let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 640), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        settingsWindow.isReleasedWhenClosed = false; settingsWindow.contentView = searchSettings
+        settingsWindow.orderFront(nil); await pump()
+        searchSettings.layoutSubtreeIfNeeded()
+        let settingsBitmap = searchSettings.bitmapImageRepForCachingDisplay(in: searchSettings.bounds)!
+        searchSettings.cacheDisplay(in: searchSettings.bounds, to: settingsBitmap)
+        try settingsBitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/search-settings.png"))
+        settingsWindow.close()
+        library.embeddings.change(enabled: false)
+        print("PASS opt-in search settings, missing-model fallback and settings rendering")
 
         let updated = library.recordings[0]
         library.beginTranscriptEditing(updated, version: updated.transcripts[0], paragraph: 1)

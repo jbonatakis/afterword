@@ -15,6 +15,13 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var issues: [String] = []
     @Published var selection: String? { didSet { defaults.set(selection, forKey: "librarySelection") } }
     @Published var search = "" { didSet { updateSearch() } }
+    let embeddings: EmbeddingCoordinator
+    @Published var searchSpeaker = "" { didSet { updateSearch() } }
+    @Published private(set) var speakerNames: [String] = []
+    @Published private(set) var semanticStatus: SemanticSearchStatus?
+    private var semanticTimer: Timer?
+    private var semanticPolling = false
+    private var polledSemanticStatus: SemanticSearchStatus?
     @Published var searchHistory = false { didSet { updateSearch() } }
     @Published private(set) var resultQuery = ""
     @Published private(set) var searching = false
@@ -45,7 +52,8 @@ struct ParticipantAssignmentStatus {
 
     var selectedRecording: LibraryRecording? { visibleRecordings.first { $0.id == selection } }
 
-    init(recorder: RecordingCoordinator, defaults: UserDefaults = .standard) {
+    init(recorder: RecordingCoordinator, defaults: UserDefaults = .standard, embeddingDirectory: URL = EmbeddingSettings.directory) {
+        embeddings = EmbeddingCoordinator(directory: embeddingDirectory)
         self.defaults = defaults
         self.recorder = recorder
         currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
@@ -58,18 +66,46 @@ struct ParticipantAssignmentStatus {
         }.store(in: &subscriptions)
         recorder.$savedFile.compactMap { $0 }.sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
         recorder.transcription.$transcript.compactMap { $0 }.sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
+        embeddings.changed = { [weak self] in self?.retrySemanticSearch() }
+        recorder.$state.combineLatest(recorder.transcription.$busy).sink { [weak self] state, transcribing in
+            self?.embeddings.setBusy([.preparing, .recording, .previewing, .finalizing].contains(state) || transcribing)
+        }.store(in: &subscriptions)
+        semanticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollSemanticSearch() }
+        }
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
     }
+    func pollSemanticSearch(retry: Bool = false) {
+        guard !semanticPolling, let index = searchIndex else { return }
+        semanticPolling = true
+        let history = searchHistory
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                if retry { index.retrySemanticSearch() } else { index.refreshSemanticSearch() }
+                return (index.semanticStatus(allVersions: history), index.speakerNames)
+            }.value
+            guard let self else { return }
+            let changed = self.polledSemanticStatus != result.0
+            self.polledSemanticStatus = result.0
+            if changed { self.semanticStatus = result.0 }
+            if self.speakerNames != result.1 { self.speakerNames = result.1 }
+            self.semanticPolling = false
+            if (changed || retry) && !self.searching && !self.search.isEmpty { self.updateSearch(debounce: false) }
+        }
+    }
+    func retrySemanticSearch() { pollSemanticSearch(retry: true) }
+    func shutdown() { semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown() }
     @discardableResult func refresh() -> Task<Void, Never>? {
         guard !managing else { return nil }
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
-        let roots = roots
+        let roots = roots, embeddingDirectory = embeddings.directory
         let existing = indexRoots == roots ? searchIndex : nil
+        if existing == nil { searchIndex?.stopSemanticSearch() }
         let task = Task.detached(priority: .utility) { () -> LibraryRefresh in
             do {
-                let index = try existing ?? LibrarySearchIndex(roots: roots)
+                let index = try existing ?? LibrarySearchIndex(roots: roots, embeddingDirectory: embeddingDirectory)
                 return LibraryRefresh(index: index, recordings: try index.synchronize(), error: nil, issues: index.issues)
             } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
         }
@@ -81,27 +117,31 @@ struct ParticipantAssignmentStatus {
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
             self.recordings = result.recordings; self.issues = result.issues
+            self.pollSemanticSearch()
             await self.updateSearch(debounce: false)?.value
         }
     }
     @discardableResult func updateSearch(debounce: Bool = true) -> Task<Void, Never>? {
         searchTask?.cancel()
         let token = UUID(); searchGeneration = token
-        if LibrarySearchQuery(search).isEmpty {
+        if LibrarySearchQuery(search).isEmpty && searchSpeaker.isEmpty {
             searchHits = [:]; resultQuery = ""; searching = false
             matchedRecordings = recordings; applyFilter(); return nil
         }
         guard let index = searchIndex else { return nil }
         searching = true
-        let query = search, history = searchHistory
+        let query = search, history = searchHistory, speaker = searchSpeaker
         let task = Task { [weak self] in
             if debounce { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
-            let result = await Task.detached(priority: .userInitiated) { Result { try index.search(query, allVersions: history) } }.value
+            let work = Task.detached(priority: .userInitiated) { Result { try index.hybridSearch(query, allVersions: history, speaker: speaker.isEmpty ? nil : speaker) } }
+            let result = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
             guard let self, !Task.isCancelled, self.searchGeneration == token else { return }
             self.searching = false
             switch result {
-            case .success(let hits):
+            case .success(let result):
+                let hits = result.hits
+                self.semanticStatus = result.status
                 let byID = Dictionary(uniqueKeysWithValues: self.recordings.map { ($0.id, $0) })
                 self.searchHits = Dictionary(uniqueKeysWithValues: hits.map { ($0.recordingID, $0) })
                 self.resultQuery = query

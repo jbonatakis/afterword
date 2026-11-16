@@ -43,6 +43,7 @@ import RecorderCore
         return recorder.shouldQuit()
     }
     func applicationWillTerminate(_ notification: Notification) {
+        library.shutdown()
         recorder.calendar.shutdown()
         recorder.transcription.shutdown()
         recorder.shortcut.shutdown()
@@ -58,6 +59,7 @@ import RecorderCore
             TabView {
                 RecorderSettings(recorder: delegate.recorder).tabItem { Label("Recording", systemImage: "waveform") }
                 TranscriptionSettings(transcription: delegate.recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }
+                EmbeddingSettingsView(library: delegate.library, embeddings: delegate.library.embeddings).tabItem { Label("Search", systemImage: "magnifyingglass") }
                 CalendarSettings(calendar: delegate.recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }
                 AgentAccessSettings(library: delegate.library).tabItem { Label("Agent Access", systemImage: "point.3.connected.trianglepath.dotted") }
             }.padding(12).frame(width: 560, height: 640)

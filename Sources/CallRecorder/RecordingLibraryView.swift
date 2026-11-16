@@ -70,6 +70,10 @@ struct RecordingLibraryView: View {
                         .accessibilityIdentifier("recording-list")
                 }
                 Divider()
+                if let status = library.semanticStatus, status.enabled {
+                    Text(status.message).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 12).padding(.top, 8)
+                }
                 HStack {
                     Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
                     Spacer()
@@ -93,9 +97,13 @@ struct RecordingLibraryView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
                     Toggle("Search previous transcript versions", isOn: $library.searchHistory)
+                    Picker("Speaker", selection: $library.searchSpeaker) {
+                        Text("Any speaker").tag("")
+                        ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
+                    }
                     Divider()
                     Text("Matches word beginnings · \"exact words or phrases\"")
-                } label: { Label("Search options", systemImage: library.searchHistory ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
+                } label: { Label("Search options", systemImage: library.searchHistory || !library.searchSpeaker.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
                     .help(library.searchHistory ? "Searching all saved transcript versions" : "Searching the latest saved transcript")
                 Button { library.refresh() } label: { Label("Refresh library", systemImage: "arrow.clockwise") }
                     .help("Refresh recordings and transcripts")
@@ -391,7 +399,8 @@ private struct RecordingDetail: View {
                                    assignment: library.participantAssignments[recording.id].flatMap { $0.versionID == version?.id ? $0 : nil },
                                    assignParticipant: { name, paragraph in
                                        if let version { Task { await library.assignParticipant(name, to: paragraph, recording: recording, version: version) } }
-                                   }, editParticipants: editDetails)
+                                   }, editParticipants: editDetails,
+                                   searchMatches: library.searchHits[recording.id].flatMap { $0.versionID == version?.id ? $0.paragraphIDs : nil } ?? [])
             } else if let error = version?.error {
                 ContentUnavailableView {
                     Label("Couldn’t read this transcript", systemImage: "exclamationmark.triangle")
@@ -461,8 +470,10 @@ struct ReadableTranscript: View {
     var assignment: ParticipantAssignmentStatus? = nil
     let assignParticipant: (String?, Int) -> Void
     let editParticipants: () -> Void
+    var searchMatches: [Int] = []
     private var firstMatch: Int? {
-        query.isEmpty ? nil : paragraphs.first {
+        if let match = searchMatches.first(where: { id in paragraphs.contains { $0.id == id } }) { return match }
+        return query.isEmpty ? nil : paragraphs.first {
             !LibrarySearchQuery(query).highlightRanges(in: $0.text).isEmpty || !LibrarySearchQuery(query).highlightRanges(in: $0.speakerLabel(automaticParticipant: automaticParticipant, participantNames: participantNames)).isEmpty
         }?.id
     }
@@ -527,6 +538,7 @@ struct ReadableTranscript: View {
                 }
                 .onAppear { if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
                 .onChange(of: query) { _, _ in if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
+                .onChange(of: searchMatches) { _, _ in if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
             }
         }
     }
