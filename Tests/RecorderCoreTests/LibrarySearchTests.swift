@@ -46,6 +46,59 @@ final class LibrarySearchTests: XCTestCase {
         try AgentAccessStore.save(.init(enabled: true, folders: [root.path]), directory: state)
         return AgentLibrary(directory: state)
     }
+    func testHybridRetrievalPreservesQuotesSpeakerScopeAndHistory() throws {
+        try fixture("CallA", text: ["The database migration requires postponing the rollout.", "Lunch is sandwiches."], run: "new", date: "2026-11-14T15:00:00Z")
+        try fixture("CallA", text: ["The ancient lighthouse needs repairs."], run: "old")
+        try fixture("CallB", text: ["The museum closes early.", "The lobby is quiet."])
+        let embeddingRoot = cache.appendingPathComponent("Embeddings")
+        var settings = EmbeddingSettings(); settings.enabled = true; settings.modelID = EmbeddingModel.catalog[0].id
+        try settings.save(directory: embeddingRoot)
+        try PrivateFiles.directory(EmbeddingSettings.modelRoot(embeddingRoot))
+        try Data().write(to: ModelStore.ownedURL(settings.model.asset, root: EmbeddingSettings.modelRoot(embeddingRoot)))
+        let index = try index()
+        index.semantic = SemanticSearchEngine(directory: embeddingRoot) { texts, model, _, _ in
+            texts.map { text in
+                let axis = text.contains("lighthouse") || text.contains("coastal tower") ? 2 : text.contains("database") || text.contains("deployment delay") ? 0 : 1
+                var vector = Array(repeating: Float(0), count: model.dimensions); vector[axis] = 1; return vector
+            }
+        }
+        try index.synchronize()
+        let deadline = Date().addingTimeInterval(3)
+        while index.semanticStatus(allVersions: true).state == "indexing", Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(index.semanticStatus().state, "ready")
+        XCTAssertTrue(try index.search("deployment delay").isEmpty)
+        let hybrid = try index.hybridSearch("deployment delay")
+        XCTAssertEqual(hybrid.status.mode, "hybrid"); XCTAssertEqual(hybrid.hits.count, 1)
+        XCTAssertTrue(hybrid.hits[0].recordingID.hasSuffix("CallA"))
+        XCTAssertTrue(try index.hybridSearch("deployment delay \"nonexistent phrase\"").hits.isEmpty)
+        XCTAssertEqual(try index.hybridSearch("deployment delay \"database migration\"").hits.count, 1)
+        XCTAssertEqual(try index.hybridSearch("deployment delay \"CallA\"").hits.count, 1)
+        XCTAssertEqual(try index.hybridSearch("deployment delay \"Recorder\"").hits.count, 1)
+        XCTAssertTrue(try index.hybridSearch("deployment delay", speaker: "Other participants").hits.isEmpty)
+        XCTAssertEqual(try index.hybridSearch("deployment delay", speaker: "Recorder").hits.count, 1)
+        let otherID = index.calls.first { $0.recording.sourceName == "CallB" }!.id
+        XCTAssertTrue(try index.hybridPassages("deployment delay", allVersions: true, allowed: [otherID]).passages.isEmpty)
+        XCTAssertTrue(try index.hybridSearch("coastal tower").hits.isEmpty)
+        XCTAssertEqual(try index.hybridSearch("coastal tower", allVersions: true).hits.count, 1)
+        XCTAssertTrue(try index.hybridSearch("deployment delay", keywordOnly: true).hits.isEmpty)
+        XCTAssertEqual(try index.hybridSearch("deployment delay").revision, hybrid.revision)
+    }
+    func testSpeakerFilterMatchesSpeechAndKeepsContextSeparate() throws {
+        try fixture(text: ["Approve the launch", "Send the budget", "Launch tomorrow"])
+        let service = try service()
+        let own = try service.call("search_transcripts", arguments: ["query": "launch", "speaker": "Recorder"])
+        let items = own["items"] as! [[String: Any]]
+        XCTAssertEqual(items.count, 1)
+        let matches = items[0]["matches"] as! [[String: Any]]
+        XCTAssertTrue(matches.allSatisfy { $0["speaker"] as? String == "Recorder" })
+        let other = try service.call("search_transcripts", arguments: ["query": "launch", "speaker": "Other participants"])
+        XCTAssertEqual(other["total"] as? Int, 0)
+        let combined = try service.call("search_transcripts", arguments: ["query": "launch budget", "speaker": "Recorder"])
+        XCTAssertEqual(combined["total"] as? Int, 0)
+        let status = own["search_status"] as! [String: Any]
+        XCTAssertEqual(status["mode"] as? String, "keyword")
+        XCTAssertThrowsError(try service.call("search_transcripts", arguments: ["query": "launch", "mode": "invalid"]))
+    }
     func testQueryWordsPhrasesPrefixesAccentsAndSafeSyntax() throws {
         XCTAssertTrue(LibrarySearchQuery("  PROJECT cafe  ").matches("Café is a project"))
         XCTAssertFalse(LibrarySearchQuery("\"cafe project\"").matches("Café is a project"))

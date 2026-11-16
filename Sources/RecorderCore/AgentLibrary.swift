@@ -54,15 +54,20 @@ public final class AgentLibrary {
     public func call(_ name: String, arguments: [String: Any]) throws -> [String: Any] {
         try AgentTools.validate(name, arguments: arguments)
         let configuration = try AgentAccessStore.load(directory: directory)
-        guard configuration.enabled else { throw AgentFailure("Agent access is disabled. Enable it in Call Recorder Settings → Agent Access.") }
+        guard configuration.enabled else {
+            index?.stopSemanticSearch(); index = nil; indexedFolders = nil
+            throw AgentFailure("Agent access is disabled. Enable it in Call Recorder Settings → Agent Access.")
+        }
         let roots = configuration.folders.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
         guard roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }) else {
             throw AgentFailure("An allowed folder was replaced by a symbolic link. Review Agent Access settings.")
         }
         let scope = AgentJSON.hash(try AgentJSON.data(configuration.folders.sorted()))
         if indexedFolders != configuration.folders {
+            index?.stopSemanticSearch()
             index = try LibrarySearchIndex(roots: roots, confined: true,
-                directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"))
+                directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
+                embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"))
             indexedFolders = configuration.folders
         }
         guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
@@ -75,15 +80,20 @@ public final class AgentLibrary {
         var result: [String: Any]
         switch name {
         case "list_calls":
-            try args.checkRevision(libraryRevision)
+            var searchRevision = libraryRevision
+            var searchStatus = index.semanticStatus(allVersions: args.bool("all_versions"))
             var filtered = try filtered(calls, args: args)
-            if let query = args.string("query"), !LibrarySearchQuery(query).isEmpty {
-                let hits = try index.search(query, allVersions: args.bool("all_versions"))
+            if args.string("query") != nil || args.string("speaker") != nil {
+                let search = try index.hybridSearch(args.string("query") ?? "", allVersions: args.bool("all_versions"), speaker: args.string("speaker"), keywordOnly: args.string("mode") == "keyword", recordingIDs: Set(filtered.map { $0.recording.id }))
+                let hits = search.hits; searchStatus = search.status
+                searchRevision = AgentJSON.hash(libraryRevision + search.revision)
                 let positions = Dictionary(uniqueKeysWithValues: hits.enumerated().map { ($0.element.recordingID, $0.offset) })
                 filtered = filtered.filter { positions[$0.recording.id] != nil }.sorted { positions[$0.recording.id]! < positions[$1.recording.id]! }
             }
+            try args.checkRevision(searchRevision)
             result = try page(filtered, args: args) { $0.summary }
-            result["library_revision"] = libraryRevision
+            result["library_revision"] = searchRevision
+            result["search_status"] = try AgentJSON.object(searchStatus)
         case "get_call":
             let call = try find(calls, args: args); try args.checkRevision(call.revision)
             result = call.summary
@@ -107,12 +117,14 @@ public final class AgentLibrary {
             result = try page(paragraphs, args: args) { call.paragraph($0, version: version) }
             result["call"] = call.summary; result["version"] = call.versionInfo(version)
         case "search_transcripts":
-            try args.checkRevision(libraryRevision)
             let query = args.string("query")!
             guard LibrarySearchQuery(query).expression != nil else { throw AgentFailure("query must contain a word or phrase.") }
             let filtered = try filtered(calls, args: args)
             let byID = Dictionary(uniqueKeysWithValues: filtered.map { ($0.id, $0) })
-            let passages = try index.passages(query, allVersions: args.bool("all_versions"), allowed: Set(byID.keys))
+            let search = try index.hybridPassages(query, allVersions: args.bool("all_versions"), allowed: Set(byID.keys), speaker: args.string("speaker"), keywordOnly: args.string("mode") == "keyword")
+            let searchRevision = AgentJSON.hash(libraryRevision + search.revision)
+            try args.checkRevision(searchRevision)
+            let passages = search.passages
             let offset = args.integer("offset", default: 0), limit = args.integer("limit", default: 40)
             guard offset <= passages.count else { throw AgentFailure("offset exceeds the number of results. Restart pagination.") }
             let end = min(passages.count, offset + limit)
@@ -127,7 +139,7 @@ public final class AgentLibrary {
                     "matches": passage.matchingParagraphs.map { call.paragraph(paragraphs[$0], version: version) },
                     "context": passage.context.map { call.paragraph(paragraphs[$0], version: version) }]
             }
-            result = ["items": items, "total": passages.count, "library_revision": libraryRevision]
+            result = ["items": items, "total": passages.count, "library_revision": searchRevision, "search_status": try AgentJSON.object(search.status)]
             if end < passages.count { result["next_offset"] = end }
             result["unreadable_call_ids"] = filtered.filter { call in
                 let versions = args.bool("all_versions") ? call.recording.transcripts : Array(call.recording.transcripts.prefix(1))
@@ -140,6 +152,7 @@ public final class AgentLibrary {
         }
         // A running client loses access on its next request without needing to restart.
         guard try AgentAccessStore.load(directory: directory) == configuration else {
+            index.stopSemanticSearch()
             throw AgentFailure("Agent access settings changed during this request. Retry.")
         }
         guard try AgentJSON.data(result).count <= 1_048_576 else {

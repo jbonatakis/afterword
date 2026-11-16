@@ -54,6 +54,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     private let roots: [URL]
     private let confined: Bool
     private let db: SearchDatabase
+    var semantic: SemanticSearchEngine
     private let lock = NSRecursiveLock()
     private var cached: [String: (fingerprint: String, call: AgentCall)] = [:]
     private var loadedCount = 0
@@ -61,7 +62,8 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     public var lastLoadedCount: Int { lock.lock(); defer { lock.unlock() }; return loadedCount }
     public var issues: [String] { lock.lock(); defer { lock.unlock() }; return scanIssues }
 
-    public init(roots: [URL], confined: Bool = false, directory: URL = LibrarySearchIndex.cacheDirectory) throws {
+    public init(roots: [URL], confined: Bool = false, directory: URL = LibrarySearchIndex.cacheDirectory, embeddingDirectory: URL? = nil) throws {
+        semantic = SemanticSearchEngine(directory: embeddingDirectory ?? (directory == Self.cacheDirectory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings")))
         self.roots = roots; self.confined = confined
         let scope = AgentJSON.hash(roots.map { $0.standardizedFileURL.path }.sorted().joined(separator: "\n") + ":\(confined)")
         try PrivateFiles.directory(directory)
@@ -101,6 +103,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             for id in byID.keys where next[id] == nil { try remove(id) }
             try db.execute("COMMIT")
             cached = next
+            semantic.refresh(calls)
             return calls.map(\.recording)
         } catch { try? db.execute("ROLLBACK"); throw error }
     }
@@ -110,6 +113,10 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             $0.recording.date == $1.recording.date ? $0.recording.id < $1.recording.id : $0.recording.date > $1.recording.date
         }
     }
+    public func stopSemanticSearch() { semantic.stop() }
+    public func refreshSemanticSearch() { semantic.refresh(calls) }
+    public func retrySemanticSearch() { semantic.retry(); semantic.refresh(calls) }
+    public func semanticStatus(allVersions: Bool = false) -> SemanticSearchStatus { semantic.snapshot(allVersions: allVersions).0 }
     private func remove(_ id: String) throws {
         try db.execute("DELETE FROM documents WHERE id IN (SELECT key FROM versions WHERE call_id = ?)", [id])
         try db.execute("DELETE FROM passages WHERE key IN (SELECT key FROM versions WHERE call_id = ?)", [id])
@@ -210,7 +217,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     }
 }
 
-private final class SearchDatabase {
+final class SearchDatabase {
     private var handle: OpaquePointer?
     init(url: URL) throws {
         // Versioned scope databases are disposable; a corrupt cache can be rebuilt.
