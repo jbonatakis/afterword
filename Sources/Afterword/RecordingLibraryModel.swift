@@ -50,6 +50,10 @@ struct ParticipantAssignmentStatus {
     private var generation = UUID()
     private var subscriptions: Set<AnyCancellable> = []
     private let defaults: UserDefaults
+    private lazy var summaryMonitor = LibrarySummaryMonitor { [weak self] in self?.summaryChanged() }
+    private var summaryRefreshTask: Task<Void, Never>?
+    private var summaryRefreshPending = false
+    private var stopped = false
 
     var selectedRecording: LibraryRecording? { visibleRecordings.first { $0.id == selection } }
 
@@ -78,7 +82,7 @@ struct ParticipantAssignmentStatus {
             .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
     }
     func pollSemanticSearch(retry: Bool = false) {
-        guard !semanticPolling, let index = searchIndex else { return }
+        guard !stopped, !semanticPolling, let index = searchIndex else { return }
         semanticPolling = true
         let history = searchHistory
         Task { [weak self] in
@@ -86,7 +90,7 @@ struct ParticipantAssignmentStatus {
                 if retry { index.retrySemanticSearch() } else { index.refreshSemanticSearch() }
                 return (index.semanticStatus(allVersions: history), index.speakerNames)
             }.value
-            guard let self else { return }
+            guard let self, !self.stopped else { return }
             let changed = self.polledSemanticStatus != result.0
             self.polledSemanticStatus = result.0
             if changed { self.semanticStatus = result.0 }
@@ -96,9 +100,32 @@ struct ParticipantAssignmentStatus {
         }
     }
     func retrySemanticSearch() { pollSemanticSearch(retry: true) }
-    func shutdown() { semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown() }
+    func shutdown() {
+        stopped = true; summaryMonitor.stop(); summaryRefreshTask?.cancel()
+        summaryRefreshPending = false; scan?.cancel(); generation = UUID()
+        semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown()
+    }
+    private func summaryChanged() {
+        guard !stopped else { return }
+        summaryRefreshPending = true
+        summaryRefreshTask?.cancel()
+        summaryRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self else { return }
+            self.summaryRefreshTask = nil
+            self.refreshPendingSummary()
+        }
+    }
+    private func refreshPendingSummary() {
+        // Changes arriving during an index scan or local save must survive until
+        // it completes. Never replace the user's separate in-memory drafts.
+        guard summaryRefreshPending, !refreshing, !managing, !stopped else { return }
+        refresh()
+    }
     @discardableResult func refresh() -> Task<Void, Never>? {
-        guard !managing else { return nil }
+        guard !stopped, !managing else { return nil }
+        summaryMonitor.watch(roots)
+        summaryRefreshPending = false; summaryRefreshTask?.cancel(); summaryRefreshTask = nil
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots, embeddingDirectory = embeddings.directory
@@ -115,6 +142,7 @@ struct ParticipantAssignmentStatus {
             let result = await task.value
             guard let self, self.generation == id else { return }
             self.refreshing = false; self.scan = nil
+            defer { self.refreshPendingSummary() }
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
             self.recordings = result.recordings; self.issues = result.issues

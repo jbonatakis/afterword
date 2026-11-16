@@ -224,7 +224,12 @@ import RecorderCore
         library.beginSummaryEditing(summarySnapshot); await pump()
         library.summaryDrafts[summaryRecording.id]!.markdown = "An unsaved local correction"
         _ = try CallSummaryStore.save("Saved by another writer", for: summarySnapshot, source: summarySnapshot.latestTranscript, author: "agent")
-        await library.refresh()?.value; await pump()
+        for _ in 0..<100 {
+            if library.selectedRecording?.summary?.current?.markdown == "Saved by another writer" { break }
+            await pump(0.1)
+        }
+        require(library.selectedRecording?.summary?.current?.markdown == "Saved by another writer", "External summary did not refresh automatically")
+        require(library.summaryDrafts[summaryRecording.id]?.markdown == "An unsaved local correction", "Automatic refresh replaced the unsaved draft")
         await key("s", code: 1, flags: .command, window: window); await pump(0.6)
         require(library.summaryDrafts[summaryRecording.id]?.error != nil && library.summaryDrafts[summaryRecording.id]?.markdown == "An unsaved local correction",
                 "A concurrent summary write lost the local draft")
