@@ -57,6 +57,8 @@ actor CalendarReader: CalendarReading {
     @Published var error: String?
     @Published private(set) var directoryError: String?
     @Published var reminder: CalendarMeeting?
+    @Published private(set) var connected: Bool
+    @Published private(set) var connecting = false
     @Published private(set) var enabled: Bool
     @Published private(set) var selected: Set<String>
     @Published private(set) var leadSeconds: Int
@@ -69,6 +71,7 @@ actor CalendarReader: CalendarReading {
     private var ledger: MeetingReminderLedger
     private var refreshTask: Task<Void, Never>?
     private var generation = UUID()
+    private var connectionGeneration = UUID()
     private var timer: Timer?
     private var lastRefresh = Date.distantPast
     private var observers: [NSObjectProtocol] = []
@@ -84,23 +87,28 @@ actor CalendarReader: CalendarReading {
          hasAccess: @escaping @Sendable () -> Bool = { EKEventStore.authorizationStatus(for: .event) == .fullAccess }) {
         self.reader = reader; self.hasAccess = hasAccess
         self.recorder = recorder; self.directoryURL = directoryURL; self.defaults = defaults
-        enabled = defaults.bool(forKey: "calendarEnabled")
-        selected = Set(defaults.stringArray(forKey: "calendarSelection") ?? [])
+        let savedEnabled = defaults.bool(forKey: "calendarEnabled")
+        let savedSelection = Set(defaults.stringArray(forKey: "calendarSelection") ?? [])
+        // Preserve configured connections on upgrade; OS permission alone does not connect a fresh install.
+        let savedConnection = defaults.object(forKey: "calendarConnected") as? Bool ?? (savedEnabled || !savedSelection.isEmpty)
+        enabled = savedEnabled; selected = savedSelection; connected = savedConnection
+        defaults.set(savedConnection, forKey: "calendarConnected")
         leadSeconds = defaults.object(forKey: "calendarLeadSeconds") == nil ? 60 : defaults.integer(forKey: "calendarLeadSeconds")
         ledger = defaults.data(forKey: "calendarReminderLedger").flatMap { try? JSONDecoder().decode(MeetingReminderLedger.self, from: $0) } ?? .init()
         do { directory = try PeopleDirectory.load(from: directoryURL) } catch { directoryError = error.localizedDescription }
         authorized = hasAccess()
     }
     var locked: Bool { recorder?.locked ?? true }
-    var canStart: Bool { !locked && directoryError == nil && !directory.selfEmails.isEmpty && recorder?.noticesAccepted == true }
+    var canStart: Bool { connected && authorized && !locked && directoryError == nil && !directory.selfEmails.isEmpty && recorder?.noticesAccepted == true }
     var startHelp: String? {
+        if !connected || !authorized { return "Connect macOS Calendar and allow access in Calendar settings first." }
         if locked { return "Finish the current recording or audio test first." }
         if recorder?.noticesAccepted != true { return "Open Recording controls and acknowledge the recording notices first." }
         if directory.selfEmails.isEmpty { return "Add your email in Calendar settings so you are excluded from other participants." }
         return directoryError
     }
-    func startMonitoring() {
-        guard timer == nil else { return }
+    func startMonitoring(refreshImmediately: Bool = true) {
+        guard connected, timer == nil else { return }
         observers.append(NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         })
@@ -140,50 +148,92 @@ actor CalendarReader: CalendarReading {
                 self.checkReminder()
             }
         }
-        refresh()
+        if refreshImmediately { refresh() }
     }
-    func shutdown() {
-        timer?.invalidate(); timer = nil; refreshTask?.cancel()
+    private func stopMonitoring() {
+        timer?.invalidate(); timer = nil; refreshTask?.cancel(); refreshTask = nil; generation = UUID()
         for observer in observers { NotificationCenter.default.removeObserver(observer); NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         observers = []; stateSubscription = nil; noticesSubscription = nil; reminderSubscription = nil
-        reminderWindow?.close(); upcomingWindow?.close(); peopleWindow?.close()
+        reminderWindow?.close(); reminderWindow = nil
+    }
+    func shutdown() {
+        connectionGeneration = UUID(); connecting = false; loading = false
+        stopMonitoring()
+        upcomingWindow?.close(); peopleWindow?.close()
+    }
+    func disconnect() {
+        connectionGeneration = UUID(); connecting = false
+        connected = false; defaults.set(false, forKey: "calendarConnected")
+        enabled = false; defaults.set(false, forKey: "calendarEnabled")
+        stopMonitoring()
+        calendars = []; meetings = []; reminder = nil; loading = false; error = nil
+        startingFromCalendar = false
+        ledger = .init(); defaults.removeObject(forKey: "calendarReminderLedger")
+    }
+    func openPermissionSettings() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
     }
     func setEnabled(_ value: Bool) {
+        guard connected else { return }
         enabled = value; defaults.set(value, forKey: "calendarEnabled")
         if !value { reminder = nil; meetings = [] }
         refresh()
     }
     func select(_ calendarID: String, enabled: Bool) {
+        guard connected else { return }
         if enabled { selected.insert(calendarID) } else { selected.remove(calendarID) }
         defaults.set(Array(selected), forKey: "calendarSelection"); refresh()
     }
     func setLead(_ seconds: Int) { leadSeconds = seconds; defaults.set(seconds, forKey: "calendarLeadSeconds"); checkReminder() }
     func connect() async {
-        loading = true; error = nil
+        guard !connecting else { return }
+        connectionGeneration = UUID()
+        let attempt = connectionGeneration
+        connecting = true; error = nil
+        refreshTask?.cancel(); refreshTask = nil; generation = UUID(); loading = false
+        defer { if connectionGeneration == attempt { connecting = false } }
         do {
-            guard try await reader.requestAccess() else { throw RecorderError.message("Allow calendar access in System Settings → Privacy & Security → Calendars.") }
-            authorized = true
+            let granted = try await reader.requestAccess()
+            guard connectionGeneration == attempt, !Task.isCancelled else { return }
+            authorized = hasAccess()
+            guard granted, authorized else { throw RecorderError.message("Allow calendar access in System Settings → Privacy & Security → Calendars.") }
             let (available, _) = await reader.read(selected: [], now: Date())
+            guard connectionGeneration == attempt, !Task.isCancelled else { return }
+            authorized = hasAccess()
+            guard authorized else { throw RecorderError.message("Calendar access was removed. Allow access in System Settings → Privacy & Security → Calendars.") }
             calendars = available
             if selected.isEmpty {
                 let primary = available.filter { $0.title.contains("@") && !$0.title.hasSuffix("@group.calendar.google.com") }
                 if primary.count == 1 { selected = [primary[0].id]; defaults.set(Array(selected), forKey: "calendarSelection") }
             }
+            connected = true; defaults.set(true, forKey: "calendarConnected")
             enabled = true; defaults.set(true, forKey: "calendarEnabled")
-            loading = false; await refresh()?.value
-        } catch { self.error = error.localizedDescription; loading = false }
+            connecting = false
+            startMonitoring(refreshImmediately: false)
+            await refresh()?.value
+        } catch {
+            guard connectionGeneration == attempt else { return }
+            self.error = error.localizedDescription
+        }
     }
     @discardableResult func refresh() -> Task<Void, Never>? {
         refreshTask?.cancel(); generation = UUID()
         let generation = generation
         authorized = hasAccess()
-        guard authorized else { meetings = []; reminder = nil; loading = false; lastRefresh = Date(); return nil }
+        guard connected, authorized, !connecting else {
+            if !connected || !authorized { calendars = []; meetings = []; reminder = nil }
+            loading = false; lastRefresh = Date(); return nil
+        }
         loading = true
         let selection = enabled ? selected : []
         refreshTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled, self.generation == generation, connected else { return }
             let (available, fetched) = await reader.read(selected: selection, now: Date())
-            guard !Task.isCancelled, self.generation == generation else { return }
+            guard !Task.isCancelled, self.generation == generation, connected else { return }
+            authorized = hasAccess()
+            guard authorized else {
+                calendars = []; meetings = []; reminder = nil; loading = false; lastRefresh = Date(); return
+            }
             calendars = available; lastRefresh = Date(); loading = false
             var updated = directory
             for email in fetched.flatMap(\.guests).filter(\.isSelf).map(\.email) where !updated.selfEmails.contains(email) { updated.selfEmails.append(email) }
@@ -212,6 +262,8 @@ actor CalendarReader: CalendarReading {
         try copy.save(to: directoryURL); directory = copy; refresh()
     }
     func checkReminder(now: Date = Date()) {
+        guard connected else { return }
+        if authorized != hasAccess() { refresh(); return }
         guard enabled, authorized, !loading else { return }
         if let reminder, reminder.reference.end <= now || reminder.reference.start < now.addingTimeInterval(-5 * 60) { self.reminder = nil }
         guard reminder == nil, let meeting = ledger.due(meetings, now: now, lead: Double(leadSeconds), recording: locked) else { return }
@@ -225,7 +277,7 @@ actor CalendarReader: CalendarReading {
     func startMeeting(_ displayed: CalendarMeeting, join: Bool) async {
         guard canStart else { error = startHelp; return }
         await refresh()?.value
-        guard enabled, authorized, let current = meetings.first(where: { $0.id == displayed.id }), current == displayed,
+        guard connected, enabled, authorized, let current = meetings.first(where: { $0.id == displayed.id }), current == displayed,
               current.reference.end > Date() else { error = "This meeting changed or is no longer available. Review the refreshed list before starting."; return }
         guard canStart else { error = startHelp; return }
         error = nil

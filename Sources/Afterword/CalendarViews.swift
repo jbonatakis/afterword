@@ -8,10 +8,38 @@ struct CalendarSettings: View {
     @State private var emailError: String?
     var body: some View {
         Form {
-            Section {
+            Section("Connection") {
                 Text("Suggest recording calls from calendars synced with macOS Calendar. Meeting links in the event identify Google Meet, Zoom, and Teams calls.")
                     .font(.callout).foregroundStyle(.secondary)
-                if calendar.authorized {
+                if calendar.connecting {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting to macOS Calendar…")
+                        Spacer()
+                        Button("Cancel", action: calendar.disconnect)
+                    }
+                } else if calendar.connected {
+                    HStack {
+                        Label(calendar.authorized ? "Connected to macOS Calendar" : "Calendar access needed",
+                              systemImage: calendar.authorized ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        Spacer()
+                        Button("Disconnect", action: calendar.disconnect)
+                    }
+                    if !calendar.authorized {
+                        Button("Allow Calendar Access") { Task { await calendar.connect() } }
+                    }
+                } else {
+                    Text("Not connected").foregroundStyle(.secondary)
+                    Button("Connect macOS Calendar") { Task { await calendar.connect() } }
+                }
+                Text("Disconnect stops calendar reads and reminders in Afterword. Saved calls and people are kept.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Open System Settings…", action: calendar.openPermissionSettings)
+                Text("To change the macOS permission, open Privacy & Security → Calendars → Afterword.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if calendar.connected && calendar.authorized && !calendar.connecting {
+                Section("Recording reminders") {
                     Toggle("Suggest recording upcoming calls", isOn: Binding(get: { calendar.enabled }, set: calendar.setEnabled))
                     Picker("Remind me", selection: Binding(get: { calendar.leadSeconds }, set: calendar.setLead)) {
                         Text("At start time").tag(0)
@@ -20,13 +48,11 @@ struct CalendarSettings: View {
                         Text("2 minutes before").tag(120)
                         Text("5 minutes before").tag(300)
                     }
-                } else {
-                    Button("Connect macOS Calendar") { Task { await calendar.connect() } }.disabled(calendar.loading)
+                    Text("Afterword must stay running to show reminders. You can close its windows. Recording starts only when you choose it.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Afterword must stay running to show reminders. You can close its windows. Recording starts only when you choose it.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            if calendar.authorized {
+            if calendar.connected && calendar.authorized && !calendar.connecting {
                 Section("Calendars") {
                     if calendar.calendars.isEmpty { Text("No calendars available. Add your account in macOS Calendar.").foregroundStyle(.secondary) }
                     ForEach(calendar.calendars) { item in
@@ -60,6 +86,7 @@ struct CalendarSettings: View {
             CalendarError(calendar: calendar)
         }.formStyle(.grouped)
             .onAppear { emails = calendar.directory.selfEmails.joined(separator: "\n"); calendar.refresh() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in calendar.refresh() }
             .onChange(of: calendar.directory.selfEmails) { old, new in
                 if emails == old.joined(separator: "\n") { emails = new.joined(separator: "\n") }
             }
@@ -78,13 +105,19 @@ struct UpcomingMeetingsView: View {
                 Spacer()
                 Button("People & groups") { calendar.showPeople() }
                 Button { calendar.refresh() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh calendar")
+                    .disabled(!calendar.connected || calendar.connecting)
                 SettingsLink { Image(systemName: "gearshape") }.help("Calendar settings")
             }
-            if !calendar.authorized {
+            if !calendar.connected || !calendar.authorized {
                 ContentUnavailableView {
                     Label("Connect your calendar", systemImage: "calendar.badge.plus")
                 } description: { Text("Find calls in the calendars already on your Mac.") } actions: {
-                    Button("Connect macOS Calendar") { Task { await calendar.connect() } }.disabled(calendar.loading)
+                    if calendar.connecting {
+                        ProgressView("Connecting…")
+                        Button("Cancel", action: calendar.disconnect)
+                    } else {
+                        Button("Connect macOS Calendar") { Task { await calendar.connect() } }
+                    }
                 }
             } else if !calendar.enabled || calendar.selected.isEmpty {
                 CalendarSettings(calendar: calendar)

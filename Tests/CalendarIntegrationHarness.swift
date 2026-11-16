@@ -5,16 +5,34 @@ import AVFoundation
 
 actor FixtureCalendarReader: CalendarReading {
     var meetings: [CalendarMeeting]
+    private(set) var readCount = 0
+    private var holdRead = false
+    private var heldRead: CheckedContinuation<Void, Never>?
+    private var holdAccess = false
+    private var heldAccess: CheckedContinuation<Void, Never>?
     init(_ meetings: [CalendarMeeting]) { self.meetings = meetings }
-    func requestAccess() async throws -> Bool { true }
-    func read(selected: Set<String>, now: Date) -> ([AvailableCalendar], [CalendarMeeting]) {
-        ([.init(id: "fixture", title: "Work", source: "Fixture")], selected.contains("fixture") ? meetings : [])
+    func requestAccess() async throws -> Bool {
+        if holdAccess { holdAccess = false; await withCheckedContinuation { heldAccess = $0 } }
+        return true
+    }
+    func read(selected: Set<String>, now: Date) async -> ([AvailableCalendar], [CalendarMeeting]) {
+        readCount += 1
+        let snapshot = selected.contains("fixture") ? meetings : []
+        if holdRead { holdRead = false; await withCheckedContinuation { heldRead = $0 } }
+        return ([.init(id: "fixture", title: "Work", source: "Fixture")], snapshot)
     }
     func replace(_ meetings: [CalendarMeeting]) { self.meetings = meetings }
+    func pauseNextRead() { holdRead = true }
+    func pauseNextAccess() { holdAccess = true }
+    func waitingForRead() -> Bool { heldRead != nil }
+    func waitingForAccess() -> Bool { heldAccess != nil }
+    func finishRead() { heldRead?.resume(); heldRead = nil }
+    func finishAccess() { heldAccess?.resume(); heldAccess = nil }
 }
 
 @main struct CalendarIntegrationHarness {
     @MainActor static func main() {
+        setbuf(stdout, nil)
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         Task { @MainActor in
@@ -38,14 +56,28 @@ actor FixtureCalendarReader: CalendarReading {
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
         let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json")); recorder.shortcut.shutdown()
         defer { recorder.transcription.shutdown() }
+        let migrationDomain = domain + ".migration"
+        let migrationDefaults = UserDefaults(suiteName: migrationDomain)!
+        migrationDefaults.removePersistentDomain(forName: migrationDomain)
+        defer { migrationDefaults.removePersistentDomain(forName: migrationDomain) }
+        migrationDefaults.set(["fixture"], forKey: "calendarSelection")
+        let migrated = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), defaults: migrationDefaults,
+                                           reader: FixtureCalendarReader([]), hasAccess: { true })
+        try require(migrated.connected && !migrated.enabled, "An existing connection with reminders disabled was not preserved")
+        migrated.shutdown()
         let now = Date(), url = URL(string: "https://meet.google.com/abc-defg-hij")!
         let call = CalendarMeeting(reference: .init(occurrenceID: "one", title: "Avery / Casey", start: now.addingTimeInterval(45), end: now.addingTimeInterval(1845), calendar: "Work", joinURL: url),
                                    guests: [.init(email: "casey@example.com", isSelf: true), .init(email: "avery@example.com", name: "avery@example.com")])
         let groupCall = CalendarMeeting(reference: .init(occurrenceID: "two", title: "Group planning", start: now.addingTimeInterval(3600), end: now.addingTimeInterval(5400), calendar: "Work", joinURL: url),
                                         guests: [.init(email: "casey@example.com", isSelf: true), .init(email: "avery@example.com"), .init(email: "studio@example.com", name: "Studio")])
         let reader = FixtureCalendarReader([call, groupCall])
-        let calendar = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), reader: reader, hasAccess: { true })
+        let calendar = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), reader: reader,
+                                           hasAccess: { !UserDefaults.standard.bool(forKey: "fixtureCalendarDenied") })
         defer { calendar.shutdown() }
+        calendar.startMonitoring(); await calendar.refresh()?.value
+        let initialReads = await reader.readCount
+        try require(!calendar.connected && initialReads == 0, "System permission alone connected a fresh installation")
+        await calendar.connect()
         calendar.select("fixture", enabled: true); calendar.setEnabled(true); await calendar.refresh()?.value
         try require(calendar.meetings.count == 2 && calendar.canStart, "Calendar load or self exclusion failed")
         var avery = calendar.directory.identity(email: "avery@example.com")!; avery.name = "Avery Willow"; try calendar.updateIdentity(avery)
@@ -65,6 +97,90 @@ actor FixtureCalendarReader: CalendarReading {
         try require(calendar.reminder == nil, "Snooze did not delay the prompt")
         calendar.checkReminder(now: Date().addingTimeInterval(61))
         try require(calendar.reminder?.id == call.id, "Snoozed prompt did not return")
+        let savedPeople = calendar.directory
+        calendar.disconnect()
+        try require(!calendar.connected && !calendar.enabled && !calendar.loading && calendar.meetings.isEmpty && calendar.calendars.isEmpty && calendar.reminder == nil,
+                    "Disconnect did not clear calendar state")
+        try require(!NSApp.windows.contains { $0.title == "Upcoming Call" && $0.isVisible }, "Disconnect left a reminder window open")
+        try require(calendar.directory == savedPeople, "Disconnect removed saved people")
+        let disconnectedReads = await reader.readCount
+        calendar.startMonitoring(); await calendar.refresh()?.value; calendar.checkReminder(now: now.addingTimeInterval(63))
+        let readsAfterRefresh = await reader.readCount
+        try require(readsAfterRefresh == disconnectedReads && calendar.reminder == nil, "Disconnected calendar still reads or reminds")
+        let restarted = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), reader: reader, hasAccess: { true })
+        restarted.startMonitoring(); await restarted.refresh()?.value
+        let readsAfterRestart = await reader.readCount
+        try require(!restarted.connected && readsAfterRestart == disconnectedReads, "Relaunch silently reconnected with existing OS permission")
+        restarted.shutdown()
+        try await render(CalendarSettings(calendar: calendar), size: NSSize(width: 560, height: 640), name: "disconnected-settings")
+        try await render(UpcomingMeetingsView(calendar: calendar), size: NSSize(width: 680, height: 590), name: "disconnected-upcoming")
+
+        await calendar.connect()
+        try require(calendar.connected && calendar.enabled && calendar.selected.contains("fixture") && calendar.meetings.count == 2,
+                    "Reconnect did not restore selected calendars")
+        await reader.pauseNextRead()
+        let pendingRead = calendar.refresh()
+        for _ in 0..<100 {
+            if await reader.waitingForRead() { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let readWaiting = await reader.waitingForRead()
+        try require(readWaiting, "Fixture read did not suspend")
+        calendar.disconnect(); await reader.finishRead(); await pendingRead?.value
+        try require(!calendar.connected && calendar.meetings.isEmpty && calendar.calendars.isEmpty && calendar.directory == savedPeople,
+                    "A late refresh restored disconnected calendar data")
+
+        await reader.pauseNextAccess()
+        let pendingConnect = Task { await calendar.connect() }
+        for _ in 0..<100 {
+            if await reader.waitingForAccess() { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let accessWaiting = await reader.waitingForAccess()
+        try require(accessWaiting, "Fixture access request did not suspend")
+        let readsBeforeCancelledConnect = await reader.readCount
+        calendar.disconnect(); await reader.finishAccess(); await pendingConnect.value
+        let readsAfterCancelledConnect = await reader.readCount
+        try require(!calendar.connected && !calendar.connecting && readsAfterCancelledConnect == readsBeforeCancelledConnect,
+                    "A cancelled connection resumed reading or reconnected")
+
+        await reader.pauseNextRead()
+        let pendingSetup = Task { await calendar.connect() }
+        for _ in 0..<100 {
+            if await reader.waitingForRead() { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let setupWaiting = await reader.waitingForRead()
+        try require(setupWaiting, "Fixture connection read did not suspend")
+        calendar.disconnect(); await reader.finishRead(); await pendingSetup.value
+        try require(!calendar.connected && !calendar.connecting && calendar.calendars.isEmpty,
+                    "A late connection read restored the connection")
+
+        await calendar.connect()
+        let readsBeforeQueuedRefresh = await reader.readCount
+        let queuedRead = calendar.refresh()
+        calendar.disconnect(); await queuedRead?.value
+        let readsAfterQueuedRefresh = await reader.readCount
+        try require(readsBeforeQueuedRefresh == readsAfterQueuedRefresh, "A queued refresh started reading after disconnect")
+        print("PASS connection migration, disconnect/relaunch, reconnect, and rejection of queued or late refresh/access/setup results")
+
+        await calendar.connect()
+        UserDefaults.standard.set(true, forKey: "fixtureCalendarDenied")
+        let readsBeforeRevocation = await reader.readCount
+        await calendar.refresh()?.value
+        let readsAfterRevocation = await reader.readCount
+        try require(calendar.connected && !calendar.authorized && !calendar.canStart && calendar.calendars.isEmpty && calendar.meetings.isEmpty && calendar.reminder == nil,
+                    "Revoked OS permission left calendar data or start controls available")
+        try require(readsBeforeRevocation == readsAfterRevocation, "Revoked OS permission still fetched calendars")
+        try await render(CalendarSettings(calendar: calendar), size: NSSize(width: 560, height: 640), name: "permission-needed-settings")
+        calendar.disconnect()
+        UserDefaults.standard.set(false, forKey: "fixtureCalendarDenied")
+        await calendar.refresh()?.value
+        let readsAfterPermissionRestored = await reader.readCount
+        try require(!calendar.connected && calendar.authorized && readsAfterPermissionRestored == readsAfterRevocation,
+                    "Restored OS permission silently reconnected a disconnected calendar")
+        print("PASS permission revocation clears calendar state, and granting OS access does not override disconnect")
+        await calendar.connect()
         calendar.dismissReminder()
         calendar.checkReminder(now: Date().addingTimeInterval(62))
         try require(calendar.reminder == nil, "Dismissed prompt repeated")
@@ -91,7 +207,12 @@ actor FixtureCalendarReader: CalendarReading {
             .init(source: .microphone, start: 2, end: 3, text: "A question.", timing: "segment"),
             .init(source: .system, start: 4, end: 5, text: "Second answer.", timing: "segment")])
         _ = try document.save(beside: input)
-        let library = RecordingLibraryModel(recorder: recorder); await library.refresh()?.value
+        let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
+        defer { library.shutdown() }
+        // Initialization starts the scan. Wait for it instead of opening a second index at the same time.
+        for _ in 0..<100 where library.refreshing { try? await Task.sleep(nanoseconds: 20_000_000) }
+        try require(!library.refreshing, "Fixture recording scan did not finish")
+        try require(!library.recordings.isEmpty, "Fixture recording did not load: \(library.issues.joined(separator: "; "))")
         var recording = library.recordings[0]
         let sam = CallAttendee(name: "Sam")
         let rows = [CallAttendee(id: avery.id, name: avery.name, email: avery.emails[0]), sam]
@@ -122,7 +243,7 @@ actor FixtureCalendarReader: CalendarReading {
         recording = library.recordings[0]
         try require(recording.transcripts.contains { $0.document?.paragraphs.first?.participant == "Sam" }, "Explicit confirmation did not save speaker assignments")
         print("PASS attendance exclusion, no silent transfer, original preservation, inline speaker assignment, and explicit single-attendee labeling with/without unsaved drafts")
-        print("PASS five own-view calendar/attendance renders; no screenshots, calendar access, meeting navigation, or live capture")
+        print("PASS eight own-view calendar/attendance renders; no screenshots, calendar access, meeting navigation, or live capture")
     }
     @MainActor static func render<V: View>(_ view: V, size: NSSize, name: String) async throws {
         let host = NSHostingView(rootView: view.preferredColorScheme(.light))
