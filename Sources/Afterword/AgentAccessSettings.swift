@@ -18,6 +18,11 @@ struct AgentAccessSettings: View {
                 }))
                 Text("Let MCP clients search and read saved call information, summaries, and transcripts from the folders you select.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Share imported coding sessions", isOn: Binding(get: { configuration.allowCodingSessions }, set: { allowed in
+                    var next = configuration; next.allowCodingSessions = allowed; save(next)
+                })).disabled(!configuration.enabled)
+                Text("Includes saved prompts, replies, project paths, and tool names from imported projects.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Allow agents to save summaries", isOn: Binding(get: { configuration.allowSummaryWrites }, set: { allowed in
                     var next = configuration; next.allowSummaryWrites = allowed; save(next)
                 })).disabled(!configuration.enabled)

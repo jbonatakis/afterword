@@ -140,6 +140,16 @@ For closed-lid use, select an external microphone such as the webcam. Apple sili
 
 Settings have Recording and Transcription tabs. Sources/destination lock during a session. A missing explicit device never falls back silently. System default is resolved afresh for each session and frozen while active.
 
+## Coding sessions
+
+In **Settings → Coding**, enable Claude Code import and select projects. Afterword uses [Lookback](https://github.com/jbonatakis/lookback) to read the local Claude Code projects store. It imports available sessions, checks for changes every minute while running, and checks again when you refresh the library. Pausing import keeps the archive. Removing a project from Coding settings deletes its Afterword history and stops future imports for that project.
+
+Open **Coding sessions** for an individual project conversation or **All activity** to search across calls and coding sessions. The conversation view follows the current branch. Recorded history includes earlier branches and pre-compaction messages. Search results open at the matching message and select the relevant view. Project and Git branch filters are in Search options. Tool names are available in collapsed disclosures. Afterword omits tool arguments and result payloads from the archive.
+
+The durable archive lives in `~/Library/Application Support/Afterword/CodingSessions`. It retains imported sessions when Claude Code rotates or deletes local transcripts. Search works immediately with keywords. Enabling the existing optional semantic model also indexes coding passages locally, with prompt and response context and the existing recording priority rules.
+
+MCP clients can use **search_activity** across their allowed calls. Separately enable **Settings → Agent Access → Share imported coding sessions** to include imported projects and allow **get_coding_session**. Existing grants default to calls only.
+
 ## Agent access (MCP)
 
 **Settings → Agent Access** enables a bundled local MCP server and selects the recording folders clients may read, with a separate opt-in for saving summaries. **Copy Server Path** supplies the stdio command; no client-specific setup is included. The server provides call listing, transcript search, saved call/version retrieval, and independent change checkpoints. It uses the library's current saved speaker assignments and edits, works while the app is closed, and rechecks access on every request. Access starts disabled. See the [MCP interface and behavior](docs/mcp.md).

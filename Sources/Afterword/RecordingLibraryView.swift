@@ -16,6 +16,35 @@ struct RecordingLibraryView: View {
     @State private var discardSummaryEdits: LibraryRecording?
     @FocusState private var focus: LibraryFocus?
 
+    private var recordingRows: some View {
+        ForEach(library.visibleRecordings) { recording in
+            RecordingRow(recording: recording, library: library, focus: $focus).tag(recording.id)
+                .contextMenu {
+                    Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
+                    Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
+                    Button("Show in Finder") { recorder.reveal(recording.url) }
+                    Divider()
+                    Button("Move to Trash…", role: .destructive) { trashTarget = .init(recording: recording) }
+                        .disabled(library.managing || recorder.locked || recorder.transcription.busy || library.transcriptDrafts[recording.id] != nil || library.summaryDrafts[recording.id] != nil || library.renamingID == recording.id)
+                }
+        }
+    }
+
+    private var codingRows: some View {
+        Section("Coding sessions") {
+            ForEach(library.visibleCoding) { session in
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(session.title, systemImage: "terminal").font(.headline).lineLimit(2)
+                    Text(URL(fileURLWithPath: session.project).lastPathComponent + " · " + session.updated.formatted())
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let hit = library.codingHits[session.id] {
+                        Text(hit.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }.tag(session.id)
+            }
+        }
+    }
+
     private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
@@ -48,24 +77,21 @@ struct RecordingLibraryView: View {
             }.navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 250)
         } content: {
             VStack(spacing: 0) {
-                if library.visibleRecordings.isEmpty {
+                if library.visibleRecordings.isEmpty && library.visibleCoding.isEmpty {
                     ContentUnavailableView {
-                        Label(library.search.isEmpty ? "No recordings" : "No results", systemImage: library.search.isEmpty ? "waveform" : "magnifyingglass")
+                        Label(library.search.isEmpty ? (library.filter == .coding ? "No coding sessions" : "No recordings") : "No results", systemImage: library.search.isEmpty ? "waveform" : "magnifyingglass")
                     } description: {
-                        Text(library.search.isEmpty ? "Record a call or add a folder of existing recordings." : "Try another phrase or a different library filter.")
+                        Text(library.search.isEmpty ? (library.filter == .coding ? "Choose projects in Settings → Coding to import sessions." : "Record a call or add a folder of existing recordings.") : "Try another phrase or a different library filter.")
                     }
                 } else {
-                    List(selection: $library.selection) {
-                        ForEach(library.visibleRecordings) { recording in
-                            RecordingRow(recording: recording, library: library, focus: $focus).tag(recording.id)
-                                .contextMenu {
-                                    Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
-                                    Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
-                                    Button("Show in Finder") { recorder.reveal(recording.url) }
-                                    Divider()
-                                    Button("Move to Trash…", role: .destructive) { trashTarget = .init(recording: recording) }
-                                        .disabled(library.managing || recorder.locked || recorder.transcription.busy || library.transcriptDrafts[recording.id] != nil || library.summaryDrafts[recording.id] != nil || library.renamingID == recording.id)
-                                }
+                    Group {
+                        if library.visibleCoding.isEmpty {
+                            List(selection: $library.selection) { recordingRows }
+                        } else {
+                            List(selection: $library.selection) {
+                                recordingRows
+                                codingRows
+                            }
                         }
                     }.listStyle(.inset).focused($focus, equals: .callList)
                         .accessibilityIdentifier("recording-list")
@@ -76,7 +102,12 @@ struct RecordingLibraryView: View {
                         .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 12).padding(.top, 8)
                 }
                 HStack {
-                    Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
+                    if library.filter != .coding {
+                        Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
+                    }
+                    if !library.visibleCoding.isEmpty || library.filter == .coding {
+                        Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")")
+                    }
                     Spacer()
                     if library.refreshing || library.searching { ProgressView().controlSize(.mini) }
                 }.font(.caption).foregroundStyle(.secondary).padding(12)
@@ -84,16 +115,18 @@ struct RecordingLibraryView: View {
             .navigationTitle(library.filter.rawValue)
             .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 380)
         } detail: {
-            if let recording = library.selectedRecording {
+            if let session = library.selectedCoding {
+                CodingSessionDetail(session: session, directory: library.coding.directory, hit: library.codingHits[session.id]).id(session.id)
+            } else if let recording = library.selectedRecording {
                 RecordingDetail(recording: recording, query: library.resultQuery, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
                                 editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) }, cancelEditing: cancelInlineEditing)
                     .id(recording.id)
             } else {
-                ContentUnavailableView("Select a recording", systemImage: "waveform", description: Text("Your audio and transcripts, together in one place."))
+                ContentUnavailableView("Select an item", systemImage: "rectangle.stack")
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .searchable(text: $library.search, placement: .toolbar, prompt: "Search calls, summaries, and transcripts")
+        .searchable(text: $library.search, placement: .toolbar, prompt: "Search calls and coding sessions")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
@@ -101,12 +134,22 @@ struct RecordingLibraryView: View {
                     Picker("Speaker", selection: $library.searchSpeaker) {
                         Text("Any speaker").tag("")
                         ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
+                    }.disabled(library.filter == .coding)
+                    if !library.coding.sessions.isEmpty && (library.filter == .activity || library.filter == .coding) {
+                        Picker("Coding project", selection: $library.codingProject) {
+                            Text("Any project").tag("")
+                            ForEach(library.coding.projects, id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("Coding branch", selection: $library.codingBranch) {
+                            Text("Any branch").tag("")
+                            ForEach(Array(Set(library.coding.sessions.compactMap(\.branch))).sorted(), id: \.self) { Text($0).tag($0) }
+                        }
                     }
                     Divider()
                     Text("Matches word beginnings · \"exact words or phrases\"")
                 } label: { Label("Search options", systemImage: library.searchHistory || !library.searchSpeaker.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
                     .help(library.searchHistory ? "Searching all saved transcript versions" : "Searching the latest saved transcript")
-                Button { library.refresh() } label: { Label("Refresh library", systemImage: "arrow.clockwise") }
+                Button { library.coding.refresh(); library.refresh() } label: { Label("Refresh library", systemImage: "arrow.clockwise") }
                     .help("Refresh recordings and transcripts")
                 Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
                     .help("Microphone, audio levels, and recording controls")
@@ -201,7 +244,7 @@ struct RecordingLibraryView: View {
     }
 
     private func reconcileSelection() {
-        if library.selectedRecording == nil { library.selection = library.visibleRecordings.first?.id }
+        if library.selectedRecording == nil && library.selectedCoding == nil { library.selection = library.visibleRecordings.first?.id ?? library.visibleCoding.first?.id }
     }
 
     private func cancelInlineEditing() {

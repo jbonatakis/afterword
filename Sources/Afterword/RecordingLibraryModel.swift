@@ -15,6 +15,13 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var issues: [String] = []
     @Published var selection: String? { didSet { defaults.set(selection, forKey: "librarySelection") } }
     @Published var search = "" { didSet { updateSearch() } }
+    let coding: CodingCoordinator
+    @Published private(set) var codingHits: [String: CodingHit] = [:]
+    @Published private(set) var visibleCoding: [CodingSession] = []
+    @Published var codingProject = "" { didSet { updateSearch() } }
+    @Published var codingBranch = "" { didSet { updateSearch() } }
+    private var matchedCoding: [CodingSession] = []
+    var selectedCoding: CodingSession? { visibleCoding.first { $0.id == selection } }
     let embeddings: EmbeddingCoordinator
     @Published var searchSpeaker = "" { didSet { updateSearch() } }
     @Published private(set) var speakerNames: [String] = []
@@ -27,7 +34,12 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var searching = false
     @Published private(set) var searchHits: [String: LibrarySearchHit] = [:]
     @Published private(set) var visibleRecordings: [LibraryRecording] = []
-    @Published var filter: LibraryFilter = .all { didSet { applyFilter() } }
+    @Published var filter: LibraryFilter = .activity {
+        didSet {
+            if filter == .coding && !searchSpeaker.isEmpty { searchSpeaker = "" }
+            applyFilter()
+        }
+    }
     @Published var sidebarVisible = true
     @Published private(set) var roots: [URL] = []
     @Published private(set) var managing = false
@@ -57,13 +69,23 @@ struct ParticipantAssignmentStatus {
 
     var selectedRecording: LibraryRecording? { visibleRecordings.first { $0.id == selection } }
 
-    init(recorder: RecordingCoordinator, defaults: UserDefaults = .standard, embeddingDirectory: URL = EmbeddingSettings.directory) {
+    init(recorder: RecordingCoordinator, defaults: UserDefaults = .standard, embeddingDirectory: URL = EmbeddingSettings.directory, codingDirectory: URL? = nil) {
+        let archiveDirectory = codingDirectory ?? (embeddingDirectory == EmbeddingSettings.directory ? CodingArchive.directory :
+            embeddingDirectory.deletingLastPathComponent().appendingPathComponent("CodingSessions"))
+        coding = CodingCoordinator(directory: archiveDirectory)
         embeddings = EmbeddingCoordinator(directory: embeddingDirectory)
         self.defaults = defaults
         self.recorder = recorder
         currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
         selection = defaults.string(forKey: "librarySelection")
         roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        coding.changed = { [weak self] in
+            guard let self else { return }
+            if !codingProject.isEmpty && !coding.projects.contains(codingProject) { codingProject = "" }
+            if !codingBranch.isEmpty && !coding.sessions.contains(where: { $0.branch == self.codingBranch }) { codingBranch = "" }
+            refresh()
+        }
+        coding.start()
         recorder.calendar.library = self
         recorder.calendar.$directory.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleLibraryRefresh() }.store(in: &subscriptions)
         remember(recorder.destination)
@@ -103,6 +125,7 @@ struct ParticipantAssignmentStatus {
     }
     func retrySemanticSearch() { pollSemanticSearch(retry: true) }
     func shutdown() {
+        coding.stop()
         stopped = true; summaryMonitor.stop(); pendingRefreshTask?.cancel()
         needsRefresh = false; scan?.cancel(); generation = UUID()
         semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown()
@@ -131,11 +154,13 @@ struct ParticipantAssignmentStatus {
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
+        let codingDirectory = coding.sessions.isEmpty ? nil : coding.directory
         let existing = indexRoots == roots ? searchIndex : nil
         if existing == nil { searchIndex?.stopSemanticSearch() }
         let task = Task.detached(priority: .utility) { () -> LibraryRefresh in
             do {
                 let index = try existing ?? LibrarySearchIndex(roots: roots, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL)
+                try index.useCodingArchive(in: codingDirectory)
                 return LibraryRefresh(index: index, recordings: try index.synchronize(), error: nil, issues: index.issues)
             } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
         }
@@ -157,20 +182,28 @@ struct ParticipantAssignmentStatus {
         let token = UUID(); searchGeneration = token
         if LibrarySearchQuery(search).isEmpty && searchSpeaker.isEmpty {
             searchHits = [:]; resultQuery = ""; searching = false
-            matchedRecordings = recordings; applyFilter(); return nil
+            matchedRecordings = recordings; matchedCoding = coding.sessions; codingHits = [:]; applyFilter(); return nil
         }
         guard let index = searchIndex else { return nil }
         searching = true
-        let query = search, history = searchHistory, speaker = searchSpeaker
+        let query = search, history = searchHistory, speaker = searchSpeaker, project = codingProject, branch = codingBranch
         let task = Task { [weak self] in
             if debounce { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
-            let work = Task.detached(priority: .userInitiated) { Result { try index.hybridSearch(query, allVersions: history, speaker: speaker.isEmpty ? nil : speaker) } }
+            let work = Task.detached(priority: .userInitiated) { Result {
+                let calls = try index.hybridSearch(query, allVersions: history, speaker: speaker.isEmpty ? nil : speaker)
+                let coding = speaker.isEmpty ? try index.codingSearch(query, project: project.isEmpty ? nil : project, branch: branch.isEmpty ? nil : branch).hits : []
+                return (calls, coding)
+            } }
             let result = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
             guard let self, !Task.isCancelled, self.searchGeneration == token else { return }
             self.searching = false
             switch result {
-            case .success(let result):
+            case .success(let (result, codingResults)):
+                var seen = Set<String>()
+                let firstHits = codingResults.filter { seen.insert($0.session.id).inserted }
+                self.codingHits = Dictionary(uniqueKeysWithValues: firstHits.map { ($0.session.id, $0) })
+                self.matchedCoding = firstHits.map(\.session)
                 let hits = result.hits
                 self.semanticStatus = result.status
                 let byID = Dictionary(uniqueKeysWithValues: self.recordings.map { ($0.id, $0) })
@@ -186,7 +219,10 @@ struct ParticipantAssignmentStatus {
     }
     private func applyFilter() {
         visibleRecordings = matchedRecordings.filter { filter.includes($0) }
-        if !visibleRecordings.contains(where: { $0.id == selection }) { selection = visibleRecordings.first?.id }
+        visibleCoding = filter == .activity || filter == .coding ? matchedCoding.filter {
+            (codingProject.isEmpty || $0.project == codingProject) && (codingBranch.isEmpty || $0.branch == codingBranch)
+        } : []
+        if selectedRecording == nil && selectedCoding == nil { selection = visibleRecordings.first?.id ?? visibleCoding.first?.id }
     }
     private func beginManagement() throws {
         guard !managing else { throw RecorderError.message("Another change is still saving. Try again in a moment.") }
@@ -397,13 +433,13 @@ private struct LibraryRefresh: Sendable {
 }
 
 enum LibraryFilter: String, CaseIterable, Identifiable {
-    case all = "All recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
+    case activity = "All activity", coding = "Coding sessions", all = "All recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
     var id: String { rawValue }
     var symbol: String {
-        switch self { case .all: return "waveform"; case .transcribed: return "text.bubble"; case .untranscribed: return "text.badge.plus" }
+        switch self { case .activity: return "rectangle.stack"; case .coding: return "terminal"; case .all: return "waveform"; case .transcribed: return "text.bubble"; case .untranscribed: return "text.badge.plus" }
     }
     func includes(_ recording: LibraryRecording) -> Bool {
-        switch self { case .all: return true; case .transcribed: return recording.hasTranscript; case .untranscribed: return !recording.hasTranscript }
+        switch self { case .coding: return false; case .activity, .all: return true; case .transcribed: return recording.hasTranscript; case .untranscribed: return !recording.hasTranscript }
     }
 }
 

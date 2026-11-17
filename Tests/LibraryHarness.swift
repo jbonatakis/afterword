@@ -3,6 +3,7 @@ import SwiftUI
 import AVFoundation
 import Combine
 import RecorderCore
+import Lookback
 
 /// Own-window rendering and silent playback fixtures. Never starts capture or
 /// changes the production app's defaults, files, or shortcut.
@@ -392,5 +393,31 @@ import RecorderCore
         require(!library.managing && !recorder.transcription.libraryMutationActive, "Trash failed to release its mutation guard")
         require(library.issues.isEmpty, "Deleted call remained as a missing library folder")
         print("PASS call/version deletion, recording destination guard, playback unload, and recent-recording cleanup using fixture Trash")
+        let projects = root.appendingPathComponent("ClaudeProjects")
+        let project = projects.appendingPathComponent("fixture")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let source = project.appendingPathComponent(UUID().uuidString + ".jsonl")
+        let sessionText = #"""
+        {"type":"user","uuid":"first","cwd":"/projects/fixture","message":{"content":"Document the retry behavior"}}
+        {"type":"assistant","uuid":"answer","parentUuid":"first","message":{"content":"The retry preserves the original message"}}
+        """#
+        try Data(sessionText.utf8).write(to: source)
+        let archive = try CodingArchive(directory: library.coding.directory)
+        try archive.setEnabled(true); try archive.addProject("/projects/fixture")
+        try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: projects))
+        try archive.setEnabled(false)
+        library.coding.refresh()
+        for _ in 0..<100 { if !library.coding.busy { break }; await pump(0.02) }
+        await library.refresh()?.value
+        library.filter = .coding; library.search = "preserves"
+        await library.updateSearch(debounce: false)?.value
+        guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }
+        require(library.codingHits[session.id]?.messageID == "answer", "Coding search lost the message citation")
+        let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: library.coding.directory, hit: library.codingHits[session.id]))
+        detail.frame = NSRect(x: 0, y: 0, width: 600, height: 420)
+        detail.layoutSubtreeIfNeeded()
+        require(!detail.hasAmbiguousLayout, "Coding detail layout is ambiguous")
+        print("PASS archived coding session search, selection, message reference and detail rendering")
+
     }
 }

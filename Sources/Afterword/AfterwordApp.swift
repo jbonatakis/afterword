@@ -61,6 +61,7 @@ import RecorderCore
                 TranscriptionSettings(transcription: delegate.recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }
                 EmbeddingSettingsView(library: delegate.library, embeddings: delegate.library.embeddings).tabItem { Label("Search", systemImage: "magnifyingglass") }
                 CalendarSettings(calendar: delegate.recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }
+                CodingSettingsView(coding: delegate.library.coding).tabItem { Label("Coding", systemImage: "chevron.left.forwardslash.chevron.right") }
                 AgentAccessSettings(library: delegate.library).tabItem { Label("Agent Access", systemImage: "point.3.connected.trianglepath.dotted") }
             }.padding(12).frame(width: 560, height: 640)
         }
