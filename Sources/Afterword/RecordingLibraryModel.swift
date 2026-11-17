@@ -64,6 +64,7 @@ struct ParticipantAssignmentStatus {
         currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
         selection = defaults.string(forKey: "librarySelection")
         roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        recorder.calendar.library = self
         recorder.calendar.$directory.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleLibraryRefresh() }.store(in: &subscriptions)
         remember(recorder.destination)
         recorder.$destination.removeDuplicates().sink { [weak self] folder in
@@ -202,11 +203,21 @@ struct ParticipantAssignmentStatus {
         } catch { finishManagement(); throw error }
     }
     func saveTranscript(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil, clearSearch: Bool = true) async throws {
+        try await saveTranscriptVersion(recording, clearSearch: clearSearch) {
+            try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording, participants: participants)
+        }
+    }
+
+    func saveSpeakers(_ review: SpeakerReview, version: LibraryTranscript, recording: LibraryRecording) async throws {
+        try await saveTranscriptVersion(recording, clearSearch: false) {
+            try CallFileOperations.saveSpeakerReview(review, version: version, recording: recording)
+        }
+    }
+
+    private func saveTranscriptVersion(_ recording: LibraryRecording, clearSearch: Bool, write: @escaping @Sendable () throws -> URL) async throws {
         try beginManagement()
         do {
-            let file = try await Task.detached(priority: .userInitiated) {
-                try CallFileOperations.saveTranscriptEdits(text, version: version, recording: recording, participants: participants)
-            }.value
+            let file = try await Task.detached(priority: .userInitiated, operation: write).value
             preferredTranscriptID = file.deletingLastPathComponent().appendingPathComponent("Transcript.json").path
             if clearSearch && selection == recording.id { search = "" }
             await finishManagement()?.value

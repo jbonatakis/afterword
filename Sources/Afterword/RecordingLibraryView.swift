@@ -312,6 +312,7 @@ private struct RecordingDetail: View {
     let trash: (LibraryTranscript?) -> Void
     let cancelEditing: () -> Void
     @State private var versionID: String?
+    @State private var reviewingSpeakers = false
     @State private var showingAttendance = false
     @State private var showingSummary = false
     private var draft: TranscriptDraft? { library.transcriptDrafts[recording.id] }
@@ -376,6 +377,10 @@ private struct RecordingDetail: View {
                             InlineTranscriptActions(recording: recording, draft: draft, library: library, cancel: cancelEditing)
                         } else {
                             if let document = version?.document {
+                                if recording.tracks.contains(where: { $0.source == .system }), document.segments.contains(where: { $0.source == .system }) {
+                                    Button { playback.pause(); reviewingSpeakers = true } label: { Label("Speakers…", systemImage: "person.wave.2") }
+                                        .disabled(library.managing || recorder.locked || transcription.busy)
+                                }
                                 Button(action: copyTranscript) { Label("Copy", systemImage: "doc.on.doc") }
                                 .help("Copy readable transcript (⌘⇧C)")
                                 Button { beginEditing() } label: { Image(systemName: "pencil") }
@@ -456,6 +461,11 @@ private struct RecordingDetail: View {
             .forward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position + 10) })
         ]).frame(width: 0, height: 0))
         .onAppear { playback.select(recording); showingSummary = library.summaryDrafts[recording.id] != nil || (draft == nil && recording.summary?.current != nil); selectMatchingVersion() }
+        .sheet(isPresented: $reviewingSpeakers) {
+            if let version, let audio = recording.tracks.first(where: { $0.source == .system }) {
+                SpeakerReviewSheet(recording: recording, version: version, audio: audio.url, library: library, calendar: recorder.calendar)
+            }
+        }
         .sheet(isPresented: $showingAttendance) { AttendanceEditor(recording: recording, version: version, library: library) }
         .onChange(of: query) { _, _ in selectMatchingVersion() }
         .onChange(of: library.searchHits[recording.id]?.summaryMatch) { _, _ in selectMatchingVersion() }

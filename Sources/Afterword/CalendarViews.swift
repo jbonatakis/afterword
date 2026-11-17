@@ -214,9 +214,11 @@ private struct CalendarError: View {
 }
 
 struct PeopleDirectoryView: View {
+    private struct ClipSelection: Identifiable { let id: String }
     @ObservedObject var calendar: CalendarCoordinator
     @State private var search = ""
     @State private var editing: KnownIdentity?
+    @State private var clipSelection: ClipSelection?
     private var people: [KnownIdentity] {
         calendar.directory.people.filter { person in
             !person.emails.contains(where: calendar.directory.selfEmails.contains) &&
@@ -228,6 +230,9 @@ struct PeopleDirectoryView: View {
             HStack {
                 Text("People & groups").font(.title2.weight(.semibold))
                 Spacer()
+                if calendar.library != nil {
+                    Button("Voice clips…") { clipSelection = ClipSelection(id: "") }
+                }
                 Button("Add person or group") { editing = .init(name: "", emails: []) }
             }
             Text("Preferred names appear on matching speakers in your recording library. Group members are expected guests until you review attendance.")
@@ -244,11 +249,18 @@ struct PeopleDirectoryView: View {
                     Spacer()
                     Text(person.kind == .group ? "Group · \(person.memberIDs.count) \(person.memberIDs.count == 1 ? "member" : "members")" : person.kind == .resource ? "Ignored resource" : "Person")
                         .font(.caption).foregroundStyle(.secondary)
+                    if person.kind == .person, calendar.library != nil {
+                        Button { clipSelection = ClipSelection(id: "person:" + person.id) } label: { Image(systemName: "waveform") }
+                            .help("Voice clips for " + person.name).accessibilityLabel("Voice clips for " + person.name)
+                    }
                     Button("Edit") { editing = person }
                 }.padding(.vertical, 5)
             }
             CalendarError(calendar: calendar)
         }.padding(22).frame(minWidth: 580, minHeight: 420).background(Color(nsColor: .windowBackgroundColor))
+            .sheet(item: $clipSelection) { selection in
+                if let library = calendar.library { PersonVoiceClipsView(calendar: calendar, library: library, owner: selection.id) }
+            }
             .sheet(item: $editing) { identity in IdentityEditor(calendar: calendar, identity: identity) }
     }
 }

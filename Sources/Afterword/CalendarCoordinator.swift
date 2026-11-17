@@ -66,6 +66,7 @@ actor CalendarReader: CalendarReading {
     private let reader: any CalendarReading
     private let hasAccess: @Sendable () -> Bool
     private let defaults: UserDefaults
+    weak var library: RecordingLibraryModel?
     private let directoryURL: URL
     private weak var recorder: RecordingCoordinator?
     private var ledger: MeetingReminderLedger
