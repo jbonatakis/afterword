@@ -96,6 +96,22 @@ final class ParticipantTests: XCTestCase {
         let mixed = TranscriptSegment(source: .mixed, start: 0, end: 1, text: "Two voices", timing: "segment")
         XCTAssertEqual(mixed.speakerLabel(automaticParticipant: "Alex"), "Mixed audio")
     }
+    func testDuplicateDirectoryNamesStayDistinctAndExplicitCallNamesWin() throws {
+        let a = CallAttendee(id: "pat1", name: "pat.a@example.test", email: "old@example.test")
+        let b = CallAttendee(name: "pat.b@example.test")
+        var people = PeopleDirectory()
+        try people.update(.init(id: a.id, name: "Pat Morgan", emails: ["pat.a@example.test"]))
+        try people.update(.init(id: "pat2", name: "Pat Morgan", emails: [b.name]))
+        let labels = people.labels(for: [a, b])
+        XCTAssertNotEqual(labels[a.name], labels[b.name])
+        XCTAssertTrue(labels[b.name]?.contains(b.name) == true)
+        let initial = try prepare()
+        try CallDetailsStore.save(.init(participants: [a.name], attendees: [a]), for: initial)
+        try CallDetailsStore.save(.init(participants: ["Local name"]), for: call(), participantRenames: [a.name: "Local name"])
+        let current = try call().resolvingPeople(people)
+        XCTAssertEqual(current.participantDisplayNames, ["Local name"])
+        XCTAssertEqual(current.details.callAttendees[0].id, a.id)
+    }
     func testAddingASecondParticipantPreservesExistingAutomaticAssignmentsWithoutRewritingOriginals() throws {
         let initial = try prepare(), original = try XCTUnwrap(initial.latestTranscript)
         let bytes = try Data(contentsOf: original.url)

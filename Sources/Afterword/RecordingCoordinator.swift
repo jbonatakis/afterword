@@ -8,7 +8,7 @@ import RecorderCore
 @MainActor final class RecordingCoordinator: ObservableObject {
     let transcription = TranscriptionCoordinator()
     let shortcut = RecordingShortcut()
-    private let peopleURL: URL
+    let peopleURL: URL
     lazy var calendar = CalendarCoordinator(recorder: self, directoryURL: peopleURL)
     @Published private(set) var state: RecordingState = .idle {
         didSet { transcription.recordingStateChanged(active: locked) }
@@ -62,7 +62,7 @@ import RecorderCore
         }
     }
     init(peopleURL: URL? = nil) {
-        self.peopleURL = peopleURL ?? SessionStore.defaultRoot.deletingLastPathComponent().appendingPathComponent("People.json")
+        self.peopleURL = peopleURL ?? PeopleDirectory.fileURL
         destination = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music/Call Recordings").path, isDirectory: true)
         noticesAccepted = UserDefaults.standard.bool(forKey: "noticesAccepted")
         if let data = defaults.data(forKey: "selection"), let selection = try? JSONDecoder().decode(MicrophoneSelection.self, from: data), case .device(let uid) = selection { selectedUID = uid }

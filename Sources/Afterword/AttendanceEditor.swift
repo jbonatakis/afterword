@@ -38,8 +38,8 @@ struct AttendanceEditor: View {
                             Image(systemName: person.kind == .group ? "person.3" : person.attendance == .absent ? "person.slash" : "person")
                                 .frame(width: 24).foregroundStyle(person.attendance == .absent ? .secondary : .primary)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(person.name).font(.headline)
-                                if let email = person.email, email != person.name { Text(email).font(.caption).foregroundStyle(.secondary) }
+                                Text(recording.displayName(person.name)).font(.headline)
+                                if let email = person.email, email != recording.displayName(person.name) { Text(email).font(.caption).foregroundStyle(.secondary) }
                                 if person.kind == .group {
                                     Text("Group · never assigned as a speaker").font(.caption).foregroundStyle(.secondary)
                                 } else if !person.groupIDs.isEmpty {
@@ -48,7 +48,7 @@ struct AttendanceEditor: View {
                             }
                             Spacer()
                             if person.kind == .person {
-                                Picker("Attendance for \(person.name)", selection: $person.attendance) {
+                                Picker("Attendance for \(recording.displayName(person.name))", selection: $person.attendance) {
                                     Text("Expected").tag(Attendance.expected)
                                     Text("Attended").tag(Attendance.attended)
                                     Text("Didn’t attend").tag(Attendance.absent)
@@ -71,7 +71,7 @@ struct AttendanceEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let onlyPerson {
-                Toggle("Only \(onlyPerson.name) attended — label unassigned speech", isOn: $confirmOnly)
+                Toggle("Only \(recording.displayName(onlyPerson.name)) attended — label unassigned speech", isOn: $confirmOnly)
                 Text("Applies to the selected transcript and future transcriptions of this call. Any open transcript draft still needs Save.")
                     .font(.caption).foregroundStyle(.secondary)
             }

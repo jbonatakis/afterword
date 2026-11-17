@@ -52,6 +52,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     public static var cacheDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Afterword/Search", isDirectory: true)
     }
+    private let peopleURL: URL
     private let roots: [URL]
     private let confined: Bool
     private let db: SearchDatabase
@@ -63,7 +64,8 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     public var lastLoadedCount: Int { lock.lock(); defer { lock.unlock() }; return loadedCount }
     public var issues: [String] { lock.lock(); defer { lock.unlock() }; return scanIssues }
 
-    public init(roots: [URL], confined: Bool = false, directory: URL = LibrarySearchIndex.cacheDirectory, embeddingDirectory: URL? = nil) throws {
+    public init(roots: [URL], confined: Bool = false, directory: URL = LibrarySearchIndex.cacheDirectory, embeddingDirectory: URL? = nil, peopleURL: URL = PeopleDirectory.fileURL) throws {
+        self.peopleURL = peopleURL
         semantic = SemanticSearchEngine(directory: embeddingDirectory ?? (directory == Self.cacheDirectory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings")))
         self.roots = roots; self.confined = confined
         let scope = AgentJSON.hash(roots.map { $0.standardizedFileURL.path }.sorted().joined(separator: "\n") + ":\(confined)")
@@ -82,18 +84,30 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             let stored = try db.rows("SELECT id, fingerprint, revision FROM calls")
             let byID = Dictionary(uniqueKeysWithValues: stored.map { ($0[0], $0) })
             var next: [String: (fingerprint: String, call: AgentCall)] = [:]
+            let people = (try? PeopleDirectory.load(from: peopleURL)) ?? PeopleDirectory()
             loadedCount = 0
             for candidate in discovery.candidates {
                 let id = try AgentJSON.identity(candidate.url)
                 if next[id] != nil { continue }
+                var prior: AgentCall?
                 if let row = byID[id], row[1] == candidate.fingerprint {
-                    if let existing = cached[id], existing.fingerprint == row[1] { next[id] = existing; continue }
-                    if let snapshot = try db.rows("SELECT snapshot FROM calls WHERE id = ?", [id]).first?.first,
-                       let recording = try? JSONDecoder().decode(LibraryRecording.self, from: Data(snapshot.utf8)) {
-                        next[id] = (row[1], AgentCall(recording: recording, id: id, revision: row[2])); continue
+                    if let existing = cached[id], existing.fingerprint == row[1], existing.call.revision == row[2] {
+                        prior = existing.call
+                    } else if let snapshot = try db.rows("SELECT snapshot FROM calls WHERE id = ?", [id]).first?.first,
+                              let recording = try? JSONDecoder().decode(LibraryRecording.self, from: Data(snapshot.utf8)) {
+                        prior = AgentCall(recording: recording, id: id, revision: row[2])
                     }
                 }
-                let recording = try RecordingLibraryScanner.load(candidate, confined: confined)
+                let recording: LibraryRecording
+                if let prior {
+                    recording = prior.recording.resolvingPeople(people)
+                    if recording.directoryLabels == prior.recording.directoryLabels {
+                        next[id] = (candidate.fingerprint, prior)
+                        continue
+                    }
+                } else {
+                    recording = try RecordingLibraryScanner.load(candidate, confined: confined, people: people)
+                }
                 let call = try AgentCall(recording: recording, id: id)
                 try remove(id)
                 let snapshot = String(decoding: try JSONEncoder().encode(recording), as: UTF8.self)
@@ -126,7 +140,8 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     }
     private func index(_ call: AgentCall) throws {
         let recording = call.recording
-        let metadata = ([recording.sourceName, recording.details.description] + recording.details.participants + recording.details.tags).joined(separator: "\n")
+        let additionalNames = recording.participantDisplayNames.filter { !recording.details.participants.contains($0) }
+        let metadata = ([recording.sourceName, recording.details.description] + recording.details.participants + additionalNames + recording.details.tags).joined(separator: "\n")
         let versions: [LibraryTranscript?] = recording.transcripts.isEmpty ? [nil] : recording.transcripts.map { $0 }
         for (position, version) in versions.enumerated() {
             let key = version.map(call.versionID) ?? call.id

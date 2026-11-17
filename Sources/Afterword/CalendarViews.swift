@@ -230,7 +230,7 @@ struct PeopleDirectoryView: View {
                 Spacer()
                 Button("Add person or group") { editing = .init(name: "", emails: []) }
             }
-            Text("Saved names and aliases are used for future recordings. Mark mailing lists as groups; their members are expected guests until you review attendance.")
+            Text("Preferred names appear on matching speakers in your recording library. Group members are expected guests until you review attendance.")
                 .font(.callout).foregroundStyle(.secondary)
             TextField("Search names and email addresses", text: $search).textFieldStyle(.roundedBorder)
             List(people) { person in

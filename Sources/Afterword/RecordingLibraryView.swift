@@ -342,7 +342,7 @@ private struct RecordingDetail: View {
                 }.font(.callout).foregroundStyle(.secondary)
                 if !recording.details.callAttendees.isEmpty {
                     HStack {
-                        Label(recording.details.participants.isEmpty ? "No active participants" : recording.details.participants.joined(separator: ", "), systemImage: "person.2")
+                        Label(recording.details.participants.isEmpty ? "No active participants" : recording.participantDisplayNames.joined(separator: ", "), systemImage: "person.2")
                             .lineLimit(2).textSelection(.enabled)
                         Spacer()
                         Button("Attendance…") { showingAttendance = true }.disabled(library.managing)
@@ -420,7 +420,7 @@ private struct RecordingDetail: View {
                 ReadableTranscript(paragraphs: document.paragraphs, edited: document.editing != nil, query: query, playback: playback, playbackDisabled: recorder.locked,
                                    draft: draft, canEdit: !library.managing, editParagraph: { beginEditing(paragraph: $0) },
                                    participants: recording.details.participants, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) },
-                                   participantNames: version.map { recording.details.participantNames(for: $0) } ?? [:],
+                                   participantNames: version.map { recording.details.participantNames(for: $0) } ?? [:], displayNames: recording.directoryLabels ?? [:],
                                    assignment: library.participantAssignments[recording.id].flatMap { $0.versionID == version?.id ? $0 : nil },
                                    assignParticipant: { name, paragraph in
                                        if let version { Task { await library.assignParticipant(name, to: paragraph, recording: recording, version: version) } }
@@ -496,6 +496,7 @@ struct ReadableTranscript: View {
     let participants: [String]
     let automaticParticipant: String?
     var participantNames: [String: String] = [:]
+    var displayNames: [String: String] = [:]
     var assignment: ParticipantAssignmentStatus? = nil
     let assignParticipant: (String?, Int) -> Void
     let editParticipants: () -> Void
@@ -503,7 +504,7 @@ struct ReadableTranscript: View {
     private var firstMatch: Int? {
         if let match = searchMatches.first(where: { id in paragraphs.contains { $0.id == id } }) { return match }
         return query.isEmpty ? nil : paragraphs.first {
-            !LibrarySearchQuery(query).highlightRanges(in: $0.text).isEmpty || !LibrarySearchQuery(query).highlightRanges(in: $0.speakerLabel(automaticParticipant: automaticParticipant, participantNames: participantNames)).isEmpty
+            !LibrarySearchQuery(query).highlightRanges(in: $0.text).isEmpty || !LibrarySearchQuery(query).highlightRanges(in: $0.speakerLabel(automaticParticipant: automaticParticipant.map { displayNames[$0] ?? $0 }, participantNames: participantNames.mapValues { displayNames[$0] ?? $0 })).isEmpty
         }?.id
     }
     var body: some View {
@@ -522,11 +523,11 @@ struct ReadableTranscript: View {
                                     Circle().fill(paragraph.source == .microphone ? Color.accentColor : .secondary).frame(width: 7, height: 7)
                                     if paragraph.source == .system {
                                         if let draft {
-                                            DraftParticipantPicker(paragraph: paragraph, draft: draft, participants: participants, automaticParticipant: automaticParticipant,
+                                            DraftParticipantPicker(paragraph: paragraph, draft: draft, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames,
                                                                    assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
                                                 .disabled(!canEdit)
                                         } else {
-                                            ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, start: paragraph.start,
+                                            ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames, speakerGroup: paragraph.segments.first?.speakerGroup, start: paragraph.start,
                                                               assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
                                                 .disabled(!canEdit)
                                         }

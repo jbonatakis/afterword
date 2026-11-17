@@ -87,6 +87,17 @@ public struct LibraryRecording: Identifiable, Codable, Sendable {
     public let transcripts: [LibraryTranscript]
     public var summary: CallSummary? = nil
     public var summaryError: String? = nil
+    public var directoryLabels: [String: String]? = nil
+
+    public func displayName(_ label: String) -> String { directoryLabels?[label] ?? label }
+    public var participantDisplayNames: [String] { details.participants.map(displayName) }
+
+    func resolvingPeople(_ people: PeopleDirectory) -> Self {
+        var result = self
+        let labels = people.labels(for: details.callAttendees)
+        result.directoryLabels = labels.isEmpty ? nil : labels
+        return result
+    }
     public var id: String { url.path }
     public var latestTranscript: LibraryTranscript? { transcripts.first }
     public var hasTranscript: Bool { transcripts.contains { $0.document != nil } }
@@ -94,15 +105,15 @@ public struct LibraryRecording: Identifiable, Codable, Sendable {
         details.automaticParticipant(for: version)
     }
     public func speakerLabel(for paragraph: TranscriptParagraph, version: LibraryTranscript) -> String {
-        let names = paragraph.participant.map { [$0: details.participantName($0, for: version) ?? ""] } ?? [:]
-        return paragraph.speakerLabel(automaticParticipant: automaticParticipant(for: version), participantNames: names)
+        let names = paragraph.participant.map { [$0: details.participantName($0, for: version).map(displayName) ?? ""] } ?? [:]
+        return paragraph.speakerLabel(automaticParticipant: automaticParticipant(for: version).map(displayName), participantNames: names)
     }
     public func readableText(for version: LibraryTranscript) -> String? {
-        version.document?.readableText(recordingName: name, automaticParticipant: automaticParticipant(for: version) ?? "", participantNames: details.participantNames(for: version))
+        version.document?.readableText(recordingName: name, automaticParticipant: automaticParticipant(for: version).map(displayName) ?? "", participantNames: details.participantNames(for: version).mapValues(displayName))
     }
     public func matches(_ query: String, allVersions: Bool = false) -> Bool {
         let query = LibrarySearchQuery(query)
-        let information = ([name, sourceName, details.description, summary?.current?.markdown ?? ""] + details.participants + details.tags).joined(separator: "\n")
+        let information = ([name, sourceName, details.description, summary?.current?.markdown ?? ""] + participantDisplayNames + details.participants + details.tags).joined(separator: "\n")
         let versions = allVersions ? transcripts : Array(transcripts.prefix(1))
         return query.isEmpty || query.matches(information) || versions.contains { version in
             let paragraphs = version.document?.paragraphs ?? []
@@ -133,9 +144,10 @@ public enum RecordingLibraryScanner {
     public static func scan(roots: [URL], confined: Bool = false) -> LibraryScan {
         let catalog = discover(roots: roots, confined: confined)
         var result = LibraryScan(issues: catalog.issues)
+        let people = (try? PeopleDirectory.load(from: PeopleDirectory.fileURL)) ?? PeopleDirectory()
         for candidate in catalog.candidates {
             if Task.isCancelled { break }
-            do { result.recordings.append(try load(candidate, confined: confined)) }
+            do { result.recordings.append(try load(candidate, confined: confined, people: people)) }
             catch { result.issues.append("\(candidate.url.lastPathComponent): \(error.localizedDescription)") }
         }
         result.recordings.sort { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
@@ -182,7 +194,7 @@ public enum RecordingLibraryScanner {
         return (candidates, issues)
     }
 
-    static func load(_ candidate: LibraryCandidate, confined: Bool) throws -> LibraryRecording {
+    static func load(_ candidate: LibraryCandidate, confined: Bool, people: PeopleDirectory? = nil) throws -> LibraryRecording {
         let url = candidate.url, directory = candidate.isDirectory
         let name = directory ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
         let versions = readTranscripts(candidate.transcriptFiles).filter {
@@ -202,7 +214,7 @@ public enum RecordingLibraryScanner {
         return .init(url: url, sourceName: name, isDirectory: directory, details: details, detailsError: detailsError,
             date: recordingDate(name) ?? (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast,
             duration: duration?.isFinite == true ? duration : nil, tracks: candidate.tracks, transcripts: versions,
-            summary: summary, summaryError: summaryError)
+            summary: summary, summaryError: summaryError).resolvingPeople(people ?? (try? PeopleDirectory.load(from: PeopleDirectory.fileURL)) ?? .init())
     }
 
     private static func audioTracks(in directory: URL) -> [LibraryAudioTrack] {

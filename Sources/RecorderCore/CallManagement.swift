@@ -107,7 +107,7 @@ public enum CallDetailsStore {
         if saved.attendees == nil, previous.attendees != nil {
             var people = previous.callAttendees
             for index in people.indices where people[index].kind == .person {
-                people[index].name = participantRenames[people[index].name] ?? people[index].name
+                if let name = participantRenames[people[index].name] { people[index].name = name; people[index].hasLocalName = true }
                 if !saved.participants.contains(people[index].name) { people[index].attendance = .absent }
             }
             for name in saved.participants where !people.contains(where: { $0.name == name && $0.active }) {

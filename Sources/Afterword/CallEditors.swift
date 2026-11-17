@@ -4,7 +4,12 @@ import RecorderCore
 private struct ParticipantRow: Identifiable {
     let id = UUID()
     let originalName: String?
+    var originalDisplayName: String? = nil
     var name: String
+    var storedName: String {
+        let edited = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return edited == originalDisplayName ? originalName ?? edited : edited
+    }
 }
 
 struct CallDetailsEditor: View {
@@ -21,7 +26,10 @@ struct CallDetailsEditor: View {
     init(recording: LibraryRecording, library: RecordingLibraryModel) {
         self.recording = recording; self.library = library
         _title = State(initialValue: recording.name)
-        _participants = State(initialValue: recording.details.participants.map { ParticipantRow(originalName: $0, name: $0) })
+        _participants = State(initialValue: recording.details.participants.map { raw in
+            let display = recording.displayName(raw)
+            return ParticipantRow(originalName: raw, originalDisplayName: display, name: display)
+        })
         _tags = State(initialValue: recording.details.tags.joined(separator: ", "))
         _description = State(initialValue: recording.details.description)
     }
@@ -68,12 +76,13 @@ struct CallDetailsEditor: View {
     }
     private func save() {
         error = nil
-        let names = participants.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let names = participants.map(\.storedName).filter { !$0.isEmpty }
+        let displayed = CallDetails(participants: participants.map(\.name)).normalized.participants
         let details = CallDetails(title: title, participants: names,
                                   tags: tags.components(separatedBy: ","), description: description)
-        guard details.normalized.participants.count == names.count else { error = "Use a different name for each participant."; return }
+        guard details.normalized.participants.count == names.count, displayed.count == names.count else { error = "Use a different name for each participant."; return }
         let renames = Dictionary(uniqueKeysWithValues: participants.compactMap { row -> (String, String)? in
-            let name = row.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = row.storedName
             guard let original = row.originalName, !name.isEmpty, name != original else { return nil }
             return (original, name)
         })
@@ -166,29 +175,31 @@ struct ParticipantPicker: View {
     let participant: String?
     let participants: [String]
     let automaticParticipant: String?
+    var displayNames: [String: String] = [:]
+    var speakerGroup: String? = nil
     let start: Double
     let assign: (String?) -> Void
     let editParticipants: () -> Void
     private var displayName: String {
         let name = participant ?? automaticParticipant
-        return name?.isEmpty == false ? name! : TranscriptSource.system.label
+        return name?.isEmpty == false ? (displayNames[name!] ?? name!) : speakerGroup.map { "Speaker " + String($0.dropFirst()) } ?? TranscriptSource.system.label
     }
     var body: some View {
         Menu {
             if let name = participant, !name.isEmpty, !participants.contains(name) { Text("Assigned: \(name)") }
             ForEach(participants, id: \.self) { name in
                 Button { assign(name) } label: {
-                    if participant == name { Label(name, systemImage: "checkmark") } else { Text(name) }
+                    if participant == name { Label(displayNames[name] ?? name, systemImage: "checkmark") } else { Text(displayNames[name] ?? name) }
                 }
             }
             if !participants.isEmpty { Divider() }
             if let automaticParticipant {
                 Button { assign(nil) } label: {
-                    if participant == nil { Label("Automatic · \(automaticParticipant)", systemImage: "checkmark") }
-                    else { Text("Automatic · \(automaticParticipant)") }
+                    if participant == nil { Label("Automatic · \(displayNames[automaticParticipant] ?? automaticParticipant)", systemImage: "checkmark") }
+                    else { Text("Automatic · \(displayNames[automaticParticipant] ?? automaticParticipant)") }
                 }
             }
-            Button { assign(automaticParticipant == nil ? nil : "") } label: {
+            Button { assign(automaticParticipant == nil && speakerGroup == nil ? nil : "") } label: {
                 if participant == "" || (participant == nil && automaticParticipant == nil) { Label("Other participants", systemImage: "checkmark") }
                 else { Text("Other participants") }
             }
@@ -206,11 +217,12 @@ struct DraftParticipantPicker: View {
     @ObservedObject var draft: TranscriptDraft
     let participants: [String]
     let automaticParticipant: String?
+    var displayNames: [String: String] = [:]
     let assign: (String?) -> Void
     let editParticipants: () -> Void
     var body: some View {
         ParticipantPicker(participant: draft.participants[paragraph.id], participants: participants, automaticParticipant: automaticParticipant,
-                          start: paragraph.start, assign: assign, editParticipants: editParticipants).disabled(draft.saving)
+                          displayNames: displayNames, speakerGroup: paragraph.segments.first?.speakerGroup, start: paragraph.start, assign: assign, editParticipants: editParticipants).disabled(draft.saving)
     }
 }
 

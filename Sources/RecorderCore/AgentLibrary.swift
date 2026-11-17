@@ -11,6 +11,7 @@ struct AgentCall {
     init(recording: LibraryRecording, id: String) throws {
         var payload: [String: Any] = ["title": recording.name, "date": AgentJSON.date(recording.date),
             "details": try AgentJSON.object(recording.details), "information_readable": recording.detailsError == nil]
+        payload["speaker_display_names"] = recording.directoryLabels
         payload["duration"] = recording.duration
         if let summary = recording.summary { payload["summary"] = try AgentJSON.object(summary) }
         payload["summary_readable"] = recording.summaryError == nil
@@ -28,7 +29,7 @@ struct AgentCall {
     }
     var summary: [String: Any] {
         var value: [String: Any] = ["call_id": id, "revision": revision, "title": recording.name,
-            "recorded_at": AgentJSON.date(recording.date), "participants": recording.details.participants,
+            "recorded_at": AgentJSON.date(recording.date), "participants": recording.participantDisplayNames,
             "tags": recording.details.tags, "has_transcript": recording.hasTranscript,
             "has_summary": recording.summary?.current != nil, "summary_readable": recording.summaryError == nil,
             "information_readable": recording.detailsError == nil]
@@ -59,6 +60,7 @@ public final class AgentLibrary {
     private var index: LibrarySearchIndex?
     private var indexedFolders: [String]?
     public let directory: URL
+    private var peopleURL: URL { directory.deletingLastPathComponent().appendingPathComponent("People.json") }
     public init(directory: URL = AgentAccessStore.directory) { self.directory = directory }
 
     public func call(_ name: String, arguments: [String: Any]) throws -> [String: Any] {
@@ -77,7 +79,7 @@ public final class AgentLibrary {
             index?.stopSemanticSearch()
             index = try LibrarySearchIndex(roots: roots, confined: true,
                 directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
-                embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"))
+                embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"), peopleURL: peopleURL)
             indexedFolders = configuration.folders
         }
         guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
@@ -127,7 +129,7 @@ public final class AgentLibrary {
             result["summary_version_count"] = summaryPage["total"]
             result["next_summary_offset"] = summaryPage["next_offset"]
             result["attendees"] = call.recording.details.callAttendees.map {
-                ["name": $0.name, "kind": $0.kind.rawValue, "attendance": $0.attendance.rawValue]
+                ["name": call.recording.displayName($0.name), "kind": $0.kind.rawValue, "attendance": $0.attendance.rawValue]
             }
         case "get_transcript":
             let call = try find(calls, args: args); try args.checkRevision(call.revision)
@@ -179,7 +181,7 @@ public final class AgentLibrary {
                   let version = call.recording.transcripts.first(where: { call.versionID($0) == args.string("source_version_id") }), version.document != nil else {
                 throw AgentFailure("A readable source transcript is required. Read get_transcript before saving a summary.")
             }
-            let saved = try CallSummaryStore.save(args.string("markdown")!, for: call.recording, source: version, author: "agent") {
+            let saved = try CallSummaryStore.save(args.string("markdown")!, for: call.recording, source: version, author: "agent", peopleURL: peopleURL) {
                 guard try AgentAccessStore.load(directory: self.directory) == configuration,
                       roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }),
                       roots.contains(where: { CallFileOperations.contains($0, call.recording.url) }),
@@ -216,7 +218,7 @@ public final class AgentLibrary {
             let value = call.recording
             if let from, value.date < from { return false }
             if let to, value.date >= to { return false }
-            if let person = args.string("participant"), !value.details.participants.contains(where: { $0.localizedStandardContains(person) }) { return false }
+            if let person = args.string("participant"), !(value.participantDisplayNames + value.details.participants).contains(where: { $0.localizedStandardContains(person) }) { return false }
             if let tag = args.string("tag"), !value.details.tags.contains(where: { $0.compare(tag, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) { return false }
             return true
         }

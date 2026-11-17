@@ -67,6 +67,7 @@ public enum CallSummaryStore {
     }
     @discardableResult public static func save(_ markdown: String, for recording: LibraryRecording,
                                                source: LibraryTranscript?, author: String = "user",
+                                               peopleURL: URL = PeopleDirectory.fileURL,
                                                authorize: () throws -> Void = {}) throws -> CallSummary {
         let markdown = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !markdown.isEmpty, markdown.count <= maximumCharacters, !markdown.contains("\0") else {
@@ -92,7 +93,8 @@ public enum CallSummaryStore {
         guard let candidate = candidates.candidates.first(where: { $0.url == recording.url }) else {
             throw RecorderError.message("The call is no longer available. Refresh before saving.")
         }
-        let current = try RecordingLibraryScanner.load(candidate, confined: true)
+        let people = (try? PeopleDirectory.load(from: peopleURL)) ?? PeopleDirectory()
+        let current = try RecordingLibraryScanner.load(candidate, confined: true, people: people)
         guard current.summaryError == nil else { throw RecorderError.message("The saved summary is unreadable. It has not been overwritten.") }
         let id = try AgentJSON.identity(recording.url)
         guard try AgentCall(recording: current, id: id).revision == AgentCall(recording: recording, id: id).revision else {

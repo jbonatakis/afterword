@@ -17,6 +17,7 @@ public struct KnownIdentity: Codable, Identifiable, Equatable, Sendable {
 }
 
 public struct PeopleDirectory: Codable, Equatable, Sendable {
+    public static let fileURL = SessionStore.defaultRoot.deletingLastPathComponent().appendingPathComponent("People.json")
     public var version = 1
     public var people: [KnownIdentity] = []
     public var selfEmails: [String] = []
@@ -25,6 +26,29 @@ public struct PeopleDirectory: Codable, Equatable, Sendable {
         let email = KnownIdentity.email(email)
         return people.first { $0.emails.map(KnownIdentity.email).contains(email) }
     }
+    public func identity(for attendee: CallAttendee) -> KnownIdentity? {
+        if let match = people.first(where: { $0.id == attendee.id }) { return match }
+        return identity(email: attendee.email ?? attendee.name)
+    }
+
+    /// Call-local labels remain the assignment tokens. Only unambiguous directory identities supply display names.
+    public func labels(for attendees: [CallAttendee]) -> [String: String] {
+        let people = attendees.filter { $0.kind == .person }
+        let labels = people.map { attendee -> String in
+            guard attendee.hasLocalName != true, let person = identity(for: attendee), person.kind == .person else { return attendee.name }
+            return person.name
+        }
+        let duplicates = Dictionary(grouping: labels, by: { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) })
+        var result: [String: String] = [:]
+        for (attendee, label) in zip(people, labels) {
+            let key = label.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let email = attendee.email ?? identity(for: attendee)?.emails.first ?? attendee.name
+            let display = duplicates[key, default: []].count > 1 ? "\(label) (\(email))" : label
+            if display != attendee.name { result[attendee.name] = display }
+        }
+        return result
+    }
+
     public mutating func remember(email: String, name: String?, kind: IdentityKind = .person) -> KnownIdentity {
         if let known = identity(email: email) { return known }
         let email = KnownIdentity.email(email)
@@ -70,6 +94,7 @@ public struct CallAttendee: Codable, Identifiable, Equatable, Sendable {
     public var email: String?
     public var kind: IdentityKind
     public var attendance: Attendance
+    public var hasLocalName: Bool?
     public var groupIDs: [String]
     public init(id: String = UUID().uuidString, name: String, email: String? = nil, kind: IdentityKind = .person,
                 attendance: Attendance = .expected, groupIDs: [String] = []) {

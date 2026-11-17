@@ -50,9 +50,9 @@ struct ParticipantAssignmentStatus {
     private var generation = UUID()
     private var subscriptions: Set<AnyCancellable> = []
     private let defaults: UserDefaults
-    private lazy var summaryMonitor = LibrarySummaryMonitor { [weak self] in self?.summaryChanged() }
-    private var summaryRefreshTask: Task<Void, Never>?
-    private var summaryRefreshPending = false
+    private lazy var summaryMonitor = LibrarySummaryMonitor { [weak self] in self?.scheduleLibraryRefresh() }
+    private var pendingRefreshTask: Task<Void, Never>?
+    private var needsRefresh = false
     private var stopped = false
 
     var selectedRecording: LibraryRecording? { visibleRecordings.first { $0.id == selection } }
@@ -64,6 +64,7 @@ struct ParticipantAssignmentStatus {
         currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
         selection = defaults.string(forKey: "librarySelection")
         roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        recorder.calendar.$directory.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleLibraryRefresh() }.store(in: &subscriptions)
         remember(recorder.destination)
         recorder.$destination.removeDuplicates().sink { [weak self] folder in
             self?.currentDestination = folder.resolvingSymlinksInPath().standardizedFileURL
@@ -101,39 +102,39 @@ struct ParticipantAssignmentStatus {
     }
     func retrySemanticSearch() { pollSemanticSearch(retry: true) }
     func shutdown() {
-        stopped = true; summaryMonitor.stop(); summaryRefreshTask?.cancel()
-        summaryRefreshPending = false; scan?.cancel(); generation = UUID()
+        stopped = true; summaryMonitor.stop(); pendingRefreshTask?.cancel()
+        needsRefresh = false; scan?.cancel(); generation = UUID()
         semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown()
     }
-    private func summaryChanged() {
+    private func scheduleLibraryRefresh() {
         guard !stopped else { return }
-        summaryRefreshPending = true
-        summaryRefreshTask?.cancel()
-        summaryRefreshTask = Task { [weak self] in
+        needsRefresh = true
+        pendingRefreshTask?.cancel()
+        pendingRefreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled, let self else { return }
-            self.summaryRefreshTask = nil
-            self.refreshPendingSummary()
+            self.pendingRefreshTask = nil
+            self.refreshIfNeeded()
         }
     }
-    private func refreshPendingSummary() {
+    private func refreshIfNeeded() {
         // Changes arriving during an index scan or local save must survive until
         // it completes. Never replace the user's separate in-memory drafts.
-        guard summaryRefreshPending, !refreshing, !managing, !stopped else { return }
+        guard needsRefresh, !refreshing, !managing, !stopped else { return }
         refresh()
     }
     @discardableResult func refresh() -> Task<Void, Never>? {
         guard !stopped, !managing else { return nil }
         summaryMonitor.watch(roots)
-        summaryRefreshPending = false; summaryRefreshTask?.cancel(); summaryRefreshTask = nil
+        needsRefresh = false; pendingRefreshTask?.cancel(); pendingRefreshTask = nil
         scan?.cancel()
         let id = UUID(); generation = id; refreshing = true
-        let roots = roots, embeddingDirectory = embeddings.directory
+        let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
         let existing = indexRoots == roots ? searchIndex : nil
         if existing == nil { searchIndex?.stopSemanticSearch() }
         let task = Task.detached(priority: .utility) { () -> LibraryRefresh in
             do {
-                let index = try existing ?? LibrarySearchIndex(roots: roots, embeddingDirectory: embeddingDirectory)
+                let index = try existing ?? LibrarySearchIndex(roots: roots, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL)
                 return LibraryRefresh(index: index, recordings: try index.synchronize(), error: nil, issues: index.issues)
             } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
         }
@@ -142,7 +143,7 @@ struct ParticipantAssignmentStatus {
             let result = await task.value
             guard let self, self.generation == id else { return }
             self.refreshing = false; self.scan = nil
-            defer { self.refreshPendingSummary() }
+            defer { self.refreshIfNeeded() }
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
             self.recordings = result.recordings; self.issues = result.issues
@@ -316,8 +317,9 @@ struct ParticipantAssignmentStatus {
         do {
             try beginManagement()
             let snapshot = draft.recording, text = draft.markdown
+            let peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
             _ = try await Task.detached(priority: .userInitiated) {
-                try CallSummaryStore.save(text, for: snapshot, source: snapshot.summary == nil ? snapshot.latestTranscript : nil)
+                try CallSummaryStore.save(text, for: snapshot, source: snapshot.summary == nil ? snapshot.latestTranscript : nil, peopleURL: peopleURL)
             }.value
             summaryDrafts[recording.id] = nil
             await finishManagement()?.value
