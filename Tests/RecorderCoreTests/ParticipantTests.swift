@@ -96,6 +96,29 @@ final class ParticipantTests: XCTestCase {
         let mixed = TranscriptSegment(source: .mixed, start: 0, end: 1, text: "Two voices", timing: "segment")
         XCTAssertEqual(mixed.speakerLabel(automaticParticipant: "Alex"), "Mixed audio")
     }
+    func testVoiceLibraryUsesLatestAssignedAndInferredPassagesAndCanUnassignThem() throws {
+        let raw = "pat@example.test"
+        let initial = try prepare([raw]), original = initial.transcripts[0]
+        try audio(initial.url.appendingPathComponent("System.m4a"))
+        var people = PeopleDirectory()
+        try people.update(.init(id: "pat", name: "Pat Jones", emails: [raw]))
+        let all = PersonVoiceLibrary(recordings: [initial], directory: people)
+        XCTAssertEqual(all.items.count, 2)
+        XCTAssertTrue(all.items.allSatisfy { $0.owner == "person:pat" })
+        _ = try CallFileOperations.saveTranscriptEdits(original.document!.paragraphs.map(\.text), version: original,
+            recording: initial, participants: [nil, raw, nil, ""])
+        let current = try call().resolvingPeople(people)
+        let version = current.transcripts[0]
+        XCTAssertEqual(current.transcripts.count, 2)
+        XCTAssertEqual(current.speakerLabel(for: version.document!.paragraphs[1], version: version), "Pat Jones")
+        XCTAssertEqual(current.speakerLabel(for: version.document!.paragraphs[3], version: version), "Other participants")
+        let catalog = PersonVoiceLibrary(recordings: [current], directory: people)
+        XCTAssertEqual(catalog.owners.map(\.name), ["Pat Jones"])
+        XCTAssertEqual(catalog.items.count, 1)
+        let item = try XCTUnwrap(catalog.items.first)
+        XCTAssertEqual(item.audio?.lastPathComponent, "System.m4a"); XCTAssertEqual(item.start, 2); XCTAssertEqual(item.end, 4)
+        XCTAssertEqual(item.owner, "person:pat")
+    }
     func testDuplicateDirectoryNamesStayDistinctAndExplicitCallNamesWin() throws {
         let a = CallAttendee(id: "pat1", name: "pat.a@example.test", email: "old@example.test")
         let b = CallAttendee(name: "pat.b@example.test")
