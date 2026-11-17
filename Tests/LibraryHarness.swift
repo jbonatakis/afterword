@@ -182,6 +182,29 @@ import RecorderCore
         native.close()
         print("PASS native window ownership, playback pause on close, and reopen")
 
+        let summaryCall = library.recordings[0]
+        try CallSummaryStore.save("Summary from the original transcript.", for: summaryCall, source: originalVersion)
+        await library.refresh()?.value
+        let current = library.recordings[0]
+        require(current.summary?.current?.sourceChanged(in: current) == true, "Fixture did not have a stale summary")
+        let summaryController = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
+        let summaryWindow = summaryController.window!
+        summaryWindow.setFrame(NSRect(x: -10000, y: -10000, width: 940, height: 660), display: false)
+        summaryWindow.orderBack(nil); await pump()
+        let content = summaryWindow.contentView!
+        content.layoutSubtreeIfNeeded()
+        func splitView(in view: NSView) -> NSSplitView? {
+            if let split = view as? NSSplitView { return split }
+            return view.subviews.lazy.compactMap { splitView(in: $0) }.first
+        }
+        guard let split = splitView(in: content) else { throw RecorderError.message("Library split view is missing") }
+        let bounds = split.convert(split.bounds, to: content)
+        require(bounds.minY >= content.bounds.minY - 1 && bounds.maxY <= content.bounds.maxY + 1, "Stale summary pushed the library outside its window")
+        summaryWindow.orderOut(nil)
+        try FileManager.default.removeItem(at: CallSummaryStore.url(for: current.url, isDirectory: current.isDirectory))
+        await library.refresh()?.value
+        print("PASS changed-transcript notice fits in the compact library window")
+
         for (width, height, dark, suffix) in [(1180.0, 740.0, false, "light"), (940.0, 600.0, true, "compact-dark")] {
             let view = RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {})
                 .preferredColorScheme(dark ? .dark : .light)

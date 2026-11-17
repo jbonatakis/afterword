@@ -50,7 +50,7 @@ struct CallSummaryView: View {
                 }
                 if selected.sourceChanged(in: recording) {
                     Label("The transcript or speaker assignments have changed since this summary was created. Review it before relying on it.", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                        .font(.caption).foregroundStyle(.orange)
                 }
                 ScrollView {
                     SummaryMarkdown(markdown: selected.markdown).frame(maxWidth: .infinity, alignment: .leading)
