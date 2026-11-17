@@ -45,6 +45,12 @@ public struct TranscriptionInput: Sendable {
     }
 }
 
+public struct TranscriptWord: Codable, Equatable, Sendable {
+    public let text: String
+    public let start: Double
+    public let end: Double
+}
+
 public struct TranscriptSegment: Codable, Equatable, Sendable {
     public let source: TranscriptSource
     public let start: Double
@@ -53,14 +59,18 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
     public let timing: String
     /// nil uses the transcript's automatic name; an empty string explicitly leaves a passage unassigned.
     public let participant: String?
-    public init(source: TranscriptSource, start: Double, end: Double, text: String, timing: String, participant: String? = nil) {
+    /// True for a name accepted for a whole voice group. Individual corrections take precedence.
+    public let groupAssignment: Bool?
+    public let speakerGroup: String?
+    public let words: [TranscriptWord]?
+    public init(source: TranscriptSource, start: Double, end: Double, text: String, timing: String, participant: String? = nil, speakerGroup: String? = nil, words: [TranscriptWord]? = nil, groupAssignment: Bool? = nil) {
         self.source = source; self.start = start; self.end = end; self.text = text; self.timing = timing
-        self.participant = participant
+        self.participant = participant; self.speakerGroup = speakerGroup; self.words = words; self.groupAssignment = groupAssignment
     }
     public func speakerLabel(automaticParticipant: String? = nil, participantNames: [String: String] = [:]) -> String {
         guard source == .system else { return source.label }
         let name = (participant.map { participantNames[$0] ?? $0 } ?? automaticParticipant)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name?.isEmpty == false ? name! : source.label
+        return name?.isEmpty == false ? name! : speakerGroup.map { "Speaker " + String($0.dropFirst()) } ?? source.label
     }
 }
 
@@ -85,6 +95,8 @@ public struct Transcript: Codable, Sendable {
     public let echoCancellation: EchoCancellationDetails?
     public let editing: TranscriptEditing?
     public let automaticParticipant: String?
+    /// Names explicitly chosen for a diarized voice in this version, including voices with no assignable words.
+    let reviewedGroupNames: [String: String]?
 
     public init(input: TranscriptionInput, model: SpeechModel, engine: String, language: String, segments: [TranscriptSegment],
                 speakerBleedReduction: SpeakerBleedReduction? = nil, echoCancellation: EchoCancellationDetails? = nil,
@@ -97,7 +109,7 @@ public struct Transcript: Codable, Sendable {
         version = self.automaticParticipant != nil || segments.contains(where: { $0.participant != nil }) ? 3 : 2
         createdAt = Date(); recording = input.name
         self.speakerBleedReduction = speakerBleedReduction; self.echoCancellation = echoCancellation
-        editing = nil
+        editing = nil; reviewedGroupNames = nil
         modelID = model.id; modelName = model.name; modelSHA256 = model.sha256
         self.engine = engine; self.language = language
         sources = Dictionary(uniqueKeysWithValues: input.tracks.map { ($0.source.rawValue, URL(fileURLWithPath: $0.path).lastPathComponent) })
@@ -107,9 +119,14 @@ public struct Transcript: Codable, Sendable {
     public var plainText: String {
         let cleanup = speakerBleedReduction.map { "Speaker bleed reduction: \($0.description)\n" } ?? ""
         let edits = editing == nil ? "" : "Manually edited transcript. Edited paragraphs retain their original audio intervals.\n"
-        let labels = automaticParticipant != nil || segments.contains(where: { $0.participant != nil })
-            ? "Speaker names use participant assignments; unassigned labels follow the recorded tracks."
-            : "Labels follow the recorded tracks. Other participants may include multiple people and system audio."
+        let labels: String
+        if segments.contains(where: { $0.speakerGroup != nil }) {
+            labels = "Numbered speakers are voices detected on the system track. Names use this call’s participant assignments."
+        } else if automaticParticipant != nil || segments.contains(where: { $0.participant != nil }) {
+            labels = "Speaker names use participant assignments; unassigned labels follow the recorded tracks."
+        } else {
+            labels = "Labels follow the recorded tracks. Other participants may include multiple people and system audio."
+        }
         let header = "\(recording)\nModel: \(modelName)\n\(cleanup)\(edits)\(labels)\n\n"
         if segments.isEmpty { return header + (editing == nil ? "No speech was detected.\n" : "This edited transcript has no text.\n") }
         return header + segments.map { "[\(Self.timestamp($0.start))] \($0.speakerLabel(automaticParticipant: automaticParticipant)): \($0.text)" }.joined(separator: "\n") + "\n"
@@ -137,7 +154,7 @@ public struct Transcript: Codable, Sendable {
     }
 
     public func editingParagraphs(_ text: [String], parentVersion: String, participants: [String?]? = nil,
-                                  automaticParticipant: String? = nil) throws -> Transcript {
+                                  automaticParticipant: String? = nil, reviewedGroupNames: [String: String]? = nil) throws -> Transcript {
         let paragraphs = paragraphs
         guard text.count == paragraphs.count else { throw RecorderError.message("The transcript structure changed. Reopen the editor.") }
         let participants = participants ?? paragraphs.map(\.participant)
@@ -149,18 +166,20 @@ public struct Transcript: Codable, Sendable {
             guard paragraph.source == .system || participant == nil else { throw RecorderError.message("Only the separate system-audio track can be assigned to other participants.") }
             if replacement == paragraph.text {
                 segments.append(contentsOf: paragraph.segments.map {
-                    .init(source: $0.source, start: $0.start, end: $0.end, text: $0.text, timing: $0.timing, participant: participant)
+                    .init(source: $0.source, start: $0.start, end: $0.end, text: $0.text, timing: $0.timing, participant: participant, speakerGroup: $0.speakerGroup, words: $0.words, groupAssignment: participant == $0.participant ? $0.groupAssignment : nil)
                 })
             }
             else if !replacement.isEmpty {
-                segments.append(.init(source: paragraph.source, start: paragraph.start, end: paragraph.end, text: replacement, timing: "segment", participant: participant))
+                segments.append(.init(source: paragraph.source, start: paragraph.start, end: paragraph.end, text: replacement, timing: "segment", participant: participant, speakerGroup: paragraph.segments.first?.speakerGroup, groupAssignment: participant == paragraph.participant ? paragraph.segments.first?.groupAssignment : nil))
             }
         }
-        return Transcript(original: self, segments: segments, parentVersion: parentVersion, automaticParticipant: automaticParticipant ?? self.automaticParticipant)
+        return Transcript(original: self, segments: segments, parentVersion: parentVersion, automaticParticipant: automaticParticipant ?? self.automaticParticipant,
+                          reviewedGroupNames: reviewedGroupNames ?? savedSpeakerNames)
     }
-    private init(original: Transcript, segments: [TranscriptSegment], parentVersion: String, automaticParticipant: String?) {
+    init(original: Transcript, segments: [TranscriptSegment], parentVersion: String, automaticParticipant: String?, reviewedGroupNames: [String: String]) {
+        self.reviewedGroupNames = reviewedGroupNames.isEmpty ? nil : reviewedGroupNames
         let automaticParticipant = automaticParticipant?.isEmpty == true ? nil : automaticParticipant
-        version = automaticParticipant != nil || segments.contains(where: { $0.participant != nil }) ? 3 : 2
+        version = automaticParticipant != nil || !reviewedGroupNames.isEmpty || segments.contains(where: { $0.participant != nil }) ? 3 : 2
         createdAt = Date(); recording = original.recording
         modelID = original.modelID; modelName = original.modelName; modelSHA256 = original.modelSHA256
         engine = original.engine; language = original.language; sources = original.sources

@@ -126,7 +126,10 @@ import RecorderCore
                     }
                 }
                 guard operation == id else { return }
-                transcript = file; status = "Transcript saved · \(model.name)"
+                transcript = file
+                if let reason = job.speakerAnalysisError {
+                    status = "Transcript saved. Speaker analysis can be retried in Speakers. " + reason
+                } else { status = "Transcript saved · \(model.name)" }
             } catch {
                 guard operation == id else { return }
                 status = error is CancellationError || Task.isCancelled ? cancellationMessage ?? "Transcription cancelled. Your recording is saved." : error.localizedDescription

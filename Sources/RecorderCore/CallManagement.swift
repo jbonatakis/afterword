@@ -64,7 +64,9 @@ public struct CallDetails: Codable, Equatable, Sendable {
         return participants.contains(current) ? current : ""
     }
     public func participantNames(for transcript: LibraryTranscript) -> [String: String] {
-        let names = Set(transcript.document?.segments.compactMap(\.participant) ?? [])
+        guard let document = transcript.document else { return [:] }
+        var names = Set(document.segments.compactMap(\.participant))
+        if let reviewed = document.reviewedGroupNames { names.formUnion(reviewed.values) }
         return Dictionary(uniqueKeysWithValues: names.map { ($0, participantName($0, for: transcript) ?? "") })
     }
 }
@@ -238,21 +240,35 @@ public enum CallFileOperations {
             throw error
         }
     }
-    public static func saveTranscriptEdits(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil) throws -> URL {
+    public static func saveSpeakerReview(_ review: SpeakerReview, version: LibraryTranscript, recording: LibraryRecording) throws -> URL {
+        let (_, details) = try transcriptForEditing(version, recording)
+        let updated = try review.applying(to: version, details: details)
+        if updated.segments == version.document?.segments, updated.automaticParticipant == version.document?.automaticParticipant,
+           updated.savedSpeakerNames == details.savedSpeakerNames(for: version) { return version.url }
+        return try updated.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
+    }
+
+    private static func transcriptForEditing(_ version: LibraryTranscript, _ recording: LibraryRecording) throws -> (Transcript, CallDetails) {
         try validateRecording(recording)
         _ = try transcriptDirectory(version, for: recording)
         guard let original = version.document else { throw RecorderError.message("This transcript cannot be edited because it could not be read.") }
         let current = try Transcript.read(from: version.url)
-        guard current.segments == original.segments, current.createdAt == original.createdAt, current.automaticParticipant == original.automaticParticipant else {
+        guard current.segments == original.segments, current.createdAt == original.createdAt, current.automaticParticipant == original.automaticParticipant,
+              current.reviewedGroupNames == original.reviewedGroupNames else {
             throw RecorderError.message("This transcript changed while you were editing it. Reopen the editor to review the latest version.")
         }
         let details = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
+        return (original, details)
+    }
+
+    public static func saveTranscriptEdits(_ text: [String], version: LibraryTranscript, recording: LibraryRecording, participants: [String?]? = nil) throws -> URL {
+        let (original, details) = try transcriptForEditing(version, recording)
         let names = participants ?? original.paragraphs.map { details.participantName($0.participant, for: version) }
         guard names.allSatisfy({ $0 == nil || $0 == "" || details.participants.contains($0!) }) else {
             throw RecorderError.message("A participant changed while you were editing. Reopen the editor to review the latest names.")
         }
         let edited = try original.editingParagraphs(text, parentVersion: version.runName, participants: names,
-                                                  automaticParticipant: details.automaticParticipant(for: version) ?? "")
+                                                  automaticParticipant: details.automaticParticipant(for: version) ?? "", reviewedGroupNames: details.savedSpeakerNames(for: version))
         return try edited.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
     }
 }

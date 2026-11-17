@@ -8,48 +8,35 @@ public struct TranscriptionProgress: Sendable {
 
 /// A single owned helper process. Cancellation never targets the recording engine.
 public final class TranscriptionJob: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelled = false
-    private var process: Process?
-    public init() {}
-    public var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
-    public func cancel() {
-        lock.lock(); cancelled = true
-        let child = process
-        if let child, child.isRunning { child.terminate() }
-        lock.unlock()
-        if let child {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self else { return }
-                self.lock.lock(); defer { self.lock.unlock() }
-                if self.process === child, child.isRunning { kill(child.processIdentifier, SIGKILL) }
-            }
-        }
-    }
-    private func checkCancellation() throws { if isCancelled { throw CancellationError() } }
+    private let operation = LocalWorkerOperation()
+    private let speakerStore: SpeakerAnalysisStore
+    private let resultLock = NSLock()
+    private var speakerFailure: String?
+
+    public init(speakerStore: SpeakerAnalysisStore = .bundled) { self.speakerStore = speakerStore }
+    public var speakerAnalysisError: String? { resultLock.withLock { speakerFailure } }
+    public var isCancelled: Bool { operation.isCancelled }
+    public func cancel() { operation.cancel() }
 
     public func run(recording: URL, model: SpeechModel, modelURL: URL, worker: URL,
                     language: String = "auto", reduceSpeakerBleed: Bool = true,
                     progress: @escaping @Sendable (TranscriptionProgress) -> Void) async throws -> URL {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .utility).async {
-                    do { continuation.resume(returning: try self.execute(recording: recording, model: model, modelURL: modelURL, worker: worker, language: language, reduceSpeakerBleed: reduceSpeakerBleed, progress: progress)) }
-                    catch { continuation.resume(throwing: error) }
-                }
-            }
-        } onCancel: { self.cancel() }
+        try await operation.perform {
+            try self.execute(recording: recording, model: model, modelURL: modelURL, worker: worker, language: language,
+                             reduceSpeakerBleed: reduceSpeakerBleed, progress: progress)
+        }
     }
 
     private func execute(recording: URL, model: SpeechModel, modelURL: URL, worker: URL, language: String, reduceSpeakerBleed: Bool,
                          progress: @escaping @Sendable (TranscriptionProgress) -> Void) throws -> URL {
-        try checkCancellation()
+        try operation.checkCancellation()
+        resultLock.withLock { speakerFailure = nil }
         guard FileManager.default.isExecutableFile(atPath: worker.path) else { throw RecorderError.message("The transcription worker is missing. Rebuild or reinstall Afterword.") }
         let input = try TranscriptionInput.resolve(recording)
         let bleedReduction = SpeakerBleedReduction.resolve(enabled: reduceSpeakerBleed, input: input)
         progress(.init("Checking \(model.name)…"))
         try ModelStore.verify(modelURL, model: model, cancelled: { self.isCancelled })
-        try checkCancellation()
+        try operation.checkCancellation()
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("Afterword-ASR-" + UUID().uuidString)
         try PrivateFiles.directory(temporary)
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -63,16 +50,13 @@ public final class TranscriptionJob: @unchecked Sendable {
         child.executableURL = worker; child.arguments = [request.path]
         child.standardInput = FileHandle.nullDevice; child.standardOutput = output; child.standardError = errors
         child.qualityOfService = .utility
-        lock.lock()
-        if cancelled { lock.unlock(); throw CancellationError() }
-        process = child
-        do { try child.run(); lock.unlock() } catch { process = nil; lock.unlock(); throw error }
+        try operation.start(child)
         // The parent must not retain a writer or it would never see EOF after a crash.
         try? output.fileHandleForWriting.close()
         defer {
             try? output.fileHandleForReading.close()
             if child.isRunning { cancel(); child.waitUntilExit() }
-            lock.lock(); process = nil; lock.unlock()
+            operation.finish(child)
         }
         var buffer = Data(), segments: [TranscriptSegment] = []
         var completion: TranscriptionCompletion?
@@ -81,7 +65,7 @@ public final class TranscriptionJob: @unchecked Sendable {
         while true {
             let data = output.fileHandleForReading.availableData
             if data.isEmpty { break }
-            try checkCancellation(); buffer.append(data)
+            try operation.checkCancellation(); buffer.append(data)
             guard buffer.count < 2_097_152 else { throw RecorderError.message("The transcription worker returned an oversized response.") }
             while let newline = buffer.firstIndex(of: 10) {
                 let line = buffer.subdata(in: buffer.startIndex..<newline); buffer.removeSubrange(...newline)
@@ -119,16 +103,26 @@ public final class TranscriptionJob: @unchecked Sendable {
                 }
             }
         }
-        child.waitUntilExit(); try checkCancellation()
+        child.waitUntilExit(); try operation.checkCancellation()
         guard child.terminationStatus == 0, let completion, buffer.isEmpty, durations.count == input.tracks.count else {
             throw RecorderError.message("The local transcription worker stopped before completing. Try again or choose another model. Your recording is saved.")
+        }
+        if let system = input.tracks.first(where: { $0.source == .system }),
+           segments.contains(where: { $0.source == .system }) {
+            progress(.init("Finding speakers in system audio…"))
+            do {
+                let analysis = try speakerStore.analysis(for: URL(fileURLWithPath: system.path), operation: operation)
+                segments = SpeakerReview(analysis: analysis, names: [:]).groupedSegments(segments)
+            } catch {
+                try operation.checkCancellation()
+                // Keep the recognized words when diarization fails. Review can retry the same audio.
+                resultLock.withLock { speakerFailure = error.localizedDescription }
+            }
         }
         let transcript = try Transcript(input: input, model: model, engine: "transcribe.cpp " + completion.engine, language: language,
                                         segments: segments, speakerBleedReduction: bleedReduction, echoCancellation: completion.echoCancellation)
         progress(.init("Saving transcript…", fraction: 1))
         // Serialize publication with cancellation: a cancelled job cannot publish later.
-        lock.lock(); defer { lock.unlock() }
-        if cancelled { throw CancellationError() }
-        return try transcript.save(beside: input)
+        return try operation.publish { try transcript.save(beside: input) }
     }
 }

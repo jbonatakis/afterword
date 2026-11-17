@@ -24,7 +24,7 @@ public struct TranscriptParagraph: Identifiable, Codable, Sendable {
             let segment = item.element
             if let previous = groups.last, let last = previous.last,
                last.source == segment.source,
-               last.participant == segment.participant,
+               last.participant == segment.participant, last.speakerGroup == segment.speakerGroup, last.groupAssignment == segment.groupAssignment,
                segment.start - (previous.map(\.end).max() ?? last.end) <= 3,
                segment.end - previous[0].start <= 45,
                previous.reduce(0, { $0 + $1.text.count + 1 }) + segment.text.count <= 650 {

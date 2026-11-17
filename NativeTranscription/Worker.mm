@@ -30,10 +30,12 @@ static void emit(NSDictionary * value) {
 static NSString * clean(const char * text) {
     return [[NSString stringWithUTF8String:text ?: ""] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
 }
-static void segment(NSString * source, NSString * text, double start, double end, NSString * timing) {
+static void segment(NSString * source, NSString * text, double start, double end, NSString * timing, NSArray * words = nil) {
     if (!text.length) return;
-    emit(@{@"type": @"segment", @"source": source, @"text": text,
-           @"start": @(start), @"end": @(end), @"timing": timing});
+    NSMutableDictionary * row = [@{@"type": @"segment", @"source": source, @"text": text,
+           @"start": @(start), @"end": @(end), @"timing": timing} mutableCopy];
+    if (words.count) row[@"words"] = words;
+    emit(row);
 }
 
 struct AudioReader {
@@ -74,20 +76,22 @@ static void results(transcribe_session * session, NSString * source, int64_t off
     const auto kind = transcribe_returned_timestamp_kind(session);
     if (kind >= TRANSCRIBE_TIMESTAMPS_WORD && transcribe_n_words(session) > 0) {
         NSMutableString * phrase = [NSMutableString string]; double start = 0, end = 0;
+        NSMutableArray * words = [source isEqualToString:@"system"] ? [NSMutableArray array] : nil;
         for (int i = 0; i < transcribe_n_words(session); ++i) {
             transcribe_word word; transcribe_word_init(&word); checkASR(transcribe_get_word(session, i, &word));
             NSString * text = clean(word.text); if (!text.length) continue;
             double a = time(word.t0_ms), b = std::max(a, time(word.t1_ms));
             if (phrase.length && (a - end > 0.65 || b - start > 8)) {
-                segment(source, phrase, start, end, @"word"); phrase = [NSMutableString string];
+                segment(source, phrase, start, end, @"word", words); [words removeAllObjects]; phrase = [NSMutableString string];
             }
             if (!phrase.length) start = a; else [phrase appendString:@" "];
             [phrase appendString:text]; end = b;
+            [words addObject:@{@"text": text, @"start": @(a), @"end": @(b)}];
             if ([text rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@".!?。！？"] options:NSBackwardsSearch].location == text.length - 1) {
-                segment(source, phrase, start, end, @"word"); phrase = [NSMutableString string];
+                segment(source, phrase, start, end, @"word", words); [words removeAllObjects]; phrase = [NSMutableString string];
             }
         }
-        segment(source, phrase, start, end, @"word");
+        segment(source, phrase, start, end, @"word", words);
     } else if (kind >= TRANSCRIBE_TIMESTAMPS_SEGMENT && transcribe_n_segments(session) > 0) {
         for (int i = 0; i < transcribe_n_segments(session); ++i) {
             transcribe_segment row; transcribe_segment_init(&row); checkASR(transcribe_get_segment(session, i, &row));

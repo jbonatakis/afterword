@@ -50,6 +50,41 @@ final class ParticipantTests: XCTestCase {
         return try call()
     }
 
+    func testReviewPersistsNamesAcrossReopenTextEditsAndAttendanceChanges() throws {
+        let original = try prepare(["Pat", "Sam"])
+        let analysis = SpeakerAnalysis(model: SpeakerAnalysis.modelID, intervals: [
+            .init(speaker: "S1", start: 2, end: 4), .init(speaker: "S2", start: 10, end: 14)
+        ], clips: [])
+        func review(_ names: [String: String], _ recording: LibraryRecording) throws -> URL {
+            try CallFileOperations.saveSpeakerReview(.init(analysis: analysis, names: names), version: recording.transcripts[0], recording: recording)
+        }
+        _ = try review(["S1": "Pat"], original)
+        let first = try call()
+        // S2 has no transcribed words. Saving only that choice must still produce a new version.
+        _ = try review(["S2": "Sam"], first)
+        let reopened = try call(), version = reopened.transcripts[0]
+        let expected = ["S1": "Pat", "S2": "Sam"]
+        XCTAssertEqual(reopened.details.savedSpeakerNames(for: version), expected)
+        XCTAssertEqual(reopened.details.savedSpeakerNames(for: first.transcripts[0]), ["S1": "Pat"])
+        XCTAssertEqual(try review([:], reopened), version.url)
+        XCTAssertEqual(try call().transcripts.count, 3)
+        try CallDetailsStore.save(.init(participants: ["Pat", "Sam Lee"]), for: reopened, participantRenames: ["Sam": "Sam Lee"])
+        let renamed = try call()
+        XCTAssertEqual(renamed.details.savedSpeakerNames(for: version), ["S1": "Pat", "S2": "Sam Lee"])
+        let paragraphs = try XCTUnwrap(version.document).paragraphs
+        _ = try CallFileOperations.saveTranscriptEdits(paragraphs.map(\.text), version: version, recording: renamed,
+                                                      participants: [nil, "Sam Lee", nil, nil])
+        let corrected = try call()
+        XCTAssertEqual(corrected.details.savedSpeakerNames(for: corrected.transcripts[0]), ["S1": "Pat", "S2": "Sam Lee"])
+        _ = try review(["S1": "Sam Lee", "S2": "Pat"], corrected)
+        let relabeled = try call(), current = relabeled.transcripts[0]
+        XCTAssertEqual(relabeled.details.savedSpeakerNames(for: current), ["S1": "Sam Lee", "S2": "Pat"])
+        XCTAssertNil(current.document?.paragraphs[1].segments.first?.groupAssignment)
+        try CallDetailsStore.save(.init(participants: ["Sam Lee"]), for: relabeled)
+        try CallDetailsStore.save(.init(participants: ["Pat", "Sam Lee"]), for: call())
+        XCTAssertEqual(try call().details.savedSpeakerNames(for: current), ["S1": "Sam Lee"])
+    }
+
     func testSingleParticipantIsCapturedForNewTranscriptsAndNeverChangesRecorderOrMixedAudio() throws {
         let recording = try prepare(["Alex"]), version = try XCTUnwrap(recording.latestTranscript)
         let transcript = try XCTUnwrap(version.document)

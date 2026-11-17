@@ -70,7 +70,7 @@ for name in target_names:
         phases.append(phase(name + ":embed", "PBXCopyFilesBuildPhase", [embed], dstPath="", dstSubfolderSpec=10, name="Embed Frameworks"))
         helper = build("embed:AfterwordMCP", products["AfterwordMCP"], settings={"ATTRIBUTES": ["CodeSignOnCopy"]})
         phases.append(phase(name + ":mcp", "PBXCopyFilesBuildPhase", [helper], dstPath="Contents/Helpers", dstSubfolderSpec=1, name="Embed MCP server"))
-        phases.append(phase(name + ":transcription", "PBXShellScriptBuildPhase", [], name="Build local inference workers", shellPath="/bin/bash", shellScript='set -euo pipefail\ncd "$SRCROOT"\n./Scripts/build-transcription.sh\n./Scripts/build-embedding.sh\n./Scripts/embed-transcription.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n./Scripts/embed-embedding.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n', alwaysOutOfDate=1))
+        phases.append(phase(name + ":transcription", "PBXShellScriptBuildPhase", [], name="Build local inference workers", shellPath="/bin/bash", shellScript='set -euo pipefail\ncd "$SRCROOT"\n./Scripts/build-transcription.sh\n./Scripts/build-embedding.sh\n./Scripts/build-diarization.sh\n./Scripts/embed-transcription.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n./Scripts/embed-embedding.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n./Scripts/embed-diarization.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n', alwaysOutOfDate=1))
         values.update(ENABLE_USER_SCRIPT_SANDBOXING="NO")
     if name == "RecorderCoreTests": values.update(TEST_HOST="", BUNDLE_LOADER="", LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@loader_path/../Frameworks", "$(BUILT_PRODUCTS_DIR)"])
     package_products = {"packageProductDependencies": [shortcut_product]} if name == "Afterword" else {}

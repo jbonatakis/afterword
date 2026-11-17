@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+app="$1"
+identity="$(./Scripts/signing-identity.sh)"
+resources="$app/Contents/Resources"
+licenses="$resources/Licenses/SpeakerWorker"
+mkdir -p "$app/Contents/Helpers" "$resources/SpeakerModels" "$licenses"
+cp build/native/SpeakerWorker "$app/Contents/Helpers/"
+cp -R build/diarization/models/speaker-diarization "$resources/SpeakerModels/"
+chmod -R a+rX "$resources/SpeakerModels"
+cp build/diarization/package/LICENSE "$licenses/FluidAudio.txt"
+cp build/diarization/package/ThirdPartyLicenses/{vbx,fastcluster}-LICENSE.md "$licenses/"
+cp NativeDiarization/MODEL-{NOTICE,CARD}.md "$licenses/"
+codesign --force --sign "$identity" --identifier io.local.afterword.speakers --options runtime "$app/Contents/Helpers/SpeakerWorker"

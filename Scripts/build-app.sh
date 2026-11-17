@@ -6,9 +6,10 @@ export SIGNING_IDENTITY
 configuration="${CONFIGURATION:-release}"
 ./Scripts/build-transcription.sh
 ./Scripts/build-embedding.sh
+./Scripts/build-diarization.sh
 ./Scripts/swift-command.sh build -c "$configuration"
 binary_dir="$(./Scripts/swift-command.sh build -c "$configuration" --show-bin-path)"
-app="$PWD/build/Afterword.app"
+app="${AFTERWORD_APP_OUTPUT:-$PWD/build/Afterword.app}"
 mkdir -p build
 stage_root="$(mktemp -d "$PWD/build/.afterword-build.XXXXXX")"
 trap 'rm -rf "$stage_root"' EXIT
@@ -19,6 +20,7 @@ cp Configuration/Info.plist "$stage_app/Contents/Info.plist"
 cp -R "$binary_dir/KeyboardShortcuts_KeyboardShortcuts.bundle" "$stage_app/Contents/Resources/"
 ./Scripts/embed-transcription.sh "$stage_app"
 ./Scripts/embed-embedding.sh "$stage_app"
+./Scripts/embed-diarization.sh "$stage_app"
 cp "$binary_dir/AfterwordMCP" "$stage_app/Contents/Helpers/AfterwordMCP"
 codesign --force --sign "$SIGNING_IDENTITY" --identifier io.local.afterword.mcp --options runtime "$stage_app/Contents/Helpers/AfterwordMCP"
 codesign --force --sign "$SIGNING_IDENTITY" --options runtime --entitlements Configuration/Afterword.entitlements "$stage_app"
