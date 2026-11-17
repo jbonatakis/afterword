@@ -98,3 +98,10 @@ uv run --with mcp==1.28.1 Scripts/check-mcp.py 'build/Afterword.app/Contents/Hel
 ```
 
 The bundled helper is signed with the persistent app signing certificate under its own `io.local.afterword.mcp` identifier.
+
+
+## Coding activity
+
+`search_activity` searches allowed calls and, when explicitly shared in Agent Access, Afterword’s imported coding archive. Supply a search `query` or omit it to browse. Browsing returns recent calls and sessions, or individual dated coding passages when time bounds are supplied. Optional filters include `source` (all, calls, or coding), `mode` (hybrid or keyword), and ISO time bounds `from` inclusive and `to` exclusive. An exact `project` or `branch` filter selects coding sessions. Dated coding passages use their message timestamps. A matching session title uses the session update date. Results interleave ranked call and coding matches and include the identifiers needed to open each source.
+
+`get_coding_session` requires coding access on each request. Pass a coding result’s `session_id`, `message_id`, and `view` to start at the cited passage, or omit the last two for the active conversation. Use `view: "recorded"` for earlier context and inactive branches. Pagination uses `next_offset` relative to the same anchor and an optional `expected_revision`. Long messages return `next_text_offset`; use the message ID and `limit: 1` to read the next part. Tool names are included. The archive excludes tool inputs and tool result payloads. The existing `get_changes` feed continues to track calls.

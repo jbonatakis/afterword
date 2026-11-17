@@ -58,6 +58,7 @@ struct AgentCall {
 /// Exposes only saved content. Never accepts a caller-supplied filesystem path.
 public final class AgentLibrary {
     private var index: LibrarySearchIndex?
+    private var codingAttached = false
     private var indexedFolders: [String]?
     public let directory: URL
     private var peopleURL: URL { directory.deletingLastPathComponent().appendingPathComponent("People.json") }
@@ -80,9 +81,28 @@ public final class AgentLibrary {
             index = try LibrarySearchIndex(roots: roots, confined: true,
                 directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
                 embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"), peopleURL: peopleURL)
+            codingAttached = false
             indexedFolders = configuration.folders
         }
         guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
+        let codingDirectory = directory == AgentAccessStore.directory ? CodingArchive.directory : directory.appendingPathComponent("CodingSessions")
+        let codingAllowed = configuration.allowCodingSessions && CodingArchive.exists(in: codingDirectory)
+        if codingAttached != codingAllowed {
+            try index.useCodingArchive(in: codingAllowed ? codingDirectory : nil)
+            codingAttached = codingAllowed
+        }
+        if name == "get_coding_session" {
+            guard codingAllowed else { throw AgentFailure("Coding session access is unavailable. Check Agent Access and imported projects.") }
+            let archive = try CodingArchive(directory: codingDirectory)
+            let revision = try archive.revision
+            let response = try codingSession(archive, args: AgentArguments(arguments))
+            guard try archive.revision == revision, try AgentAccessStore.load(directory: directory) == configuration else {
+                throw AgentFailure("Coding session access or history changed. Retry.")
+            }
+            return response
+        }
+        let activityArchive = name == "search_activity" && codingAllowed ? try CodingArchive(directory: codingDirectory) : nil
+        let codingRevision = try activityArchive?.revision
         do { try index.synchronize() }
         catch { throw AgentFailure("An allowed folder could not be indexed completely. Check folder availability and file permissions, then retry. No change checkpoint was advanced.") }
         let calls = index.calls
@@ -91,6 +111,9 @@ public final class AgentLibrary {
         let args = AgentArguments(arguments)
         var result: [String: Any]
         switch name {
+        case "search_activity":
+            result = try searchActivity(index: index, calls: calls, args: args, revision: libraryRevision + (codingRevision ?? ""), archive: activityArchive)
+            guard try activityArchive?.revision == codingRevision else { throw AgentFailure("Coding history changed. Retry.") }
         case "list_calls":
             var searchRevision = libraryRevision
             var searchStatus = index.semanticStatus(allVersions: args.bool("all_versions"))
@@ -207,6 +230,101 @@ public final class AgentLibrary {
         }
         return result
     }
+    private func codingSession(_ archive: CodingArchive, args: AgentArguments) throws -> [String: Any] {
+        let history = try archive.history(id: args.string("session_id")!)
+        let session = history.session
+        let revision = AgentJSON.hash(session.id + String(session.updated.timeIntervalSince1970))
+        try args.checkRevision(revision)
+        let messages = args.string("view") == "recorded" ? history.messages : history.conversation
+        var start = 0
+        if let id = args.string("message_id") {
+            guard let position = messages.firstIndex(where: { $0.id == id }) else { throw AgentFailure("Message unavailable in this view. Try recorded.") }
+            start = position
+        }
+        let textOffset = args.integer("text_offset", default: 0)
+        var response = try page(Array(messages.dropFirst(start)), args: args) { message in
+            let text = message.text.dropFirst(textOffset)
+            let excerpt = text.prefix(4096)
+            var item: [String: Any] = ["message_id": message.id, "role": message.role, "text": String(excerpt), "tools": message.tools]
+            if excerpt.endIndex < text.endIndex { item["next_text_offset"] = textOffset + excerpt.count }
+            item["timestamp"] = message.timestamp.map(AgentJSON.date)
+            return item
+        }
+        response["session"] = try AgentJSON.object(session)
+        response["revision"] = revision
+        guard try AgentJSON.data(response).count <= 1_048_576 else { throw AgentFailure("Result exceeds 1 MiB. Reduce limit.") }
+        return response
+    }
+
+    private func searchActivity(index: LibrarySearchIndex, calls: [AgentCall], args: AgentArguments, revision: String, archive: CodingArchive?) throws -> [String: Any] {
+        let query = args.string("query") ?? ""
+        let browse = LibrarySearchQuery(query).isEmpty
+        guard browse || LibrarySearchQuery(query).expression != nil else { throw AgentFailure("Enter a search term.") }
+        let from = try args.date("from"), to = try args.date("to")
+        if let from, let to, from > to { throw AgentFailure("from must not be after to.") }
+        let codingOnly = args.string("source") == "coding" || args.string("project") != nil || args.string("branch") != nil
+        if codingOnly && args.string("source") == "calls" { throw AgentFailure("Project and branch filters apply to coding sessions.") }
+        if codingOnly && archive == nil { throw AgentFailure("Coding session access is unavailable.") }
+        let keyword = args.string("mode") == "keyword"
+        var callItems: [[String: Any]] = [], codeItems: [[String: Any]] = []
+        var searchRevision = revision
+        var status = index.semanticStatus()
+        if !codingOnly {
+            let filteredCalls = try filtered(calls, args: args)
+            if browse {
+                callItems = filteredCalls.map { call in
+                    ["kind": "call", "call_id": call.id, "title": call.recording.name, "date": AgentJSON.date(call.recording.date),
+                     "text": String((call.recording.summary?.current?.markdown ?? call.recording.name).prefix(450))]
+                }
+            } else {
+                let byID = Dictionary(uniqueKeysWithValues: filteredCalls.map { ($0.recording.id, $0) })
+                let result = try index.hybridSearch(query, keywordOnly: keyword, recordingIDs: Set(byID.keys))
+                status = result.status; searchRevision += result.revision
+                callItems = result.hits.compactMap { hit in
+                    guard let call = byID[hit.recordingID] else { return nil }
+                    var item: [String: Any] = ["kind": "call", "call_id": call.id, "title": call.recording.name,
+                        "date": AgentJSON.date(call.recording.date), "text": hit.snippet ?? call.recording.name,
+                        "paragraph_ids": hit.paragraphIDs, "summary_match": hit.summaryMatch]
+                    item["version_id"] = call.recording.transcripts.first(where: { $0.id == hit.versionID }).map(call.versionID)
+                    return item
+                }
+            }
+        }
+        if let archive, args.string("source") != "calls" {
+            let hits: [CodingHit]
+            if browse {
+                hits = try archive.browse(from: from, to: to, project: args.string("project"), branch: args.string("branch"))
+            } else {
+                let result = try index.codingSearch(query, keywordOnly: keyword, from: from, to: to, project: args.string("project"), branch: args.string("branch"))
+                if codingOnly { status = result.status }
+                hits = result.hits
+            }
+            codeItems = hits.map { hit in
+                var item: [String: Any] = ["kind": "coding", "session_id": hit.session.id, "title": hit.session.title,
+                    "project": hit.session.project, "text": hit.text, "view": hit.archived ? "recorded" : "conversation"]
+                item["branch"] = hit.session.branch
+                item["message_id"] = hit.messageID
+                item["date"] = hit.timestamp.map(AgentJSON.date)
+                return item
+            }
+        }
+        var items: [[String: Any]] = []
+        for i in 0..<max(callItems.count, codeItems.count) {
+            if i < callItems.count { items.append(callItems[i]) }
+            if i < codeItems.count { items.append(codeItems[i]) }
+        }
+        if browse {
+            status.mode = "browse"
+            items.sort { ($0["date"] as? String ?? "") > ($1["date"] as? String ?? "") }
+        }
+        searchRevision = AgentJSON.hash(searchRevision + (try AgentJSON.hash(AgentJSON.data(items))))
+        try args.checkRevision(searchRevision)
+        var result = try page(items, args: args) { $0 }
+        result["library_revision"] = searchRevision
+        result["search_status"] = try AgentJSON.object(status)
+        return result
+    }
+
     private func find(_ calls: [AgentCall], args: AgentArguments) throws -> AgentCall {
         guard let call = calls.first(where: { $0.id == args.string("call_id") }) else { throw AgentFailure("Call not found in the allowed folders.") }
         return call

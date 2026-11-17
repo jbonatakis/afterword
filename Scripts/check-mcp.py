@@ -50,7 +50,7 @@ async def check(executable):
                 initialized = await session.initialize()
                 assert initialized.serverInfo.name == "afterword"
                 tools = await session.list_tools()
-                assert {tool.name for tool in tools.tools} == {"list_calls", "search_transcripts", "get_call", "get_transcript", "get_changes", "save_call_summary"}
+                assert {tool.name for tool in tools.tools} == {"list_calls", "search_transcripts", "get_call", "get_transcript", "get_changes", "save_call_summary", "search_activity", "get_coding_session"}
                 assert all(tool.annotations.readOnlyHint == (tool.name != "save_call_summary") for tool in tools.tools)
                 result = await session.call_tool("list_calls", {})
                 assert not result.isError

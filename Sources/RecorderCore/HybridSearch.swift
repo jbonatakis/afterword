@@ -74,7 +74,7 @@ extension LibrarySearchIndex {
         }
         var seen = Set<String>(), rank = 0
         for (chunk, _) in candidates {
-            guard let call = byID[chunk.callID], let version = call.recording.transcripts.first(where: { $0.id == chunk.versionID }), let paragraphs = version.document?.paragraphs else { continue }
+            guard case let .call(callID, versionID, _) = chunk.origin, let call = byID[callID], let version = call.recording.transcripts.first(where: { $0.id == versionID }), let paragraphs = version.document?.paragraphs else { continue }
             let eligible = paragraphs.filter { speaker == nil || speaker!.isEmpty || Self.sameSpeaker(call.speaker($0, version: version), speaker!) }
             // Quoted phrases and speaker filters are hard constraints even when
             // the rest of the query is expressed using different words.
@@ -86,10 +86,10 @@ extension LibrarySearchIndex {
             guard query.matchesQuotes(in: fields) else { continue }
             let ids = chunk.paragraphs.filter { id in eligible.contains { $0.id == id } }
             guard !ids.isEmpty, speaker == nil || speaker!.isEmpty || ids.count == chunk.paragraphs.count else { continue }
-            let key = chunk.versionID + ":" + ids.map(String.init).joined(separator: ",")
+            let key = versionID + ":" + ids.map(String.init).joined(separator: ",")
             guard seen.insert(key).inserted else { continue }
-            owners[chunk.versionID] = chunk.callID
-            for id in ids { scores[chunk.versionID, default: [:]][id, default: 0] += 1 / Double(60 + rank + 1) }
+            owners[versionID] = callID
+            for id in ids { scores[versionID, default: [:]][id, default: 0] += 1 / Double(60 + rank + 1) }
             rank += 1
             if rank >= 60 { break }
         }

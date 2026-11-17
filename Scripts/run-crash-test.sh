@@ -7,7 +7,7 @@ mkdir -p build
 xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     -module-cache-path "$PWD/.build/module-cache" -I "$binary_dir/Modules" \
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation \
-    Tests/CrashHarness.swift "$binary_dir"/RecorderCore.build/*.swift.o \
+    Tests/CrashHarness.swift "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/Lookback.build/*.swift.o \
     "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o -o build/CrashHarness
 python3 - <<'PY'
 from pathlib import Path

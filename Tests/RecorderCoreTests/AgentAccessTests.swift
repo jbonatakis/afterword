@@ -201,7 +201,8 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual((response["result"] as? [String: Any])?["protocolVersion"] as? String, "2025-11-25")
         XCTAssertNil(try server.handle(AgentJSON.data(["jsonrpc": "2.0", "method": "notifications/initialized"])))
         let tools = try request("tools/list")["result"] as? [String: Any]
-        XCTAssertEqual((tools?["tools"] as? [[String: Any]])?.count, 6)
+        XCTAssertEqual(Set((tools?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }),
+                       Set(["list_calls", "get_call", "get_transcript", "search_transcripts", "save_call_summary", "get_changes", "search_activity", "get_coding_session"]))
         XCTAssertTrue(try request("tools/call", params: ["name": "delete_call"])["error"] != nil)
         try AgentAccessStore.save(.init(), directory: state)
         let failure = try request("tools/call", params: ["name": "list_calls"])["result"] as? [String: Any]
@@ -234,7 +235,8 @@ final class AgentAccessTests: XCTestCase {
             try initialized()
         }
         let tools = try request("tools/list")["result"] as? [String: Any]
-        XCTAssertEqual((tools?["tools"] as? [[String: Any]])?.count, 6)
+        XCTAssertEqual(Set((tools?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }),
+                       Set(["list_calls", "get_call", "get_transcript", "search_transcripts", "save_call_summary", "get_changes", "search_activity", "get_coding_session"]))
 
         // Invalid retries must not destroy a working connection or bypass validation.
         let invalid = try request("initialize", params: ["protocolVersion": "2025-11-25"])

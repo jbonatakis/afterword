@@ -24,6 +24,6 @@ xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     -module-cache-path "$PWD/.build/module-cache" -I "$binary_dir/Modules" \
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation -lsqlite3 \
     Scripts/StandaloneTestSupport.swift Tests/RecorderCoreTests/*.swift build/TestRunner.swift \
-    "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
+    "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/Lookback.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
     -o build/RecorderCoreTests
 exec build/RecorderCoreTests

@@ -6,16 +6,19 @@ public struct AgentAccessConfiguration: Codable, Equatable {
     public var version = 1
     public var enabled: Bool
     public var folders: [String]
+    public var allowCodingSessions: Bool
     public var allowSummaryWrites: Bool
-    public init(enabled: Bool = false, folders: [String] = [], allowSummaryWrites: Bool = false) {
+    public init(enabled: Bool = false, folders: [String] = [], allowSummaryWrites: Bool = false, allowCodingSessions: Bool = false) {
+        self.allowCodingSessions = allowCodingSessions
         self.enabled = enabled; self.folders = folders; self.allowSummaryWrites = allowSummaryWrites
     }
-    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites }
+    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites, allowCodingSessions }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
         enabled = try values.decode(Bool.self, forKey: .enabled)
         folders = try values.decode([String].self, forKey: .folders)
+        allowCodingSessions = try values.decodeIfPresent(Bool.self, forKey: .allowCodingSessions) ?? false
         allowSummaryWrites = try values.decodeIfPresent(Bool.self, forKey: .allowSummaryWrites) ?? false
     }
 }

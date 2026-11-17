@@ -56,6 +56,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     private let roots: [URL]
     private let confined: Bool
     private let db: SearchDatabase
+    private var codingArchive: CodingArchive?
     var semantic: SemanticSearchEngine
     private let lock = NSRecursiveLock()
     private var cached: [String: (fingerprint: String, call: AgentCall)] = [:]
@@ -118,7 +119,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             for id in byID.keys where next[id] == nil { try remove(id) }
             try db.execute("COMMIT")
             cached = next
-            semantic.refresh(calls)
+            semantic.refresh(calls, codingArchive: codingArchive)
             return calls.map(\.recording)
         } catch { try? db.execute("ROLLBACK"); throw error }
     }
@@ -129,8 +130,23 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         }
     }
     public func stopSemanticSearch() { semantic.stop() }
-    public func refreshSemanticSearch() { semantic.refresh(calls) }
-    public func retrySemanticSearch() { semantic.retry(); semantic.refresh(calls) }
+    public func useCodingArchive(in directory: URL?) throws {
+        lock.lock(); defer { lock.unlock() }
+        codingArchive = try directory.flatMap { CodingArchive.exists(in: $0) ? try CodingArchive(directory: $0) : nil }
+        semantic.refresh(calls, codingArchive: codingArchive)
+    }
+    public func codingSearch(_ query: String, keywordOnly: Bool = false, from: Date? = nil,
+                             to: Date? = nil, project: String? = nil, branch: String? = nil) throws -> (hits: [CodingHit], status: SemanticSearchStatus) {
+        lock.lock(); defer { lock.unlock() }
+        guard let codingArchive else { return ([], semanticStatus()) }
+        let (candidates, status, _) = keywordOnly ? ([], semanticStatus(), "") : semantic.search(query, allVersions: false)
+        return (try codingArchive.matches(query: query, semantic: candidates, from: from, to: to, project: project, branch: branch), status)
+    }
+    public func refreshSemanticSearch() {
+        lock.lock(); defer { lock.unlock() }
+        semantic.refresh(calls, codingArchive: codingArchive)
+    }
+    public func retrySemanticSearch() { semantic.retry(); refreshSemanticSearch() }
     public func semanticStatus(allVersions: Bool = false) -> SemanticSearchStatus { semantic.snapshot(allVersions: allVersions).0 }
     private func remove(_ id: String) throws {
         try db.execute("DELETE FROM documents WHERE id IN (SELECT key FROM versions WHERE call_id = ?)", [id])
@@ -237,12 +253,13 @@ public final class LibrarySearchIndex: @unchecked Sendable {
 
 final class SearchDatabase {
     private var handle: OpaquePointer?
-    init(url: URL) throws {
+    init(url: URL, durable: Bool = false) throws {
         // Versioned scope databases are disposable; a corrupt cache can be rebuilt.
         func open() throws {
             guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw failure() }
             sqlite3_busy_timeout(handle, 10_000)
             try execute("PRAGMA journal_mode=WAL")
+            guard !durable else { return }
             let check = try rows("PRAGMA quick_check")
             guard check.first?.first == "ok" else { throw failure() }
         }
@@ -250,16 +267,22 @@ final class SearchDatabase {
         catch {
             let code = sqlite3_errcode(handle)
             sqlite3_close(handle); handle = nil
-            guard code == SQLITE_CORRUPT || code == SQLITE_NOTADB else { throw error }
+            guard !durable, code == SQLITE_CORRUPT || code == SQLITE_NOTADB else { throw error }
             for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: url.path + suffix) }
             try open()
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        guard !durable else { return }
         try execute("CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, fingerprint TEXT, revision TEXT, snapshot TEXT)")
         try execute("CREATE TABLE IF NOT EXISTS versions (key TEXT PRIMARY KEY, call_id TEXT, path TEXT, latest INTEGER, paragraph_count INTEGER)")
         try execute("CREATE INDEX IF NOT EXISTS versions_call ON versions(call_id)")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS documents USING fts5(id UNINDEXED, title, metadata, speakers, body, summary, tokenize=\"unicode61 remove_diacritics 2 tokenchars '_'\")")
         try execute("CREATE VIRTUAL TABLE IF NOT EXISTS passages USING fts5(key UNINDEXED, paragraph UNINDEXED, speaker, body, tokenize=\"unicode61 remove_diacritics 2 tokenchars '_'\")")
+    }
+    func transaction(_ body: () throws -> Void) throws {
+        try execute("BEGIN IMMEDIATE")
+        do { try body(); try execute("COMMIT") }
+        catch { try? execute("ROLLBACK"); throw error }
     }
     deinit { sqlite3_close(handle) }
     private func failure() -> Error { RecorderError.message("Search index: " + String(cString: sqlite3_errmsg(handle))) }

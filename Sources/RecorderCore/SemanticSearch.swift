@@ -19,17 +19,28 @@ public struct SemanticSearchStatus: Encodable, Sendable, Equatable {
     }
 }
 struct SemanticChunk: Sendable {
-    let callID: String
-    let versionID: String
+    enum Origin: Sendable {
+        case call(id: String, version: String, paragraphs: [Int])
+        case coding(session: String, message: String, timestamp: Date?, archived: Bool)
+    }
+    let origin: Origin
     let latest: Bool
-    let paragraphs: [Int]
     let text: String
     let hash: String
-    init(callID: String, versionID: String, latest: Bool, paragraphs: [Int], text: String) {
-        self.callID = callID; self.versionID = versionID; self.latest = latest
-        self.paragraphs = paragraphs; self.text = text; hash = AgentJSON.hash(text)
+    init(origin: Origin, latest: Bool, text: String) {
+        self.origin = origin; self.latest = latest; self.text = text
+        hash = AgentJSON.hash(text)
     }
-    var key: String { callID + ":" + versionID + ":" + paragraphs.map(String.init).joined(separator: ",") + ":" + hash }
+    var paragraphs: [Int] {
+        if case .call(_, _, let ids) = origin { return ids }
+        return []
+    }
+    var key: String {
+        switch origin {
+        case let .call(id, version, ids): return id + ":" + version + ":" + ids.map(String.init).joined(separator: ",") + ":" + hash
+        case let .coding(session, message, _, _): return "coding:" + session + ":" + message + ":" + hash
+        }
+    }
 }
 
 enum SemanticChunker {
@@ -51,7 +62,7 @@ enum SemanticChunker {
             let groupedIDs = Set(groups.filter { $0.ids.count > 1 }.flatMap(\.ids))
             groups += paragraphs.filter { groupedIDs.contains($0.id) }.map { ([$0.id], $0.text) }
             return groups.flatMap { group in split(group.text).map {
-                SemanticChunk(callID: call.id, versionID: version.id, latest: index == 0, paragraphs: group.ids, text: $0)
+                SemanticChunk(origin: .call(id: call.id, version: version.id, paragraphs: group.ids), latest: index == 0, text: $0)
             } }
         }
     }
@@ -105,16 +116,18 @@ final class SemanticSearchEngine: @unchecked Sendable {
         let runtime = EmbeddingRuntime()
         self.provider = provider ?? { try runtime.embed($0, model: $1, directory: $2, cancelled: $3) }
     }
-    func refresh(_ calls: [AgentCall]) {
+    func refresh(_ calls: [AgentCall], codingArchive: CodingArchive? = nil) {
         lock.lock(); defer { lock.unlock() }
         do {
             let next = try EmbeddingSettings.load(directory: directory)
-            let nextSignature = next.model.cacheKey + ":\(next.enabled):" + calls.map { $0.id + $0.revision }.joined()
+            let codingRevision = next.enabled ? try codingArchive?.revision : nil
+            let nextSignature = (codingRevision ?? "") + next.model.cacheKey + ":\(next.enabled):" + calls.map { $0.id + $0.revision }.joined()
             if signature != nextSignature {
-                generation = UUID(); signature = nextSignature; error = nil
+                generation = UUID(); error = nil
                 if settings.modelID != next.modelID || !next.enabled { vectors = [:]; queries = [:]; database = nil }
                 settings = next
-                chunks = next.enabled ? calls.flatMap(SemanticChunker.chunks) : []
+                chunks = next.enabled ? calls.flatMap(SemanticChunker.chunks) + (try codingArchive?.embeddingChunks() ?? []) : []
+                signature = nextSignature
             }
             guard settings.enabled else { return }
             guard FileManager.default.fileExists(atPath: ModelStore.ownedURL(settings.model.asset, root: EmbeddingSettings.modelRoot(directory)).path) else { return }

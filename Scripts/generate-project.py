@@ -30,6 +30,8 @@ target_names = ["CaptureBridge", "RecorderCore", "AfterwordMCP", "Afterword", "R
 target_ids = {name: ident("target:" + name) for name in target_names}
 shortcut_package = add("package:KeyboardShortcuts", "XCLocalSwiftPackageReference", relativePath="Vendor/KeyboardShortcuts")
 shortcut_product = add("package-product:KeyboardShortcuts", "XCSwiftPackageProductDependency", productName="KeyboardShortcuts")
+lookback_package = add("package:Lookback", "XCRemoteSwiftPackageReference", repositoryURL="https://github.com/jbonatakis/lookback.git", requirement={"kind": "revision", "revision": "cc5528c967b6c8ddd9b9a134921c42006e8d9c24"})
+lookback_product = add("package-product:Lookback", "XCSwiftPackageProductDependency", package=lookback_package, productName="Lookback")
 products = {}
 product_kinds = {"CaptureBridge": ("libCaptureBridge.a", "archive.ar", "com.apple.product-type.library.static"), "RecorderCore": ("RecorderCore.framework", "wrapper.framework", "com.apple.product-type.framework"), "Afterword": ("Afterword.app", "wrapper.application", "com.apple.product-type.application"), "RecorderCoreTests": ("RecorderCoreTests.xctest", "wrapper.cfbundle", "com.apple.product-type.bundle.unit-test")}
 product_kinds["AfterwordMCP"] = ("AfterwordMCP", "compiled.mach-o.executable", "com.apple.product-type.tool")
@@ -58,6 +60,8 @@ for name in target_names:
         if dep != "AfterwordMCP": links.append(build(name + ":link:" + dep, products[dep]))
     if name == "Afterword":
         links.append(add("build:KeyboardShortcuts", "PBXBuildFile", productRef=shortcut_product))
+    if name == "RecorderCore":
+        links.append(add("build:Lookback", "PBXBuildFile", productRef=lookback_product))
     phases.append(phase(name + ":frameworks", "PBXFrameworksBuildPhase", links))
     values = {"PRODUCT_NAME": name, "PRODUCT_BUNDLE_IDENTIFIER": "io.local.afterword." + name.lower(), "SKIP_INSTALL": "YES", "GENERATE_INFOPLIST_FILE": "YES", "SWIFT_VERSION": "5.0"}
     if name == "RecorderCore":
@@ -73,7 +77,7 @@ for name in target_names:
         phases.append(phase(name + ":transcription", "PBXShellScriptBuildPhase", [], name="Build local inference workers", shellPath="/bin/bash", shellScript='set -euo pipefail\ncd "$SRCROOT"\n./Scripts/build-transcription.sh\n./Scripts/build-embedding.sh\n./Scripts/build-diarization.sh\n./Scripts/embed-transcription.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n./Scripts/embed-embedding.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n./Scripts/embed-diarization.sh "$TARGET_BUILD_DIR/$WRAPPER_NAME"\n', alwaysOutOfDate=1))
         values.update(ENABLE_USER_SCRIPT_SANDBOXING="NO")
     if name == "RecorderCoreTests": values.update(TEST_HOST="", BUNDLE_LOADER="", LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@loader_path/../Frameworks", "$(BUILT_PRODUCTS_DIR)"])
-    package_products = {"packageProductDependencies": [shortcut_product]} if name == "Afterword" else {}
+    package_products = {"packageProductDependencies": [shortcut_product]} if name == "Afterword" else ({"packageProductDependencies": [lookback_product]} if name == "RecorderCore" else {})
     add("target:" + name, "PBXNativeTarget", buildConfigurationList=configlist(name, values), buildPhases=phases, buildRules=[], dependencies=dependencies, name=name, productName=values["PRODUCT_NAME"], productReference=products[name], productType=product_kinds[name][2], **package_products)
 
 configuration = [file("Configuration/Info.plist", "text.plist.xml"), file("Configuration/Afterword.entitlements", "text.plist.entitlements"), file("Package.swift", "sourcecode.swift"), file("README.md", "net.daringfireball.markdown")]
@@ -81,7 +85,7 @@ groups.append(add("group:configuration", "PBXGroup", children=configuration, nam
 product_group = add("group:products", "PBXGroup", children=list(products.values()), name="Products", sourceTree="<group>")
 root_group = add("group:root", "PBXGroup", children=groups + [product_group], sourceTree="<group>")
 project_settings = {"MACOSX_DEPLOYMENT_TARGET": "14.2", "SDKROOT": "macosx", "CLANG_ENABLE_MODULES": "YES", "CLANG_ENABLE_OBJC_ARC": "YES", "GCC_C_LANGUAGE_STANDARD": "c11", "SWIFT_INCLUDE_PATHS": ["$(SRCROOT)/Sources/CaptureBridge/include"], "HEADER_SEARCH_PATHS": ["$(SRCROOT)/Sources/CaptureBridge/include"], "CODE_SIGN_IDENTITY": "Call Recorder Local Development", "CODE_SIGN_STYLE": "Manual", "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/../Frameworks"], "SWIFT_VERSION": "5.0"}
-project = add("project", "PBXProject", attributes={"LastUpgradeCheck": "1600", "BuildIndependentTargetsInParallel": "YES"}, buildConfigurationList=configlist("project", project_settings, project=True), compatibilityVersion="Xcode 14.0", developmentRegion="en", hasScannedForEncodings=0, knownRegions=["en", "Base"], mainGroup=root_group, productRefGroup=product_group, projectDirPath="", projectRoot="", targets=list(target_ids.values()), packageReferences=[shortcut_package])
+project = add("project", "PBXProject", attributes={"LastUpgradeCheck": "1600", "BuildIndependentTargetsInParallel": "YES"}, buildConfigurationList=configlist("project", project_settings, project=True), compatibilityVersion="Xcode 14.0", developmentRegion="en", hasScannedForEncodings=0, knownRegions=["en", "Base"], mainGroup=root_group, productRefGroup=product_group, projectDirPath="", projectRoot="", targets=list(target_ids.values()), packageReferences=[shortcut_package, lookback_package])
 
 def plist(value, indent=0):
     if isinstance(value, dict):

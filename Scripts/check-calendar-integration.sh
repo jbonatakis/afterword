@@ -20,7 +20,7 @@ xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation -lsqlite3 -framework Carbon -framework IOKit -framework EventKit \
     Tests/CalendarIntegrationHarness.swift Sources/Afterword/LibrarySummaryMonitor.swift Sources/Afterword/CallSummaryView.swift Sources/Afterword/EmbeddingSettings.swift Sources/Afterword/RecordingLibraryModel.swift Sources/Afterword/RecordingLibraryView.swift Sources/Afterword/RecordingLibraryWindow.swift Sources/Afterword/LibraryKeyboard.swift Sources/Afterword/CallEditors.swift Sources/Afterword/AttendanceEditor.swift Sources/Afterword/CalendarCoordinator.swift Sources/Afterword/CalendarViews.swift Sources/Afterword/SpeakerReviewSheet.swift Sources/Afterword/PersonVoiceClipsView.swift \
     Sources/Afterword/RecordingCoordinator.swift Sources/Afterword/RecordingShortcut.swift Sources/Afterword/TranscriptionCoordinator.swift \
-    "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
+    "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/Lookback.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
     "$binary_dir"/KeyboardShortcuts.build/*.swift.o -o "$app/Contents/MacOS/CalendarIntegrationCheck"
 cp -R "$binary_dir/KeyboardShortcuts_KeyboardShortcuts.bundle" "$app/Contents/Resources/"
 codesign --force --sign - --options runtime "$app"
