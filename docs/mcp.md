@@ -8,6 +8,20 @@ The **Copy Server Path** button copies the bundled `Contents/Helpers/AfterwordMC
 
 The server implements the [MCP 2025-11-25 stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), including initialization, ping, tool discovery, tool calls, and structured results with a text fallback. It also negotiates the compatible 2025-06-18 protocol. Unsupported versions are offered 2025-11-25 during initialization. It advertises no prompts, resources, or subscriptions. Five tools are read-only; `save_call_summary` is a separately enabled write tool. Tool discovery is stable regardless of settings, and write access is checked at execution time.
 
+Bridges can reuse one helper process across discovery attempts and clients. A repeated valid `initialize` starts a new handshake and requires another `notifications/initialized` before tool requests. Invalid initialization attempts leave the existing connection intact. Unknown methods, including newer discovery probes, return `Method not found` so clients can fall back to supported discovery.
+
+### Connecting through a tunnel
+
+A stdio-capable tunnel can connect remote clients to the same bundled helper. For OpenAI's `tunnel-client`, configure the helper as the main MCP command and enable `mcp.stdio_send_initialized_notification: true` in the tunnel profile. This supplies the lifecycle notification after each successful initialization when the remote caller omits it. Keep API keys in private files referenced by the profile rather than in command-line arguments.
+
+With a configured profile named `afterword`, run the tunnel in the foreground:
+
+```sh
+tunnel-client run --profile afterword --log.file stdout
+```
+
+Keep that process running while the remote client connects; Ctrl+C stops it. The tunnel is managed separately from the Afterword app. After updating the helper, restart the tunnel so it launches the new executable. See the [Secure MCP Tunnel setup guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) for tunnel creation and account access.
+
 ## Tools
 
 | Tool | Inputs | Result |

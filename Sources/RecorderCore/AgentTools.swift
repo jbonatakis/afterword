@@ -98,14 +98,19 @@ public final class AgentRPCServer {
         func result(_ value: [String: Any]) -> Data { encode(["jsonrpc": "2.0", "id": id, "result": value]) }
         if method == "ping" { return result([:]) }
         if method == "initialize" {
-            guard !initialized, let requested = params["protocolVersion"] as? String,
+            guard let requested = params["protocolVersion"] as? String,
                   params["capabilities"] is [String: Any], let client = params["clientInfo"] as? [String: Any],
-                  client["name"] is String, client["version"] is String else { return error(id, -32602, "Invalid or repeated initialization") }
+                  client["name"] is String, client["version"] is String else { return error(id, -32602, "Invalid initialization") }
+            // Bridges may reuse one stdio child for discovery and later clients.
+            // A valid retry begins a fresh handshake; malformed retries leave the
+            // existing connection intact. Access is still checked on every call.
             initialized = true
+            ready = false
             return result(["protocolVersion": requested == "2025-06-18" ? requested : "2025-11-25",
                            "capabilities": ["tools": ["listChanged": false]],
                            "serverInfo": ["name": "afterword", "title": "Afterword", "version": "1.3.0"]])
         }
+        guard method == "tools/list" || method == "tools/call" else { return error(id, -32601, "Method not found") }
         guard ready else { return error(id, -32002, "Initialize the MCP connection first") }
         switch method {
         case "tools/list":

@@ -210,6 +210,47 @@ final class AgentAccessTests: XCTestCase {
         let invalid = try XCTUnwrap(server.handle(Data("garbage".utf8)))
         XCTAssertTrue(String(decoding: invalid, as: UTF8.self).contains("-32700"))
     }
+    func testRPCDiscoveryCanRepeatInitializationOnSharedTransport() throws {
+        let server = AgentRPCServer(directory: state)
+        func request(_ method: String, id: Any = 0, params: [String: Any] = [:]) throws -> [String: Any] {
+            let response = try XCTUnwrap(server.handle(AgentJSON.data(["jsonrpc": "2.0", "id": id, "method": method, "params": params])))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
+        }
+        func initialized() throws {
+            XCTAssertNil(try server.handle(AgentJSON.data(["jsonrpc": "2.0", "method": "notifications/initialized"])))
+        }
+        let params: [String: Any] = ["protocolVersion": "2025-11-25", "capabilities": [:],
+                                    "clientInfo": ["name": "openai-mcp", "version": "1.0.0"]]
+
+        // A tunnel discovery probe precedes two valid handshakes on the same child.
+        let probe = try request("server/discover", id: "openai-mcp-discover")
+        XCTAssertEqual((probe["error"] as? [String: Any])?["code"] as? Int, -32601)
+        for id in [1, 0] {
+            let response = try request("initialize", id: id, params: params)
+            XCTAssertNil(response["error"])
+            XCTAssertEqual((response["result"] as? [String: Any])?["protocolVersion"] as? String, "2025-11-25")
+            let premature = try request("tools/list")
+            XCTAssertEqual((premature["error"] as? [String: Any])?["code"] as? Int, -32002)
+            try initialized()
+        }
+        let tools = try request("tools/list")["result"] as? [String: Any]
+        XCTAssertEqual((tools?["tools"] as? [[String: Any]])?.count, 6)
+
+        // Invalid retries must not destroy a working connection or bypass validation.
+        let invalid = try request("initialize", params: ["protocolVersion": "2025-11-25"])
+        XCTAssertEqual((invalid["error"] as? [String: Any])?["code"] as? Int, -32602)
+        XCTAssertTrue(try request("tools/list")["result"] != nil)
+
+        // A later client can renegotiate the supported older protocol on this child.
+        var older = params
+        older["protocolVersion"] = "2025-06-18"
+        older["clientInfo"] = ["name": "another-client", "version": "2"]
+        let renegotiated = try request("initialize", params: older)
+        XCTAssertEqual((renegotiated["result"] as? [String: Any])?["protocolVersion"] as? String, "2025-06-18")
+        XCTAssertTrue(try request("tools/list")["error"] != nil)
+        try initialized()
+        XCTAssertTrue(try request("tools/list")["result"] != nil)
+    }
     private func enableSummaryWrites(_ enabled: Bool = true) throws {
         try AgentAccessStore.save(.init(enabled: true, folders: [root.path], allowSummaryWrites: enabled), directory: state)
     }
