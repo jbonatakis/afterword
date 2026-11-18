@@ -146,7 +146,7 @@ In **Settings → Coding**, enable Claude Code import and select projects. After
 
 Open **Coding sessions** for an individual project conversation or **All activity** to search across calls and coding sessions. The conversation view follows the current branch. Recorded history includes earlier branches and pre-compaction messages. Search results open at the matching message and select the relevant view. Project and Git branch filters are in Search options. Tool names are available in collapsed disclosures. Afterword omits tool arguments and result payloads from the archive.
 
-The durable archive lives in `~/Library/Application Support/Afterword/CodingSessions`. It retains imported sessions when Claude Code rotates or deletes local transcripts. Search works immediately with keywords. Enabling the existing optional semantic model also indexes coding passages locally, with prompt and response context and the existing recording priority rules.
+The durable archive lives in `~/Library/Application Support/Afterword/CodingSessions`. It retains imported sessions when Claude Code rotates or deletes local transcripts. Search works immediately with keywords. The optional semantic model indexes session titles and coding passages locally, with prompt and response context and the existing recording priority rules.
 
 MCP clients can use **search_activity** across their allowed calls. Separately enable **Settings → Agent Access → Share imported coding sessions** to include imported projects and allow **get_coding_session**. Existing grants default to calls only.
 

@@ -17,7 +17,7 @@ final class CodingIntegrationTests: XCTestCase {
     {"type":"system","uuid":"boundary","logicalParentUuid":"old"}
     {"type":"user","uuid":"summary","parentUuid":"boundary","isCompactSummary":true,"message":{"content":"Earlier context"}}
     {"type":"user","uuid":"request","parentUuid":"summary","timestamp":"2026-11-05T09:00:00Z","message":{"content":"Delay device restarts during meetings"}}
-    {"type":"assistant","uuid":"tool","parentUuid":"request","message":{"id":"response","content":[{"type":"tool_use","id":"run","name":"Read","input":{"private":"SecretInputToken"}}]}}
+    {"type":"assistant","uuid":"tool","parentUuid":"request","timestamp":"2026-11-05T09:01:00Z","message":{"id":"response","content":[{"type":"tool_use","id":"run","name":"Read","input":{"private":"SecretInputToken"}}]}}
     {"type":"user","uuid":"result","parentUuid":"tool","message":{"content":[{"type":"tool_result","tool_use_id":"run","content":"SecretOutputToken"}]}}
     {"type":"assistant","uuid":"reply","parentUuid":"result","timestamp":"2026-11-05T09:03:00Z","gitBranch":"device-guard","message":{"content":"Shipped the restart guard."}}
     {"type":"custom-title","customTitle":"Device reliability"}
@@ -124,11 +124,91 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertTrue(try index.codingSearch("rebooting", keywordOnly: true).hits.isEmpty)
         let semantic = try index.codingSearch("rebooting")
         XCTAssertEqual(semantic.status.mode, "hybrid")
-        XCTAssertTrue(semantic.hits.contains { $0.messageID == "reply" })
+        XCTAssertEqual(semantic.hits.count, 1)
+        let hit = try XCTUnwrap(semantic.hits.first)
+        let saved = try archive.history(id: hit.session.id)
+        XCTAssertEqual(hit.passages.count, 3)
+        for passage in hit.passages {
+            XCTAssertTrue(saved.messages.contains { $0.id == passage.messageID && !$0.text.isEmpty })
+        }
         XCTAssertTrue(try index.codingSearch(#""an unrelated exact phrase""#).hits.isEmpty)
         try archive.removeProject(project)
         index.refreshSemanticSearch()
         XCTAssertTrue(try index.codingSearch("rebooting").hits.isEmpty)
         index.stopSemanticSearch()
+    }
+
+    func testDateBrowseGroupsToolActivityAndKeepsOriginalCitations() throws {
+        _ = try imported()
+        try AgentAccessStore.save(.init(enabled: true, allowCodingSessions: true), directory: root)
+        let service = AgentLibrary(directory: root)
+        func browse(_ from: String, _ to: String) throws -> [[String: Any]] {
+            let result = try service.call("search_activity", arguments: ["source": "coding", "project": project, "from": from, "to": to])
+            return try XCTUnwrap(result["items"] as? [[String: Any]])
+        }
+        let items = try browse("2026-11-05T09:00:00Z", "2026-11-05T09:04:00Z")
+        XCTAssertEqual(items.count, 1)
+        let overview = try XCTUnwrap(items.first)
+        XCTAssertEqual(overview["message_id"] as? String, "reply")
+        XCTAssertEqual(overview["text"] as? String, "Shipped the restart guard.")
+        XCTAssertEqual(overview["tool_only_message_count"] as? Int, 1)
+        let more = try XCTUnwrap(overview["more_passages"] as? [[String: Any]])
+        XCTAssertEqual(more.compactMap { $0["message_id"] as? String }, ["request"])
+        let justTools = try XCTUnwrap(browse("2026-11-05T09:01:00Z", "2026-11-05T09:03:00Z").first)
+        XCTAssertEqual(justTools["tool_only_message_count"] as? Int, 1)
+        XCTAssertEqual(justTools["last_activity_at"] as? String, "2026-11-05T09:01:00Z")
+        XCTAssertNil(justTools["message_id"])
+        XCTAssertTrue(try browse("2026-11-05T09:04:00Z", "2026-11-06T00:00:00Z").isEmpty)
+        let detail = try service.call("get_coding_session", arguments: ["session_id": try XCTUnwrap(overview["session_id"] as? String),
+                                                                       "message_id": "tool", "limit": 1])
+        XCTAssertEqual((detail["items"] as? [[String: Any]])?.first?["tools"] as? [String], ["Read"])
+    }
+
+    func testSessionTitlesRankAlongsidePassagesAndRepeatedMatchesShareOneResult() throws {
+        let other = file.deletingLastPathComponent().appendingPathComponent("00000000-0000-4000-a000-000000000002.jsonl")
+        let named = transcript.replacingOccurrences(of: "Device reliability", with: "Meeting guard")
+        let incidental = transcript.replacingOccurrences(of: "Earlier migration notes", with: "Meeting guard")
+            .replacingOccurrences(of: "Delay device restarts during meetings", with: "Meeting guard")
+            .replacingOccurrences(of: "Shipped the restart guard.", with: "Meeting guard")
+        try Data(named.utf8).write(to: other)
+        try Data(incidental.utf8).write(to: file)
+        let archive = try imported()
+        let chunks = try archive.embeddingChunks()
+        let title = try XCTUnwrap(chunks.first {
+            guard case .coding(_, "", _, _) = $0.origin else { return false }
+            return $0.text == "Meeting guard"
+        })
+        let weaker = chunks.filter {
+            guard case let .coding(_, id, _, _) = $0.origin else { return false }
+            return !id.isEmpty && $0.text.contains("Meeting guard")
+        }
+        let lexical = try archive.matches(query: #""meeting guard""#, semantic: [], from: nil, to: nil, project: project, branch: nil)
+        XCTAssertEqual(lexical.map { $0.session.title }, ["Meeting guard", "Device reliability"])
+        let incidentalHit = try XCTUnwrap(lexical.last)
+        XCTAssertEqual(Set(incidentalHit.passages.map(\.messageID)).count, 3)
+        let supporting = try XCTUnwrap(chunks.first {
+            guard case let .coding(id, "reply", _, _) = $0.origin else { return false }
+            return id == lexical.first?.session.id
+        })
+        let titleOnly = try archive.matches(query: "occupied room", semantic: [(title, 0.12)], from: nil, to: nil, project: project, branch: nil)
+        XCTAssertEqual(titleOnly.first?.session.title, "Meeting guard")
+        XCTAssertNil(titleOnly.first?.messageID)
+        // Several stronger individual excerpts lose to a session with independent title and passage evidence.
+        let semantic: [(SemanticChunk, Float)] = weaker.map { ($0, 0.25) } + [(supporting, 0.19), (title, 0.12)]
+        let results = try archive.matches(query: "occupied room", semantic: semantic, from: nil, to: nil, project: project, branch: nil)
+        XCTAssertEqual(results.map { $0.session.title }, ["Meeting guard", "Device reliability"])
+        XCTAssertEqual(results.first?.messageID, "reply")
+        XCTAssertTrue(try archive.matches(query: #""occupied room""#, semantic: semantic, from: nil, to: nil, project: project, branch: nil).isEmpty)
+
+        try AgentAccessStore.save(.init(enabled: true, allowCodingSessions: true), directory: root)
+        let service = AgentLibrary(directory: root)
+        var args: [String: Any] = ["source": "coding", "query": "meeting guard", "mode": "keyword", "limit": 1]
+        let first = try service.call("search_activity", arguments: args)
+        XCTAssertEqual(first["total"] as? Int, 2)
+        args["offset"] = try XCTUnwrap(first["next_offset"] as? Int)
+        args["expected_revision"] = try XCTUnwrap(first["library_revision"] as? String)
+        let second = try service.call("search_activity", arguments: args)
+        XCTAssertEqual((second["items"] as? [[String: Any]])?.first?["session_id"] as? String, incidentalHit.session.id)
+        XCTAssertNil(second["next_offset"])
     }
 }

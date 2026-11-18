@@ -13,6 +13,8 @@ public struct CodingMessage: Codable, Identifiable, Sendable {
     public let parentID: String?
     public let timestamp: Date?
     public let tools: [String]
+
+    fileprivate var hasText: Bool { text.contains { !$0.isWhitespace } }
 }
 
 public struct CodingHistory: Codable, Sendable {
@@ -31,12 +33,25 @@ public struct CodingImportSettings: Sendable {
     public let projects: [String]
 }
 
+struct CodingPassage: Sendable {
+    let messageID, text: String
+    let timestamp: Date?
+    let archived: Bool
+}
+
 public struct CodingHit: Sendable {
     public let session: CodingSession
-    public let messageID: String?
-    public let text: String
-    public let timestamp: Date?
-    public let archived: Bool
+    let passages: [CodingPassage]
+    var lastActivity: Date?
+    var toolOnlyMessageCount: Int?
+
+    public var messageID: String? { passages.first?.messageID }
+    public var text: String { passages.first?.text ?? session.title }
+    public var timestamp: Date? {
+        if let passage = passages.first { return passage.timestamp }
+        return lastActivity ?? session.updated
+    }
+    public var archived: Bool { passages.first?.archived ?? false }
 }
 
 // Each connection has one owner. SQLite transactions coordinate the importer, UI and MCP processes.
@@ -209,67 +224,145 @@ public final class CodingArchive {
         return try JSONDecoder().decode(CodingHistory.self, from: Data(row[0].utf8))
     }
     func embeddingChunks() throws -> [SemanticChunk] {
-        try db.rows("SELECT session,message,body,stamp,archived FROM coding_text WHERE embed='1' ORDER BY rowid").flatMap { row in
+        try db.rows("""
+            SELECT session,message,CASE WHEN message='' THEN title ELSE body END,stamp,archived
+            FROM coding_text WHERE message='' OR embed='1' ORDER BY rowid
+            """).flatMap { row in
             SemanticChunker.split(row[2]).map {
                 SemanticChunk(origin: .coding(session: row[0], message: row[1], timestamp: Double(row[3]).map(Date.init(timeIntervalSince1970:)), archived: row[4] == "1"), latest: true, text: $0)
             }
         }
     }
 
-    /// During date-based browsing the evidence date belongs to the message, even when a session spans days.
+    /// Date bounds apply to activity inside a session, which can span several days.
     func browse(from: Date?, to: Date?, project: String?, branch: String?) throws -> [CodingHit] {
         let selected = try sessions().filter { (project == nil || project == $0.project) && (branch == nil || branch == $0.branch) }
         guard from != nil || to != nil else {
-            return selected.map { CodingHit(session: $0, messageID: nil, text: $0.title, timestamp: $0.updated, archived: false) }
+            return selected.map { CodingHit(session: $0, passages: []) }
         }
-        let byID = Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0) })
         var clauses = ["message != ''", "stamp != ''"], values: [String] = []
         if let from { clauses.append("CAST(stamp AS REAL) >= CAST(? AS REAL)"); values.append(String(from.timeIntervalSince1970)) }
         if let to { clauses.append("CAST(stamp AS REAL) < CAST(? AS REAL)"); values.append(String(to.timeIntervalSince1970)) }
-        let sql = "SELECT session,message,stamp,archived,substr(body,1,450),min(rowid) FROM coding_text WHERE " +
-            clauses.joined(separator: " AND ") + " GROUP BY session,message ORDER BY CAST(stamp AS REAL) DESC,session,message"
-        return try db.rows(sql, values).compactMap { row in
-            guard let session = byID[row[0]], let date = Double(row[2]) else { return nil }
-            return CodingHit(session: session, messageID: row[1], text: row[4], timestamp: Date(timeIntervalSince1970: date), archived: row[3] == "1")
+        let active = Set(try db.rows("SELECT DISTINCT session FROM coding_text WHERE " + clauses.joined(separator: " AND "), values).map { $0[0] })
+        // Read excerpts from the original messages. Search chunks can include context from a different day.
+        return try selected.filter { active.contains($0.id) }.compactMap { session in
+            let history = try history(id: session.id)
+            let messages = history.messages.filter {
+                guard let date = $0.timestamp, !$0.tools.isEmpty || $0.hasText else { return false }
+                return (from.map { date >= $0 } ?? true) && (to.map { date < $0 } ?? true)
+            }.sorted { $0.timestamp! > $1.timestamp! }
+            guard let latest = messages.first else { return nil }
+            let prose = messages.filter(\.hasText)
+            let current = Set(history.conversationIDs)
+            // Lead with the latest exchange and include the request that opened this period of work.
+            let choices = [prose.first, prose.first { $0.role == "Assistant" }, prose.last { $0.role == "User" }]
+            var seen = Set<String>()
+            let passages = choices.compactMap { $0 }.filter { seen.insert($0.id).inserted }.map {
+                CodingPassage(messageID: $0.id, text: String($0.text.prefix(450)), timestamp: $0.timestamp, archived: !current.contains($0.id))
+            }
+            return CodingHit(session: session, passages: passages, lastActivity: latest.timestamp,
+                             toolOnlyMessageCount: messages.count - prose.count)
         }
     }
 
     func matches(query: String, semantic: [(SemanticChunk, Float)], from: Date?, to: Date?, project: String?, branch: String?) throws -> [CodingHit] {
         let parsed = LibrarySearchQuery(query)
         guard let expression = parsed.expression else { return [] }
-        let sessions = try Dictionary(uniqueKeysWithValues: sessions().map { ($0.id, $0) })
-        var rows: [String: CodingHit] = [:], scores: [String: Double] = [:]
-        func add(_ id: String, message: String, date: Date?, archived: Bool, excerpt: String, score: Double, semantic: Bool) -> Bool {
-            guard let session = sessions[id], project == nil || session.project == project,
-                  branch == nil || session.branch == branch else { return false }
+        let selected = try sessions().filter { (project == nil || project == $0.project) && (branch == nil || branch == $0.branch) }
+        let sessions = Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0) })
+        func eligible(_ id: String, _ date: Date?) -> Bool {
+            guard sessions[id] != nil else { return false }
             if let from, date.map({ $0 >= from }) != true { return false }
             if let to, date.map({ $0 < to }) != true { return false }
-            let key = id + ":" + message
-            if rows[key] == nil {
-                rows[key] = CodingHit(session: session, messageID: message.isEmpty ? nil : message,
-                                      text: String(excerpt.prefix(450)), timestamp: date, archived: archived)
-            }
-            if semantic { scores[key, default: 0] += score }
-            else { scores[key] = max(scores[key] ?? 0, score) }
             return true
         }
-        for (rank,row) in try db.rows("""
+
+        var matches: [String: CodingSessionMatches] = [:]
+        var keywordCount = 0
+        let rows = try db.rows("""
             SELECT session,message,stamp,archived,CASE WHEN message='' THEN title ELSE snippet(coding_text,7,'','','…',35) END
-            FROM coding_text WHERE coding_text MATCH ? ORDER BY bm25(coding_text),rowid
-            """, [expression]).enumerated() {
-            _ = add(row[0], message: row[1], date: Double(row[2]).map(Date.init(timeIntervalSince1970:)),
-                    archived: row[3] == "1", excerpt: row[4], score: 1.3 / Double(61 + rank), semantic: false)
-        }
-        var seen = Set<String>()
-        for (chunk, _) in semantic {
-            guard case let .coding(id, message, date, archived) = chunk.origin else { continue }
-            let key = id + ":" + message
-            guard !seen.contains(key), parsed.matchesQuotes(chunk.text) else { continue }
-            if add(id, message: message, date: date, archived: archived, excerpt: chunk.text, score: 1.0 / Double(61 + seen.count), semantic: true) {
-                seen.insert(key)
-                if seen.count >= 80 { break }
+            FROM coding_text WHERE coding_text MATCH ? ORDER BY bm25(coding_text,0,0,0,0,4,1,1,1),rowid
+            """, [expression])
+        for row in rows {
+            let id = row[0], date = Double(row[2]).map(Date.init(timeIntervalSince1970:))
+            guard eligible(id, date) else { continue }
+            if matches[id]?.keywordRank == nil {
+                matches[id, default: .init()].keywordRank = keywordCount
+                keywordCount += 1
+            }
+            if row[1].isEmpty {
+                matches[id]?.titleMatch = parsed.matches(row[4], allowPrefixes: false)
+            } else {
+                let passage = CodingPassage(messageID: row[1], text: String(row[4].prefix(450)), timestamp: date, archived: row[3] == "1")
+                matches[id]?.addKeyword(passage)
             }
         }
-        return rows.keys.sorted { scores[$0] == scores[$1] ? $0 < $1 : scores[$0, default: 0] > scores[$1, default: 0] }.compactMap { rows[$0] }
+
+        for (chunk, weight) in semantic {
+            guard case let .coding(id, message, date, archived) = chunk.origin, eligible(id, date),
+                  message.isEmpty || matches[id]?.canAddSemantic(message) != false,
+                  parsed.matchesQuotes(chunk.text) else { continue }
+            if message.isEmpty {
+                matches[id, default: .init()].titleWeight = max(weight, matches[id]?.titleWeight ?? 0)
+            } else {
+                let passage = CodingPassage(messageID: message, text: String(chunk.text.prefix(450)), timestamp: date, archived: archived)
+                matches[id, default: .init()].addSemantic(passage, weight: weight)
+            }
+        }
+        let semanticOrder = matches.filter { $0.value.semanticWeight != nil }.sorted { a, b in
+            let left = a.value.semanticWeight ?? 0, right = b.value.semanticWeight ?? 0
+            return left == right ? a.key < b.key : left > right
+        }
+        for (rank, entry) in semanticOrder.prefix(80).enumerated() { matches[entry.key]?.semanticRank = rank }
+        return matches.filter { $0.value.keywordRank != nil || $0.value.semanticRank != nil }.sorted { a, b in
+            if a.value.titleMatch != b.value.titleMatch { return a.value.titleMatch }
+            if a.value.score != b.value.score { return a.value.score > b.value.score }
+            return a.key < b.key
+        }.map { id, match in CodingHit(session: sessions[id]!, passages: match.passages) }
+    }
+}
+
+// Fuse the best evidence from each channel once per session. Repeating the same topic
+// over many messages cannot increase a session's score or consume more result slots.
+private struct CodingSessionMatches {
+    var keywordRank: Int?
+    var semanticRank: Int?
+    var titleMatch = false
+    var titleWeight: Float?
+    private var passageWeight: Float?
+    private var keywords: [CodingPassage] = []
+    private var concepts: [CodingPassage] = []
+    private static let excerptLimit = 3
+
+    mutating func addKeyword(_ passage: CodingPassage) {
+        if keywords.count < Self.excerptLimit && !keywords.contains(where: { $0.messageID == passage.messageID }) {
+            keywords.append(passage)
+        }
+    }
+    func canAddSemantic(_ id: String) -> Bool {
+        concepts.count < Self.excerptLimit && !concepts.contains { $0.messageID == id }
+    }
+    mutating func addSemantic(_ passage: CodingPassage, weight: Float) {
+        passageWeight = max(passageWeight ?? 0, weight)
+        concepts.append(passage)
+    }
+    var semanticWeight: Float? {
+        guard titleWeight != nil || passageWeight != nil else { return nil }
+        return (titleWeight ?? 0) + (passageWeight ?? 0)
+    }
+
+    private static func score(keyword: Int?, semantic: Int?) -> Double {
+        (keyword.map { 1.3 / Double(61 + $0) } ?? 0) + (semantic.map { 1 / Double(61 + $0) } ?? 0)
+    }
+    var score: Double { Self.score(keyword: keywordRank, semantic: semanticRank) }
+    var passages: [CodingPassage] {
+        let semantic = semanticRank == nil ? [] : concepts
+        var seen = Set<String>()
+        let unique = (keywords + semantic).filter { seen.insert($0.messageID).inserted }
+        func rank(_ passage: CodingPassage) -> Double {
+            Self.score(keyword: keywords.firstIndex { $0.messageID == passage.messageID },
+                       semantic: semantic.firstIndex { $0.messageID == passage.messageID })
+        }
+        return Array(unique.sorted { rank($0) > rank($1) }.prefix(Self.excerptLimit))
     }
 }

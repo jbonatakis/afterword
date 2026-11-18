@@ -200,10 +200,8 @@ struct ParticipantAssignmentStatus {
             self.searching = false
             switch result {
             case .success(let (result, codingResults)):
-                var seen = Set<String>()
-                let firstHits = codingResults.filter { seen.insert($0.session.id).inserted }
-                self.codingHits = Dictionary(uniqueKeysWithValues: firstHits.map { ($0.session.id, $0) })
-                self.matchedCoding = firstHits.map(\.session)
+                self.codingHits = Dictionary(uniqueKeysWithValues: codingResults.map { ($0.session.id, $0) })
+                self.matchedCoding = codingResults.map(\.session)
                 let hits = result.hits
                 self.semanticStatus = result.status
                 let byID = Dictionary(uniqueKeysWithValues: self.recordings.map { ($0.id, $0) })

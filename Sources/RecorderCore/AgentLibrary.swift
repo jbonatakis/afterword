@@ -305,6 +305,16 @@ public final class AgentLibrary {
                 item["branch"] = hit.session.branch
                 item["message_id"] = hit.messageID
                 item["date"] = hit.timestamp.map(AgentJSON.date)
+                item["last_activity_at"] = hit.lastActivity.map(AgentJSON.date)
+                item["tool_only_message_count"] = hit.toolOnlyMessageCount
+                if hit.passages.count > 1 {
+                    item["more_passages"] = hit.passages.dropFirst().map { passage in
+                        var citation: [String: Any] = ["message_id": passage.messageID, "text": passage.text,
+                            "view": passage.archived ? "recorded" : "conversation"]
+                        citation["date"] = passage.timestamp.map(AgentJSON.date)
+                        return citation
+                    }
+                }
                 return item
             }
         }
@@ -315,7 +325,10 @@ public final class AgentLibrary {
         }
         if browse {
             status.mode = "browse"
-            items.sort { ($0["date"] as? String ?? "") > ($1["date"] as? String ?? "") }
+            func activityDate(_ item: [String: Any]) -> String {
+                item["last_activity_at"] as? String ?? item["date"] as? String ?? ""
+            }
+            items.sort { activityDate($0) > activityDate($1) }
         }
         searchRevision = AgentJSON.hash(searchRevision + (try AgentJSON.hash(AgentJSON.data(items))))
         try args.checkRevision(searchRevision)

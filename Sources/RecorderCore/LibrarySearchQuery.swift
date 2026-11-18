@@ -43,13 +43,16 @@ public struct LibrarySearchQuery: Sendable {
         } }.joined(separator: " OR ")
     }
     public func matches(_ text: String) -> Bool {
+        matches(text, allowPrefixes: true)
+    }
+    func matches(_ text: String, allowPrefixes: Bool) -> Bool {
         if isEmpty { return true }
         let words = Self.tokens(text).map(\.word)
         return !terms.isEmpty && terms.allSatisfy { term in
             guard words.count >= term.words.count else { return false }
             return (0...(words.count - term.words.count)).contains { start in
                 term.words.indices.allSatisfy { i in
-                    term.prefix && i == term.words.count - 1 ? words[start + i].hasPrefix(term.words[i]) : words[start + i] == term.words[i]
+                    allowPrefixes && term.prefix && i == term.words.count - 1 ? words[start + i].hasPrefix(term.words[i]) : words[start + i] == term.words[i]
                 }
             }
         }

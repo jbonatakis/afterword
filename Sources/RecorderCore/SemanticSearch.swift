@@ -256,7 +256,9 @@ final class SemanticSearchEngine: @unchecked Sendable {
             for (chunk, vector) in available {
                 var score: Float = 0
                 for i in query.indices { score += query[i] * vector[i] }
-                if score >= model.minimumSimilarity { ranked.append((chunk, score)) }
+                // Report the margin above this model's retrieval floor. Independent title and
+                // passage evidence can then be combined without counting the baseline twice.
+                if score >= model.minimumSimilarity { ranked.append((chunk, score - model.minimumSimilarity)) }
             }
             ranked.sort { a, b in a.1 == b.1 ? a.0.key < b.0.key : a.1 > b.1 }
             status.mode = "hybrid"

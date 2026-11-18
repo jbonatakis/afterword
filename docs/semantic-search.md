@@ -27,6 +27,8 @@ Keyword search remains the baseline. With semantic search available, normalized-
 
 The library and MCP return current source passages rather than generated answers. MCP includes actual search mode and indexing coverage, and search pagination revisions incorporate model/coverage/fallback state. Content and change-checkpoint revisions remain independent of derived vectors. Off, missing, paused, busy, or failed inference falls back to keyword search. Partial indexing is reported explicitly.
 
+Coding search ranks sessions. A full-word keyword match in the title takes precedence over incidental mentions in other sessions. For semantic search, the session title and its strongest matching message each contribute their similarity above the selected model’s retrieval threshold. Repeated passages from a long conversation contribute once. Keyword and semantic session ranks are combined, and each result can cite up to three distinct messages. Title embeddings use the existing text-hash cache.
+
 ## Storage
 
 `~/Library/Application Support/Afterword/Embeddings` contains `Settings.json`, `Models/`, `Vectors-v1.sqlite`, and process-coordination lock files. The vector database stores model-space keys, text hashes, and vectors, not transcript text. Private temporary inference files are removed after each batch; an abrupt parent-process crash can leave a private `.worker-*` directory, which may be removed while helpers are stopped. This is not encryption or secure deletion.
