@@ -7,7 +7,7 @@ let package = Package(
     products: [.executable(name: "Afterword", targets: ["Afterword"]),
                .executable(name: "AfterwordMCP", targets: ["AfterwordMCP"])],
     dependencies: [.package(path: "Vendor/KeyboardShortcuts"),
-                   .package(url: "https://github.com/jbonatakis/lookback.git", revision: "7f512aa8e9e651399855f92c797321fa5ada6572")],
+                   .package(url: "https://github.com/jbonatakis/lookback.git", revision: "2a7979ee4cd5749a815f055d9a199211620d95a9")],
     targets: [
         .target(name: "CaptureBridge", publicHeadersPath: "include",
                 linkerSettings: [.linkedFramework("CoreAudio")]),

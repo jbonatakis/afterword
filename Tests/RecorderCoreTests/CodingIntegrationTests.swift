@@ -62,7 +62,7 @@ final class CodingIntegrationTests: XCTestCase {
         """#
         try writeRollout(threadID, project: project, rows: rows)
         let store = try imported()
-        let sources: [any SessionReader] = [reader, try store.settings().codexReader(homeDirectory: codexHome)]
+        let sources: [any SessionReader] = [reader, CodexReader(homeDirectory: codexHome, includeArchived: true)]
         func refresh() throws { XCTAssertTrue(try store.refresh(discoverProjects: true, readers: sources).issues.isEmpty) }
         try refresh()
         XCTAssertEqual(try store.sessions().map(\.source), ["claude-code"])
@@ -124,15 +124,17 @@ final class CodingIntegrationTests: XCTestCase {
         try writeRollout("00000000-0000-4000-a000-000000000002", project: "/projects/scoped",
                          header: ["account_scoped": true, "creator_account_id": "a", "creator_user_id": "u"])
         func discover() throws -> [String] {
-            let settings = try store.settings()
-            let result = try store.refresh(discoverProjects: true, readers: [settings.codexReader(homeDirectory: codexHome)])
+            let result = try store.refresh(discoverProjects: true, readers: [CodexReader(homeDirectory: codexHome, includeArchived: true)])
             XCTAssertTrue(result.issues.isEmpty)
             return result.projects
         }
+        XCTAssertEqual(try discover(), [project, "/projects/scoped"])
+        try writeRollout("00000000-0000-4000-a000-000000000003", project: "/projects/other",
+                         header: ["account_scoped": true, "creator_account_id": "a", "creator_user_id": "another"])
         XCTAssertEqual(try discover(), [project])
-        try store.setCodexScope(.init(accountID: "a", userID: "another"))
+        try store.setCodexAccount(.unscoped)
         XCTAssertEqual(try discover(), [project])
-        try store.setCodexScope(.init(accountID: "a", userID: "u"))
+        try store.setCodexAccount(.account(.init(accountID: "a", userID: "u")))
         XCTAssertEqual(try discover(), [project, "/projects/scoped"])
         XCTAssertEqual(try store.sessions().map(\.project), [project])
         try store.addProject("/projects/scoped")

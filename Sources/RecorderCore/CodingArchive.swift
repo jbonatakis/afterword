@@ -43,7 +43,7 @@ public enum CodingProvider: String, CaseIterable, Sendable {
     fileprivate var enabledKey: String { self == .claudeCode ? "enabled" : "codexEnabled" }
 }
 
-public struct CodexScope: Equatable, Sendable {
+public struct CodexScope: Hashable, Sendable {
     public let accountID, userID: String
     public init(accountID: String = "", userID: String = "") {
         self.accountID = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,14 +51,29 @@ public struct CodexScope: Equatable, Sendable {
     }
 }
 
+public struct LocalCodexAccount: Identifiable, Sendable {
+    public let id: CodexScope
+    public let project: String?
+    public let lastUsed: Date
+    public var shortID: String { String(AgentJSON.hash(id.accountID + "/" + id.userID).prefix(6)) }
+}
+
+public enum CodexAccountSelection: Hashable, Sendable {
+    case automatic, unscoped, account(CodexScope)
+
+    func resolve(_ accounts: [LocalCodexAccount]) -> CodexScope? {
+        switch self {
+        case .automatic: return accounts.count == 1 ? accounts[0].id : nil
+        case .unscoped: return nil
+        case .account(let scope): return scope
+        }
+    }
+}
+
 public struct CodingImportSettings: Sendable {
     public let providers: Set<CodingProvider>
-    public let codexScope: CodexScope
+    public let codexAccount: CodexAccountSelection
     public let projects: [String]
-
-    func codexReader(homeDirectory: URL? = nil) -> CodexReader {
-        CodexReader(homeDirectory: homeDirectory, includeArchived: true, accountID: codexScope.accountID, userID: codexScope.userID)
-    }
 }
 
 struct CodingPassage: Sendable {
@@ -105,16 +120,25 @@ public final class CodingArchive {
 
     public func settings() throws -> CodingImportSettings {
         let values = try Dictionary(uniqueKeysWithValues: db.rows("SELECT key,value FROM settings").map { ($0[0], $0[1]) })
+        let scope = CodexScope(accountID: values["codexAccountID"] ?? "", userID: values["codexUserID"] ?? "")
+        let account: CodexAccountSelection = values["codexUnscopedOnly"] == "1" ? .unscoped :
+            (scope.accountID.isEmpty ? .automatic : .account(scope))
         return try .init(providers: Set(CodingProvider.allCases.filter { values[$0.enabledKey] == "1" }),
-                         codexScope: .init(accountID: values["codexAccountID"] ?? "", userID: values["codexUserID"] ?? ""),
+                         codexAccount: account,
                          projects: db.rows("SELECT path FROM projects ORDER BY path").map { $0[0] })
     }
     public func setEnabled(_ value: Bool, for provider: CodingProvider = .claudeCode) throws {
         try db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", [provider.enabledKey, value ? "1" : "0"])
     }
-    public func setCodexScope(_ scope: CodexScope) throws {
+    public func setCodexAccount(_ selection: CodexAccountSelection) throws {
         try db.transaction {
-            try db.execute("INSERT OR REPLACE INTO settings VALUES ('codexAccountID',?),('codexUserID',?)", [scope.accountID, scope.userID])
+            try db.execute("DELETE FROM settings WHERE key IN ('codexAccountID','codexUserID','codexUnscopedOnly')")
+            switch selection {
+            case .automatic: break
+            case .unscoped: try db.execute("INSERT INTO settings VALUES ('codexUnscopedOnly','1')")
+            case .account(let scope):
+                try db.execute("INSERT INTO settings VALUES ('codexAccountID',?),('codexUserID',?)", [scope.accountID, scope.userID])
+            }
         }
     }
     public func addProject(_ path: String) throws {
@@ -130,22 +154,30 @@ public final class CodingArchive {
         }
     }
 
-    public func refresh(discoverProjects: Bool, readers: [any SessionReader]? = nil) throws -> (projects: [String], issues: [String]) {
+    public func refresh(discoverProjects: Bool, readers: [any SessionReader]? = nil) throws -> (projects: [String], issues: [String], accounts: [LocalCodexAccount]) {
         let options = try settings()
         var projects = Set<String>(), issues: [String] = []
-        guard discoverProjects || !options.projects.isEmpty else { return ([], []) }
-        let sources = readers ?? [ClaudeCodeReader(), options.codexReader()]
-        for reader in sources {
+        var accounts: [LocalCodexAccount] = []
+        guard discoverProjects || !options.projects.isEmpty else { return ([], [], []) }
+        let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true)]
+        for var reader in sources {
             guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider) else { continue }
             do {
                 try Task.checkCancellation()
+                if let codex = reader as? CodexReader {
+                    accounts = try codex.localAccounts().map {
+                        LocalCodexAccount(id: .init(accountID: $0.accountID, userID: $0.userID ?? ""), project: $0.lastWorkingDirectory, lastUsed: $0.lastModified)
+                    }
+                    let scope = options.codexAccount.resolve(accounts)
+                    reader = CodexReader(homeDirectory: codex.homeDirectory, includeArchived: codex.includeArchived, accountID: scope?.accountID, userID: scope?.userID)
+                }
                 let infos = try reader.listSessions()
                 if discoverProjects { projects.formUnion(infos.compactMap(\.workingDirectory).filter { $0.hasPrefix("/") }) }
                 if !options.projects.isEmpty { try synchronize(infos, reader: reader, provider: provider, options: options) }
             } catch is CancellationError { throw CancellationError() }
             catch { issues.append("\(provider.name): \(error.localizedDescription)") }
         }
-        return (projects.sorted(), issues)
+        return (projects.sorted(), issues, accounts)
     }
 
     public func synchronize(reader: any SessionReader) throws {
@@ -174,7 +206,7 @@ public final class CodingArchive {
                 try db.transaction {
                     let current = try settings()
                     guard current.providers.contains(provider), current.projects.contains(project),
-                          provider != .codex || current.codexScope == options.codexScope else { return }
+                          provider != .codex || current.codexAccount == options.codexAccount else { return }
                     let previous = try db.rows("SELECT info FROM sessions WHERE id=?", [id]).first?.first
                     guard previous == known[id] else { return } // A newer import won the race.
                     var history = imported
