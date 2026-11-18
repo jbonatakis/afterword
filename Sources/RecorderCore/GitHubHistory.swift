@@ -205,16 +205,30 @@ public final class GitHubArchive {
         }
     }
     public func select(_ repo: GitHubRepository, allHistory: Bool = false) throws {
-        guard try account != nil, try !locked else { throw AgentFailure("Connect GitHub first.") }
-        try db.execute(
-            "INSERT OR IGNORE INTO repos(id,name,epoch,revision,all_history) VALUES(?,?,?,?,?)",
-            [repo.id, repo.name, UUID().uuidString, UUID().uuidString, allHistory ? "1" : "0"])
+        try select([repo], allHistory: allHistory, shared: false)
+    }
+    public func select(_ repos: [GitHubRepository], allHistory: Bool = false, shared: Bool) throws {
+        try db.transaction {
+            guard try account != nil, try !locked else { throw AgentFailure("Connect GitHub first.") }
+            for repo in repos {
+                try db.execute(
+                    "INSERT OR IGNORE INTO repos(id,name,epoch,revision,all_history,shared) VALUES(?,?,?,?,?,?)",
+                    [repo.id, repo.name, UUID().uuidString, UUID().uuidString, allHistory ? "1" : "0", shared ? "1" : "0"])
+            }
+        }
     }
     public func remove(_ id: String) throws { try db.execute("DELETE FROM repos WHERE id=?", [id]) }
     public func share(_ id: String, enabled: Bool) throws {
-        try db.execute(
-            "UPDATE repos SET shared=?,revision=? WHERE id=? AND EXISTS(SELECT 1 FROM account WHERE locked=0)",
-            [enabled ? "1" : "0", UUID().uuidString, id])
+        try share([id], enabled: enabled)
+    }
+    public func share(_ ids: Set<String>, enabled: Bool) throws {
+        try db.transaction {
+            for id in ids {
+                try db.execute(
+                    "UPDATE repos SET shared=?,revision=? WHERE id=? AND shared<>? AND EXISTS(SELECT 1 FROM account WHERE locked=0)",
+                    [enabled ? "1" : "0", UUID().uuidString, id, enabled ? "1" : "0"])
+            }
+        }
     }
     public func pause(_ id: String, enabled: Bool) throws {
         try db.execute("UPDATE repos SET paused=?,epoch=? WHERE id=?", [enabled ? "1" : "0", UUID().uuidString, id])

@@ -44,6 +44,28 @@ final class GitHubHistoryTests: XCTestCase {
         page.missing = missing
         try db.commit(page, work: XCTUnwrap(db.next(selected)), repo: selected)
     }
+    func testBatchImportAndSharingPreserveExistingChoices() throws {
+        let new = GitHubRepository(id: "R2", name: "sample/kitchen")
+        let local = GitHubRepository(id: "R3", name: "sample/shop")
+        try db.select([repo, new], shared: true)
+        try db.select([new, local], shared: false)
+        var rows = try db.selections()
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(rows.filter(\.shared).map(\.id), [new.id])
+        let epochs = rows.map(\.epoch)
+        try db.share([new.id, local.id], enabled: true)
+        rows = try db.selections()
+        XCTAssertEqual(Set(rows.filter(\.shared).map(\.id)), [new.id, local.id])
+        try db.share([repo.id, new.id], enabled: false)
+        rows = try db.selections()
+        XCTAssertEqual(rows.filter(\.shared).map(\.id), [local.id])
+        XCTAssertEqual(rows.map(\.epoch), epochs)
+        try db.lock()
+        XCTAssertThrowsError(try db.select([new], shared: true))
+        try db.share([repo.id, local.id], enabled: true)
+        XCTAssertTrue(try db.selections().allSatisfy { !$0.shared })
+    }
+
     func testScopeChecksCoverSearchDirectReadsPaginationAndEmbeddings() throws {
         try commit([
             (item(), passage("review", "", kind: .review)),
