@@ -34,7 +34,8 @@ public struct GitHubClient: Sendable {
         config.timeoutIntervalForRequest = 45
         self.session = session ?? URLSession(configuration: config)
     }
-    private func request(_ url: URL, token: String? = nil, body: Data? = nil, acceptsOAuthErrors: Bool = false) async throws -> Object {
+    private func request(_ url: URL, token: String? = nil, body: Data? = nil, acceptsOAuthErrors: Bool = false) async throws -> Object
+    {
         try Task.checkCancellation()
         var request = URLRequest(url: url)
         request.setValue("Afterword", forHTTPHeaderField: "User-Agent")
@@ -65,7 +66,7 @@ public struct GitHubClient: Sendable {
         if acceptsOAuthErrors, (400..<500).contains(http.statusCode), let json, json["error"] is String { return json }
         if http.statusCode == 401 { throw GitHubServiceError.credentials }
         guard (200..<300).contains(http.statusCode), let json else {
-            throw GitHubServiceError.response("GitHub returned HTTP \(http.statusCode). Check the installation and retry.")
+            throw GitHubServiceError.response("GitHub returned HTTP \(http.statusCode). Check repository access and retry.")
         }
         return json
     }
@@ -76,16 +77,19 @@ public struct GitHubClient: Sendable {
         case nil, "authorization_pending", "slow_down": return response
         case "device_flow_disabled":
             throw GitHubServiceError.response(
-                "In your GitHub App settings, under “Identifying and authorizing users”, select “Enable Device Flow” and save. Then click Connect GitHub again.")
+                "In your GitHub App settings, under “Identifying and authorizing users”, select “Enable Device Flow” and save. Then click Connect GitHub again."
+            )
         case "incorrect_client_credentials", "invalid_client":
             if values["grant_type"] == "refresh_token" { throw GitHubServiceError.credentials }
-            throw GitHubServiceError.response("Copy the Client ID from your GitHub App’s General settings into Afterword and try again.")
+            throw GitHubServiceError.response(
+                "Copy the Client ID from your GitHub App’s General settings into Afterword and try again.")
         case "bad_refresh_token", "invalid_grant": throw GitHubServiceError.credentials
         case "expired_token":
             if values["grant_type"] == "refresh_token" { throw GitHubServiceError.credentials }
             throw GitHubServiceError.expired
         case "access_denied": throw GitHubServiceError.denied
-        default: throw GitHubServiceError.response("GitHub rejected the authorization request. Check your GitHub App settings and retry.")
+        default:
+            throw GitHubServiceError.response("GitHub rejected the authorization request. Check your GitHub App settings and retry.")
         }
     }
     public func deviceCode(clientID: String) async throws -> GitHubDeviceCode {
@@ -177,11 +181,77 @@ public struct GitHubClient: Sendable {
         }
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
+    // Read only repository identifiers and permission-gated counts. A token may
+    // see repository metadata even after its Issues or Pull requests grant is removed.
+    static let personalRepositoriesQuery = """
+        query PersonalRepositories($cursor:String) {
+          viewer { id repositories(first:50, after:$cursor, ownerAffiliations:[OWNER,COLLABORATOR,ORGANIZATION_MEMBER],
+                                   orderBy:{field:NAME,direction:ASC}) {
+            totalCount pageInfo { hasNextPage endCursor }
+            nodes { id nameWithOwner issues(first:1) { totalCount } pullRequests(first:1) { totalCount } }
+          } }
+        }
+        """
+    public func personalRepositories(token: String, viewer: GitHubIdentity) async throws -> [GitHubRepository] {
+        var result: [GitHubRepository] = []
+        var cursors = Set<String>()
+        var ids = Set<String>()
+        var cursor: String?
+        var count = 0
+        var expected: Int?
+        repeat {
+            let json = try await graphResponse(Self.personalRepositoriesQuery, ["cursor": cursor as Any], token: token)
+            guard json["errors"] == nil || json["errors"] is [Object] else { throw Self.invalid }
+            let errors = json["errors"] as? [Object] ?? []
+            guard let user = (json["data"] as? Object)?["viewer"] as? Object, user["id"] as? String == viewer.id,
+                let page = user["repositories"] as? Object, let nodes = page["nodes"] as? [Any],
+                let total = page["totalCount"] as? Int, expected == nil || expected == total,
+                let info = page["pageInfo"] as? Object, let more = info["hasNextPage"] as? Bool
+            else { throw Self.invalid }
+            expected = total
+            // Only explicit denials for these two fields can exclude an individual repository.
+            // A partial response or a transient query error must never prune the archive.
+            var denied = Set<Int>()
+            for error in errors {
+                guard error["type"] as? String == "FORBIDDEN", let path = error["path"] as? [Any],
+                    path.count == 5 || (path.count == 6 && path.last as? String == "totalCount"),
+                    path[0] as? String == "viewer", path[1] as? String == "repositories", path[2] as? String == "nodes",
+                    let index = path[3] as? Int, nodes.indices.contains(index), let field = path[4] as? String,
+                    ["issues", "pullRequests"].contains(field)
+                else { throw Self.invalid }
+                denied.insert(index)
+            }
+            for (index, node) in nodes.enumerated() where !denied.contains(index) {
+                guard let repo = node as? Object, let id = repo["id"] as? String, let name = repo["nameWithOwner"] as? String,
+                    (repo["issues"] as? Object)?["totalCount"] is Int, (repo["pullRequests"] as? Object)?["totalCount"] is Int,
+                    ids.insert(id).inserted
+                else { throw Self.invalid }
+                result.append(.init(id: id, name: name))
+            }
+            count += nodes.count
+            guard count <= total else { throw Self.invalid }
+            if more {
+                guard count < total, let next = info["endCursor"] as? String, !next.isEmpty, cursors.insert(next).inserted,
+                    !nodes.isEmpty
+                else {
+                    throw Self.invalid
+                }
+                cursor = next
+            } else {
+                guard count == total else { throw Self.invalid }
+                cursor = nil
+            }
+        } while cursor != nil
+        return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
     static var invalid: GitHubServiceError { .response("GitHub returned an incomplete page. Afterword kept the previous checkpoint.") }
-    func graph(_ query: String, _ variables: Object, token: String, missingNodes: Bool = false) async throws -> Object {
-        let json = try await request(
+    private func graphResponse(_ query: String, _ variables: Object, token: String) async throws -> Object {
+        try await request(
             URL(string: "https://api.github.com/graphql")!, token: token,
             body: AgentJSON.data(["query": query, "variables": variables]))
+    }
+    func graph(_ query: String, _ variables: Object, token: String, missingNodes: Bool = false) async throws -> Object {
+        let json = try await graphResponse(query, variables, token: token)
         if let errors = json["errors"] as? [Object], !errors.isEmpty {
             if !missingNodes
                 || !errors.allSatisfy({ error in

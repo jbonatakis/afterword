@@ -98,6 +98,58 @@ final class GitHubClientTests: XCTestCase {
             } catch GitHubServiceError.retry(let until) { XCTAssertGreaterThan(until.timeIntervalSinceNow, 175) }
         }
     }
+    private static func personalPage(_ nodes: [Any], total: Int, next: String? = nil) -> Object {
+        let page: Object = ["nodes": nodes, "totalCount": total, "pageInfo": ["hasNextPage": next != nil, "endCursor": next as Any]]
+        return ["data": ["viewer": ["id": "U", "repositories": page]]]
+    }
+    private static func personalRepo(_ id: String) -> Object {
+        ["id": id, "nameWithOwner": "owner/" + id, "issues": ["totalCount": 0], "pullRequests": ["totalCount": 0]]
+    }
+    func testPersonalTokenDiscoversAuthorizedRepositoriesAcrossPages() throws {
+        var pages = 0
+        GitHubStub.respond = { request, body in
+            XCTAssertEqual(request.url?.path, "/graphql")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
+            let query = try XCTUnwrap(body["query"] as? String)
+            XCTAssertTrue(query.contains("ORGANIZATION_MEMBER"))
+            let variables = try XCTUnwrap(body["variables"] as? Object)
+            pages += 1
+            if pages == 1 {
+                XCTAssertTrue(variables["cursor"] is NSNull)
+                var result = Self.personalPage([Self.personalRepo("Z"), NSNull()], total: 3, next: "next")
+                result["errors"] = [["type": "FORBIDDEN", "path": ["viewer", "repositories", "nodes", 1, "issues"]]]
+                return (200, [:], result)
+            }
+            XCTAssertEqual(variables["cursor"] as? String, "next")
+            return (200, [:], Self.personalPage([Self.personalRepo("A")], total: 3))
+        }
+        try exercise { api in
+            let repos = try await api.personalRepositories(token: "fixture", viewer: .init(id: "U", login: "fixture"))
+            XCTAssertEqual(repos.map(\.name), ["owner/A", "owner/Z"])
+            XCTAssertEqual(pages, 2)
+        }
+    }
+    func testIncompletePersonalTokenDiscoveryCannotAuthorizeRemovals() throws {
+        let repo = Self.personalRepo("R")
+        let page = Self.personalPage([repo], total: 1)
+        let fixtures = [
+            Self.personalPage([repo], total: 2), Self.personalPage([repo, repo], total: 2),
+            Self.personalPage([NSNull()], total: 1), Self.personalPage([], total: 2, next: "next"),
+            Self.personalPage([repo], total: 1, next: "more"),
+            page.merging(["errors": [["type": "INTERNAL", "path": ["viewer"]]]]) { _, new in new },
+            page.merging(["errors": [["type": "FORBIDDEN", "path": ["viewer", "repositories"]]]]) { _, new in new },
+            page.merging(["errors": "malformed"]) { _, new in new },
+        ]
+        for fixture in fixtures {
+            GitHubStub.respond = { _, _ in (200, [:], fixture) }
+            try exercise { api in
+                do {
+                    _ = try await api.personalRepositories(token: "fixture", viewer: .init(id: "U", login: "fixture"))
+                    throw RecorderError.message("Incomplete permission data was accepted")
+                } catch GitHubServiceError.response {}
+            }
+        }
+    }
     func testDisabledDeviceFlowExplainsHowToEnableIt() throws {
         GitHubStub.respond = { _, _ in
             (400, [:], ["error": "device_flow_disabled", "error_description": "Device Flow must be explicitly enabled for this App"])
