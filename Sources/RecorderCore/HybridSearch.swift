@@ -68,6 +68,7 @@ extension LibrarySearchIndex {
         let query = LibrarySearchQuery(text)
         var scores: [String: [Int: Double]] = [:]
         var owners: [String: String] = [:]
+        var matchingChunks: [String: [SemanticChunk]] = [:]
         for (rank, passage) in lexical.enumerated() {
             owners[passage.versionID] = passage.callID
             for id in passage.matchingParagraphs { scores[passage.versionID, default: [:]][id] = 1.3 / Double(60 + rank + 1) }
@@ -89,14 +90,35 @@ extension LibrarySearchIndex {
             let key = versionID + ":" + ids.map(String.init).joined(separator: ",")
             guard seen.insert(key).inserted else { continue }
             owners[versionID] = callID
+            matchingChunks[versionID, default: []].append(chunk)
             for id in ids { scores[versionID, default: [:]][id, default: 0] += 1 / Double(60 + rank + 1) }
             rank += 1
             if rank >= 60 { break }
         }
         var ranked: [(LibrarySearchPassage, Double)] = []
         for (versionID, values) in scores {
-            guard let callID = owners[versionID], let call = byID[callID], let version = call.recording.transcripts.first(where: { $0.id == versionID }) else { continue }
-            for passage in Self.windows(callID: callID, versionID: versionID, ids: Array(values.keys), count: version.document?.paragraphs.count ?? 0) {
+            guard let callID = owners[versionID], let call = byID[callID],
+                  let paragraphs = call.recording.transcripts.first(where: { $0.id == versionID })?.document?.paragraphs else { continue }
+            for var passage in Self.windows(callID: callID, versionID: versionID, ids: Array(values.keys), count: paragraphs.count) {
+                // Windows are chronological. Use the strongest independently matched turn
+                // for the preview, or the strongest complete exchange when only a group matched.
+                let chunks = matchingChunks[versionID, default: []].filter { chunk in
+                    chunk.paragraphs.allSatisfy(passage.matchingParagraphs.contains)
+                }
+                if let best = chunks.first(where: { $0.paragraphs.count == 1 }) ?? chunks.first,
+                   let end = best.paragraphs.last {
+                    var preview = best.text
+                    // Give a short turn its continuation within the same cited evidence.
+                    // A partial chunk from a long paragraph must end before the next turn.
+                    var next = end + 1
+                    if best.text.hasSuffix(paragraphs[end].text) {
+                        while preview.count < 260, passage.matchingParagraphs.contains(next) {
+                            preview += " " + paragraphs[next].text
+                            next += 1
+                        }
+                    }
+                    passage.preview = String(preview.prefix(260))
+                }
                 ranked.append((passage, passage.matchingParagraphs.compactMap { values[$0] }.max() ?? 0))
             }
         }
@@ -125,7 +147,8 @@ extension LibrarySearchIndex {
                   let version = call.recording.transcripts.first(where: { $0.id == passage.versionID }), let paragraphs = version.document?.paragraphs else { continue }
             scores[call.recording.id, default: 0] += 1 / Double(61 + rank)
             if byID[call.recording.id] == nil {
-                byID[call.recording.id] = .init(recordingID: call.recording.id, versionID: passage.versionID, paragraphIDs: passage.matchingParagraphs, snippet: passage.matchingParagraphs.first.map { String(paragraphs[$0].text.prefix(260)) }, score: scores[call.recording.id]!)
+                let preview = passage.preview ?? passage.matchingParagraphs.first.map { paragraphs[$0].text }
+                byID[call.recording.id] = .init(recordingID: call.recording.id, versionID: passage.versionID, paragraphIDs: passage.matchingParagraphs, snippet: preview.map { String($0.prefix(260)) }, score: scores[call.recording.id]!)
             }
         }
         let hits = byID.values.sorted { a, b in

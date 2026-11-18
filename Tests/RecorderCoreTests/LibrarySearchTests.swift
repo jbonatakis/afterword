@@ -134,6 +134,35 @@ final class LibrarySearchTests: XCTestCase {
         XCTAssertEqual(status["mode"] as? String, "keyword")
         XCTAssertThrowsError(try service.call("search_transcripts", arguments: ["query": "launch", "mode": "invalid"]))
     }
+
+    func testSemanticPreviewStartsAtMatchingTurnAndKeepsCitationsChronological() throws {
+        try fixture("Discussion", text: ["Can you hear me?", "The survey starts in August.", "Bring a notebook."])
+        let dir = cache.appendingPathComponent("Embeddings")
+        let model = EmbeddingModel.catalog[0]
+        var settings = EmbeddingSettings()
+        settings.enabled = true; settings.modelID = model.id
+        try settings.save(directory: dir)
+        try PrivateFiles.directory(EmbeddingSettings.modelRoot(dir))
+        try Data().write(to: ModelStore.ownedURL(model.asset, root: EmbeddingSettings.modelRoot(dir)))
+        let index = try index()
+        index.semantic = SemanticSearchEngine(directory: dir) { texts, model, _, _ in
+            texts.map { text in
+                var v = Array(repeating: Float(0), count: model.dimensions)
+                v[text.contains("August") || text.contains("fieldwork timing") ? 0 : 1] = 1
+                return v
+            }
+        }
+        try index.synchronize()
+        let deadline = Date().addingTimeInterval(5)
+        while index.semanticStatus().state == "indexing" && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        let hit = try XCTUnwrap(index.hybridSearch("fieldwork timing").hits.first)
+        XCTAssertEqual(hit.paragraphIDs, [0, 1, 2])
+        XCTAssertEqual(hit.snippet, "The survey starts in August. Bring a notebook.")
+        let filtered = try XCTUnwrap(index.hybridSearch("fieldwork timing", speaker: "Other participants").hits.first)
+        XCTAssertEqual(filtered.paragraphIDs, [1])
+        XCTAssertEqual(filtered.snippet, "The survey starts in August.")
+        index.stopSemanticSearch()
+    }
     func testQueryWordsPhrasesPrefixesAccentsAndSafeSyntax() throws {
         XCTAssertTrue(LibrarySearchQuery("  PROJECT cafe  ").matches("Café is a project"))
         XCTAssertFalse(LibrarySearchQuery("\"cafe project\"").matches("Café is a project"))

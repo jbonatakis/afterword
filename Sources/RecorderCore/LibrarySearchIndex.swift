@@ -44,6 +44,7 @@ struct LibrarySearchPassage {
     let versionID: String
     let matchingParagraphs: [Int]
     let context: Range<Int>
+    var preview: String? = nil
 }
 
 /// Rebuildable, scope-specific cache. JSON remains authoritative. A serialized

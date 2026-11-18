@@ -69,3 +69,16 @@ Add questions to the case file before comparing builds. A case can accept multip
 For `near_miss`, give the related source an empty anchor list. For `off_topic`, omit `gold`. Optional `distractors` take source labels. The runner rejects missing sources, ambiguous titles, missing evidence anchors, duplicate case IDs, and the same gold source appearing on both sides of the split.
 
 Keep paraphrases, recurring meetings about the same decision, and sessions implementing that decision on the same side of the split. The source check catches repeated sources; grouping related topics across distinct sources requires human judgment. Include exact queries, paraphrases, mixed-source searches, plausible near misses, and clearly unrelated questions. Diagnose misses on development cases. If a label is wrong or misses a valid source, document the correction and rerun **both** builds. Once a held-out result informs a change, keep it as a regression case and reserve fresh topics or a later week's calls for the next independent evaluation.
+
+## First paired run
+
+On November 17, 2026, the baseline was `cbbc830`. The candidate used the strongest individually matched turn in the winning call passage for the preview and filled spare space with immediately following cited turns. Both builds used the same 260-character limit and Qwen model. The following counts measure first previews containing a labeled evidence phrase from an accepted source.
+
+| Frozen corpus | Development, before → after | Held out, before → after |
+|---|---:|---:|
+| Versioned sample | 2/10 → 7/10 | 3/10 → 8/10 |
+| Local library | 3/10 → 6/10 | 0/10 → 0/10 |
+
+Both builds returned an accepted source in the first three for every answerable case. In the real held-out set the cited paragraphs or messages contained labeled evidence on 7/10 questions. The two held-out off-topic controls both returned results. On the sample development set, a separate BGE run improved preview hits from 2/10 to 6/10. The runs provide limited evidence about excerpt selection and leave the choice of model and similarity threshold open.
+
+Source review expanded the accepted evidence on the development split. Both builds were rescored with the same labels before the held-out comparison. The signed candidate reproduced the held-out scores.
