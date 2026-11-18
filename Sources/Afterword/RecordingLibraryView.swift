@@ -67,6 +67,7 @@ private extension LibraryFilter {
         case .recordings: Image(systemName: "waveform")
         case .transcribed: Image(systemName: "text.bubble")
         case .untranscribed: Image(systemName: "text.badge.plus")
+        case .needsSummary: Image(systemName: "square.and.pencil")
         }
     }
 }
@@ -497,7 +498,8 @@ private struct RecordingDetail: View {
             if let selectedSummary { return selectedSummary }
             if library.summaryDrafts[recording.id] != nil { return true }
             if draft != nil { return false }
-            return query.isEmpty ? recording.summary?.current != nil : library.searchHits[recording.id]?.summaryMatch == true
+            if !query.isEmpty { return library.searchHits[recording.id]?.summaryMatch == true }
+            return library.filter == .needsSummary || recording.summary?.current != nil
         }
         nonmutating set { selectedSummary = newValue }
     }
@@ -681,7 +683,13 @@ private struct RecordingDetail: View {
             }
         }
         .sheet(isPresented: $showingAttendance) { AttendanceEditor(recording: recording, version: version, library: library) }
-        .onChange(of: query) { _, _ in selectMatchingVersion() }
+        .onChange(of: library.filter) { previous, current in
+            if previous == .needsSummary || current == .needsSummary { selectedSummary = nil }
+        }
+        .onChange(of: query) { _, query in
+            if query.isEmpty && library.filter == .needsSummary { selectedSummary = nil }
+            selectMatchingVersion()
+        }
         .onChange(of: library.searchHits[recording.id]?.summaryMatch) { _, _ in selectMatchingVersion() }
         .onChange(of: library.searchHits[recording.id]?.versionID) { _, _ in selectMatchingVersion() }
         .onChange(of: recording.transcripts.map(\.id)) { _, _ in versionID = nil; selectMatchingVersion() }

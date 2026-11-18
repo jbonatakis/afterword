@@ -625,9 +625,9 @@ import Lookback
         let rows: [(LibraryFilter, Int, [String])] = [
             (.activity, 2, ["Claude Code", "Codex"]), (.coding, 0, ["Claude Code", "Codex"]),
             (.codex, 0, ["Codex"]), (.claudeCode, 0, ["Claude Code"]),
-            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, []), (.github, 0, [])
+            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, []), (.needsSummary, 1, []), (.github, 0, [])
         ]
-        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 1], "Incorrect sidebar hierarchy")
+        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 2, 1], "Incorrect sidebar hierarchy")
         for (index, (filter, recordings, providers)) in rows.enumerated() {
             tree.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             await pump(0.05)
@@ -635,11 +635,24 @@ import Lookback
                     library.visibleCoding.map(\.providerName).sorted() == providers, "Wrong contents for \(filter.rawValue)")
             if filter == .untranscribed { require(library.selectedRecording?.url.lastPathComponent == pending.lastPathComponent, "Expected the recording awaiting transcription") }
         }
-        tree.selectRowIndexes(IndexSet(integer:6),byExtendingSelection:false); await pump()
+        tree.selectRowIndexes(IndexSet(integer:7),byExtendingSelection:false); await pump()
+        guard let awaitingSummary = library.selectedRecording, awaitingSummary.hasTranscript else {
+            throw RecorderError.message("Needs summary should select the transcribed call")
+        }
+        try CallSummaryStore.save("A fixture summary", for: awaitingSummary, source: awaitingSummary.latestTranscript, author: "agent")
+        for _ in 0..<100 where !library.visibleRecordings.isEmpty { await pump(0.05) }
+        require(library.activity.isEmpty && library.selection == nil, "Agent-saved summary did not clear the queue")
+        let summaryFile = CallSummaryStore.url(for: awaitingSummary.url, isDirectory: awaitingSummary.isDirectory)
+        try Data("unreadable".utf8).write(to: summaryFile, options: .atomic)
+        await library.refresh()?.value
+        require(library.visibleRecordings.isEmpty, "An unreadable saved summary was treated as missing")
+        try FileManager.default.removeItem(at: summaryFile)
+        await library.refresh()?.value
+        require(library.selectedRecording?.id == awaitingSummary.id, "A missing summary did not return to the queue")
         tree.collapseItem(tree.item(atRow: 4)); await pump()
         require(tree.numberOfRows == 6 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
         tree.expandItem(tree.item(atRow: 4)); await pump()
-        require(tree.numberOfRows == 8, "Expanding Recordings did not restore its children")
+        require(tree.numberOfRows == rows.count, "Expanding Recordings did not restore its children")
         library.filter = .claudeCode; library.search = "hexagons"
         await library.updateSearch(debounce: false)?.value
         require(library.visibleCoding.isEmpty, "A Codex search result leaked into Claude Code")

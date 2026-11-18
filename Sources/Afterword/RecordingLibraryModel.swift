@@ -572,13 +572,14 @@ enum LibraryFilter: String, Identifiable {
     case activity = "All activity", coding = "Coding sessions", codex = "Codex", claudeCode = "Claude Code"
     case github = "GitHub"
     case recordings = "Recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
+    case needsSummary = "Needs summary"
     var id: Self { self }
 
     var children: [Self] {
         switch self {
         case .activity: return [.coding, .recordings, .github]
         case .coding: return [.codex, .claudeCode]
-        case .recordings: return [.transcribed, .untranscribed]
+        case .recordings: return [.transcribed, .untranscribed, .needsSummary]
         default: return []
         }
     }
@@ -595,6 +596,7 @@ enum LibraryFilter: String, Identifiable {
         switch self {
         case .transcribed: return recording.hasTranscript
         case .untranscribed: return !recording.hasTranscript
+        case .needsSummary: return recording.hasTranscript && recording.summary?.current == nil && recording.summaryError == nil
         default: return showsRecordings
         }
     }
@@ -615,6 +617,7 @@ enum LibraryFilter: String, Identifiable {
         case .recordings: return "No recordings"
         case .transcribed: return "No recordings with transcripts"
         case .untranscribed: return "No recordings need transcription"
+        case .needsSummary: return "No recordings need a summary"
         }
     }
 }
