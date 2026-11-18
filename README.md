@@ -142,7 +142,9 @@ Settings have Recording and Transcription tabs. Sources/destination lock during 
 
 ## Coding sessions
 
-In **Settings → Coding**, enable Claude Code, Codex, or both and select the projects to import. The project list applies to all enabled sources. Afterword checks for changes every minute while running and when you refresh the library. Pausing a source keeps its saved sessions available. Removing a project deletes its Afterword history across sources and stops future imports for that project.
+In **Settings → Coding**, enable Claude Code, Codex, or both. Expand the project tree to select individual projects, or check a folder to include its existing and future descendants from every enabled source. A dash marks a partially selected folder. Clear a child to exclude its subtree. Removing a folder from import also removes its saved sessions from Afterword after confirmation. Selections from earlier versions keep their exact-path scope until you change them.
+
+Afterword checks for new sessions every minute while running and when you refresh the library. Pausing a source keeps its saved sessions available.
 
 Afterword uses Lookback to read Claude Code’s local projects and Codex’s active and archived local threads. Codex discovery uses `$CODEX_HOME` when set and otherwise opens `~/.codex`. It includes top-level sessions and user forks. Afterword includes account-scoped chats automatically when it finds one local Codex account. If several accounts have chats on this Mac, choose one in Coding settings. Account discovery reads local thread headers. [Lookback](https://github.com/jbonatakis/lookback)
 

@@ -142,6 +142,72 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertEqual(Set(try store.sessions().map(\.project)), [project, "/projects/scoped"])
     }
 
+    func testFolderRulesIncludeFutureProjectsAndPersistChildExceptions() throws {
+        let store = try CodingArchive(directory: archived)
+        try store.setEnabled(true)
+        try store.setEnabled(true, for: .codex)
+        let codex = CodexReader(homeDirectory: codexHome)
+        let parent = "/projects"
+        let subfolder = project + "/nested"
+        try writeRollout(threadID, project: subfolder)
+        try writeRollout("00000000-0000-4000-a000-000000000002", project: "/projects-other")
+        func refresh(_ store: CodingArchive) throws {
+            XCTAssertTrue(try store.refresh(discoverProjects: false, readers: [reader, codex]).issues.isEmpty)
+        }
+
+        // The old table granted this path exactly, even though it is a parent.
+        try store.addProject(parent)
+        try refresh(store)
+        XCTAssertTrue(try store.sessions().isEmpty)
+        XCTAssertEqual(try store.settings().projectSelection.state(at: parent, hasChildren: true), .mixed)
+
+        try store.setProjectFolder(parent, included: true)
+        try refresh(store)
+        XCTAssertEqual(Set(try store.sessions().map(\.project)), [project, subfolder])
+        XCTAssertEqual(Set(try store.sessions().map(\.source)), ["claude-code", "codex"])
+        XCTAssertEqual(try store.settings().projectSelection.state(at: parent, hasChildren: true), .on)
+        try store.setProjectFolder(project, included: false)
+        XCTAssertTrue(try store.sessions().isEmpty)
+        XCTAssertTrue(try store.embeddingChunks().isEmpty)
+        XCTAssertEqual(try store.settings().projectSelection.state(at: parent, hasChildren: true), .mixed)
+        let reopened = try CodingArchive(directory: archived)
+        try writeRollout("00000000-0000-4000-a000-000000000003", project: "/projects/future")
+        try refresh(reopened)
+        XCTAssertEqual(try reopened.sessions().map(\.project), ["/projects/future"])
+
+        try reopened.setProjectFolder(subfolder, included: true)
+        try refresh(reopened)
+        XCTAssertEqual(Set(try reopened.sessions().map(\.project)), [subfolder, "/projects/future"])
+        try reopened.setProjectFolder(parent, included: false)
+        XCTAssertTrue(try reopened.settings().projectSelection.folders.isEmpty)
+        XCTAssertTrue(try reopened.settings().projectSelection.exact.isEmpty)
+        try refresh(reopened)
+        XCTAssertTrue(try reopened.sessions().isEmpty)
+        try reopened.setProjectFolder(subfolder, included: true)
+        try refresh(reopened)
+        XCTAssertEqual(try reopened.sessions().map(\.project), [subfolder])
+    }
+
+    func testProjectTreeGroupsPathsByDirectoryComponents() throws {
+        let home = "/Users/example"
+        let paths: Set<String> = [home + "/repos/one", home + "/repos/two/child", home + "/repos-old", "/tmp/fixture"]
+        let tree = CodingProjectFolder.tree(paths: paths, homeDirectory: home)
+        XCTAssertEqual(tree.map(\.name), ["~", "tmp"])
+        let folders = try XCTUnwrap(tree.first).children
+        XCTAssertEqual(folders.map(\.name), ["repos", "repos-old"])
+        XCTAssertEqual(folders.first?.children.map(\.name), ["one", "two"])
+        XCTAssertEqual(folders.first?.children.last?.children.first?.path, home + "/repos/two/child")
+        let store = try CodingArchive(directory: archived)
+        try store.setProjectFolder(home + "/repos/", included: true)
+        let selection = try store.settings().projectSelection
+        XCTAssertTrue(selection.includes(home + "/repos//two/child"))
+        XCTAssertFalse(selection.includes(home + "/repos-old"))
+        XCTAssertFalse(selection.includes(home + "/repos/../repos-old"))
+        XCTAssertThrowsError(try store.setProjectFolder("relative/path", included: true))
+        let absolute = CodingProjectFolder.tree(paths: paths.union(["/", "/Users"]), homeDirectory: home)
+        XCTAssertEqual(absolute.map(\.path), ["/"])
+    }
+
     func testOptInArchiveViewsAndCleanup() throws {
         let store = try CodingArchive(directory: archived)
         try store.synchronize(reader: reader)

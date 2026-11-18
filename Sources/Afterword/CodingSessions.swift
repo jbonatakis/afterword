@@ -21,8 +21,7 @@ private actor CodingImportWorker {
         switch change {
         case .enabled(let provider, let value): try archive.setEnabled(value, for: provider)
         case .account(let selection): try archive.setCodexAccount(selection)
-        case .add(let path): try archive.addProject(path)
-        case .remove(let path): try archive.removeProject(path)
+        case .folder(let path, let included): try archive.setProjectFolder(path, included: included)
         case nil: break
         }
         let result = try archive.refresh(discoverProjects: discover)
@@ -32,13 +31,14 @@ private actor CodingImportWorker {
 }
 
 @MainActor final class CodingCoordinator: ObservableObject {
-    enum Change: Equatable { case enabled(CodingProvider, Bool), account(CodexAccountSelection), add(String), remove(String) }
+    enum Change: Equatable { case enabled(CodingProvider, Bool), account(CodexAccountSelection), folder(String, Bool) }
     let directory: URL
     private let worker: CodingImportWorker
     @Published private(set) var providers: Set<CodingProvider> = []
     @Published private(set) var codexAccount = CodexAccountSelection.automatic
     @Published private(set) var accounts: [LocalCodexAccount] = []
     var enabled: Bool { !providers.isEmpty }
+    @Published private(set) var selection = CodingProjectSelection()
     @Published private(set) var projects: [String] = []
     @Published private(set) var available: [String] = []
     @Published private(set) var sessions: [CodingSession] = []
@@ -73,11 +73,13 @@ private actor CodingImportWorker {
                 let next = try await worker.refresh(change: change, discover: discover)
                 guard !Task.isCancelled else { return }
                 let nextProviders = next.settings?.providers ?? []
-                let nextProjects = next.settings?.projects ?? []
+                let rules = next.settings?.projectSelection ?? CodingProjectSelection()
+                let nextProjects = Set(next.sessions.map(\.project)).union(rules.exact).sorted()
+                if selection != rules { selection = rules }
                 let updated = sessions != next.sessions || projects != nextProjects || providers != nextProviders
                 providers = nextProviders; projects = nextProjects; sessions = next.sessions; issue = next.issue
                 codexAccount = next.settings?.codexAccount ?? .automatic
-                if discover || !projects.isEmpty || !providers.contains(.codex) { accounts = next.accounts }
+                if discover || !rules.folders.isEmpty || !projects.isEmpty || !providers.contains(.codex) { accounts = next.accounts }
                 if discover || !enabled { available = next.available }
                 if updated { changed?() }
             } catch { issue = error.localizedDescription }
@@ -94,6 +96,10 @@ private actor CodingImportWorker {
 struct CodingSettingsView: View {
     @ObservedObject var coding: CodingCoordinator
     @State private var removing: String?
+    private var folders: [CodingProjectFolder] {
+        let paths = Set(coding.available + coding.projects).union(coding.selection.folders.keys)
+        return CodingProjectFolder.tree(paths: paths)
+    }
     var body: some View {
         Form {
             Section {
@@ -119,23 +125,18 @@ struct CodingSettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text("Selected projects apply to every enabled source. Afterword saves prompts, replies, and tool names locally. Pausing a source keeps its saved sessions available.")
+                Text("Folder selections apply to every enabled source and include future projects beneath each checked folder. Afterword saves prompts, replies, and tool names locally. Pausing a source keeps its saved sessions available.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Projects") {
-                ForEach(Array(Set(coding.available + coding.projects)).sorted(), id: \.self) { path in
-                    Toggle(isOn: Binding(get: { coding.projects.contains(path) }, set: { selected in
-                        if selected { coding.refresh(.add(path)) } else { removing = path }
-                    })) {
-                        VStack(alignment: .leading) {
-                            Text(URL(fileURLWithPath: path).lastPathComponent)
-                            Text(path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                    }.disabled(!coding.enabled && !coding.projects.contains(path))
+                ForEach(folders) { folder in
+                    ProjectFolderRow(folder: folder, selection: coding.selection, importing: coding.enabled, depth: 0) { path, included in
+                        if included { coding.refresh(.folder(path, true)) } else { removing = path }
+                    }
                 }
                 if coding.enabled {
                     Button("Refresh projects") { coding.refresh(discover: true) }
-                    if coding.available.isEmpty && coding.projects.isEmpty && !coding.busy {
+                    if folders.isEmpty && !coding.busy {
                         Text("No local sessions with a project directory were found.").foregroundStyle(.secondary)
                     }
                 }
@@ -145,10 +146,87 @@ struct CodingSettingsView: View {
         }
         .formStyle(.grouped).disabled(coding.busy)
         .onAppear { coding.refresh(discover: true) }
-        .confirmationDialog("Remove imported sessions for this project?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible, presenting: removing) { path in
-            Button("Remove project history", role: .destructive) { coding.refresh(.remove(path)) }
+        .confirmationDialog("Remove saved sessions in this folder?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible, presenting: removing) { path in
+            Button("Remove folder history", role: .destructive) { coding.refresh(.folder(path, false)) }
             Button("Cancel", role: .cancel) {}
-        } message: { path in Text("Afterword will delete its saved sessions from all sources for \(path) and stop importing this project.") }
+        } message: { path in Text("Afterword will remove its saved sessions for \(path) and its subfolders, and stop importing them.") }
+    }
+}
+
+private struct ProjectFolderRow: View {
+    let folder: CodingProjectFolder
+    let selection: CodingProjectSelection
+    let importing: Bool
+    let depth: Int
+    let change: (String, Bool) -> Void
+    @State private var expanded: Bool?
+
+    var body: some View {
+        let open = expanded ?? (depth < 2)
+        let state = selection.state(at: folder.path, hasChildren: !folder.children.isEmpty)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                if folder.children.isEmpty {
+                    Color.clear.frame(width: 16, height: 1)
+                } else {
+                    Button { expanded = !open } label: {
+                        Image(systemName: open ? "chevron.down" : "chevron.right")
+                            .font(.caption.bold()).frame(width: 16, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(open ? "Collapse \(folder.name)" : "Expand \(folder.name)")
+                }
+                ProjectFolderCheckbox(name: folder.name, path: folder.path, state: state) {
+                    change(folder.path, importing && state != .on)
+                }.fixedSize().disabled(!importing && state == .off)
+                    .contextMenu {
+                        if importing && state != .on { Button("Include folder and subfolders") { change(folder.path, true) } }
+                        if state != .off { Button("Remove folder history…", role: .destructive) { change(folder.path, false) } }
+                    }
+            }
+            if open {
+                ForEach(folder.children) { child in
+                    ProjectFolderRow(folder: child, selection: selection, importing: importing, depth: depth + 1, change: change)
+                }.padding(.leading, 18)
+            }
+        }
+    }
+}
+
+/// AppKit exposes a checkbox's mixed state to both keyboard users and VoiceOver.
+private struct ProjectFolderCheckbox: NSViewRepresentable {
+    let name, path: String
+    let state: CodingProjectSelection.State
+    let toggle: () -> Void
+
+    final class Coordinator: NSObject {
+        var toggle: () -> Void
+        var state: NSControl.StateValue = .off
+        init(_ toggle: @escaping () -> Void) { self.toggle = toggle }
+        @objc func click(_ sender: NSButton) {
+            sender.state = state
+            toggle()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(toggle) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(checkboxWithTitle: name, target: context.coordinator, action: #selector(Coordinator.click(_:)))
+        button.allowsMixedState = true
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.toggle = toggle
+        button.title = name
+        button.toolTip = path
+        button.setAccessibilityIdentifier(path)
+        button.isEnabled = context.environment.isEnabled
+        switch state {
+        case .on: button.state = .on
+        case .off: button.state = .off
+        case .mixed: button.state = .mixed
+        }
+        context.coordinator.state = button.state
     }
 }
 

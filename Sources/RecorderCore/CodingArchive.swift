@@ -73,7 +73,7 @@ public enum CodexAccountSelection: Hashable, Sendable {
 public struct CodingImportSettings: Sendable {
     public let providers: Set<CodingProvider>
     public let codexAccount: CodexAccountSelection
-    public let projects: [String]
+    public let projectSelection: CodingProjectSelection
 }
 
 struct CodingPassage: Sendable {
@@ -110,6 +110,7 @@ public final class CodingArchive {
         db = try SearchDatabase(url: directory.appendingPathComponent("History.sqlite"), durable: true)
         try db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         try db.execute("CREATE TABLE IF NOT EXISTS projects (path TEXT PRIMARY KEY)")
+        try db.execute("CREATE TABLE IF NOT EXISTS project_folders (path TEXT PRIMARY KEY, included INTEGER NOT NULL)")
         try db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL, modified TEXT NOT NULL, info TEXT NOT NULL, history TEXT NOT NULL)")
         try db.execute("CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project)")
         try db.execute("""
@@ -125,7 +126,13 @@ public final class CodingArchive {
             (scope.accountID.isEmpty ? .automatic : .account(scope))
         return try .init(providers: Set(CodingProvider.allCases.filter { values[$0.enabledKey] == "1" }),
                          codexAccount: account,
-                         projects: db.rows("SELECT path FROM projects ORDER BY path").map { $0[0] })
+                         projectSelection: projectSelection())
+    }
+
+    private func projectSelection() throws -> CodingProjectSelection {
+        let exact = try Set(db.rows("SELECT path FROM projects").compactMap { CodingProjectSelection.path($0[0]) })
+        let folders = try Dictionary(uniqueKeysWithValues: db.rows("SELECT path,included FROM project_folders").map { ($0[0], $0[1] == "1") })
+        return CodingProjectSelection(exact: exact, folders: folders)
     }
     public func setEnabled(_ value: Bool, for provider: CodingProvider = .claudeCode) throws {
         try db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", [provider.enabledKey, value ? "1" : "0"])
@@ -142,15 +149,39 @@ public final class CodingArchive {
         }
     }
     public func addProject(_ path: String) throws {
-        guard path.hasPrefix("/") else { throw RecorderError.message("Select a project with a working directory.") }
+        guard let path = CodingProjectSelection.path(path) else { throw RecorderError.message("Select a project with a working directory.") }
         try db.execute("INSERT OR IGNORE INTO projects VALUES (?)", [path])
     }
     public func removeProject(_ path: String) throws {
+        try setProjectFolder(path, included: false)
+    }
+
+    public func setProjectFolder(_ value: String, included: Bool) throws {
+        guard let path = CodingProjectSelection.path(value) else { throw RecorderError.message("Select a folder with an absolute path.") }
         try db.transaction {
-            try db.execute("DELETE FROM projects WHERE path=?", [path])
-            try db.execute("DELETE FROM coding_text WHERE session IN (SELECT id FROM sessions WHERE project=?)", [path])
-            try db.execute("DELETE FROM sessions WHERE project=?", [path])
-            try bumpRevision()
+            // A folder toggle replaces all more specific rules below it, even
+            // for projects that no longer have files on this Mac.
+            let selection = try projectSelection()
+            for row in try db.rows("SELECT path FROM projects") {
+                if let exact = CodingProjectSelection.path(row[0]), CodingProjectSelection.contains(exact, in: path) {
+                    try db.execute("DELETE FROM projects WHERE path=?", [row[0]])
+                }
+            }
+            for folder in selection.folders.keys where CodingProjectSelection.contains(folder, in: path) {
+                try db.execute("DELETE FROM project_folders WHERE path=?", [folder])
+            }
+            let parentIncluded = path != "/" && selection.inherited(at: (path as NSString).deletingLastPathComponent)
+            if parentIncluded != included {
+                try db.execute("INSERT INTO project_folders VALUES (?,?)", [path, included ? "1" : "0"])
+            }
+            if !included {
+                for row in try db.rows("SELECT DISTINCT project FROM sessions") {
+                    guard let project = CodingProjectSelection.path(row[0]), CodingProjectSelection.contains(project, in: path) else { continue }
+                    try db.execute("DELETE FROM coding_text WHERE session IN (SELECT id FROM sessions WHERE project=?)", [row[0]])
+                    try db.execute("DELETE FROM sessions WHERE project=?", [row[0]])
+                }
+                try bumpRevision()
+            }
         }
     }
 
@@ -158,7 +189,7 @@ public final class CodingArchive {
         let options = try settings()
         var projects = Set<String>(), issues: [String] = []
         var accounts: [LocalCodexAccount] = []
-        guard discoverProjects || !options.projects.isEmpty else { return ([], [], []) }
+        guard discoverProjects || options.projectSelection.hasIncludes else { return ([], [], []) }
         let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true)]
         for var reader in sources {
             guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider) else { continue }
@@ -173,7 +204,7 @@ public final class CodingArchive {
                 }
                 let infos = try reader.listSessions()
                 if discoverProjects { projects.formUnion(infos.compactMap(\.workingDirectory).filter { $0.hasPrefix("/") }) }
-                if !options.projects.isEmpty { try synchronize(infos, reader: reader, provider: provider, options: options) }
+                if options.projectSelection.hasIncludes { try synchronize(infos, reader: reader, provider: provider, options: options) }
             } catch is CancellationError { throw CancellationError() }
             catch { issues.append("\(provider.name): \(error.localizedDescription)") }
         }
@@ -186,12 +217,11 @@ public final class CodingArchive {
     }
 
     private func synchronize(_ infos: [SessionInfo], reader: any SessionReader, provider: CodingProvider, options: CodingImportSettings) throws {
-        let allowed = Set(options.projects)
         let known = try Dictionary(uniqueKeysWithValues: db.rows("SELECT id,info FROM sessions").map { ($0[0], $0[1]) })
         var failures = 0
         for info in infos {
             try Task.checkCancellation()
-            guard let project = info.workingDirectory, allowed.contains(project) else { continue }
+            guard let project = info.workingDirectory, options.projectSelection.includes(project) else { continue }
             let id = AgentJSON.hash(info.id.source + "/" + info.id.value)
             let stamp = String(info.modifiedAt.timeIntervalSince1970)
             let session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
@@ -205,7 +235,7 @@ public final class CodingArchive {
                 try Task.checkCancellation()
                 try db.transaction {
                     let current = try settings()
-                    guard current.providers.contains(provider), current.projects.contains(project),
+                    guard current.providers.contains(provider), current.projectSelection.includes(project),
                           provider != .codex || current.codexAccount == options.codexAccount else { return }
                     let previous = try db.rows("SELECT info FROM sessions WHERE id=?", [id]).first?.first
                     guard previous == known[id] else { return } // A newer import won the race.
