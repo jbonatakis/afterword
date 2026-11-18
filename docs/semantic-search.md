@@ -37,6 +37,8 @@ The model-space key includes weights, pooling, query preprocessing, and chunk-fo
 
 ## Evaluation and verification
 
+For repeatable end-to-end comparisons, use the [search quality benchmark](search-quality.md). It exercises MCP source ranking, excerpt selection, cited evidence, and negative controls on frozen calls and coding sessions.
+
 A local smoke test used six paraphrased questions with source-text anchors. On the final nineteen chunks (individual turns and short exchanges), Qwen ranked the anchored passage first in 5/6 questions; BGE did in 4/6, and both found it in the top three in 6/6. This is a tiny, manually selected sample, not a general quality benchmark. It motivated Qwen as the preselected model while retaining the faster BGE option.
 
 On the M4 Air, with model files and Metal kernels warm, nineteen chunks plus six queries across two helper batches took about 1.70 seconds for Qwen and 0.51 seconds for BGE. Maximum resident set size was approximately 740 MiB and 112 MiB respectively. These include process setup and model loading; OS file caching and GPU allocations make RSS different from permanent physical-memory cost. First-run kernel compilation can add seconds. Helpers exit after each batch.

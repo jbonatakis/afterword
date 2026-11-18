@@ -1,0 +1,6 @@
+[
+  {"title":"Mail delivery retries","request":"Why does a retry send the same receipt twice?","reply":"The worker sends the receipt before saving its success. Reuse the delivery token as the idempotency key so that a retry cannot send a duplicate."},
+  {"title":"Sampling the sensors","request":"What is making telemetry uploads so large?","reply":"The new probes send every reading separately. Batch sixty readings into one upload to reduce the per-request overhead."},
+  {"title":"Publisher recovery","request":"Can the reader recover from an interrupted file replacement?","reply":"Write the next catalog to a temporary file and atomically rename it. Readers then see either the old catalog or the complete replacement."},
+  {"title":"Kiosk timekeeping","request":"How can a lobby kiosk keep time when the network goes away?","reply":"Use the battery-backed clock during the outage. When connectivity returns, compare the time with the server before accepting appointments."}
+]

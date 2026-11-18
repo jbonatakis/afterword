@@ -1,4 +1,6 @@
 .build/
+.search-benchmarks/
+__pycache__/
 build/
 .DS_Store
 *.xcuserstate

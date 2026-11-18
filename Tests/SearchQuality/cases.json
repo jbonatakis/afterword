@@ -1,0 +1,365 @@
+[
+  {
+    "id": "migration",
+    "split": "dev",
+    "source": "calls",
+    "query": "Why are we postponing the release?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Delivery planning",
+        "anchors": [
+          "holding the launch",
+          "strand the old accounts"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "counts",
+    "split": "dev",
+    "source": "calls",
+    "query": "Who will verify the copied data?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Delivery planning",
+        "anchors": [
+          "Mira will reconcile"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "rollback",
+    "split": "dev",
+    "source": "calls",
+    "query": "Why put the background task in a database transaction?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Dispatch design",
+        "anchors": [
+          "commit together",
+          "rollback must remove both"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "boat",
+    "split": "dev",
+    "source": "calls",
+    "query": "Why travel across the water instead of by road?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Field visit",
+        "anchors": [
+          "crossing is shorter"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "update",
+    "split": "dev",
+    "source": "calls",
+    "query": "When is it safe to patch a camera that is taking a picture?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Image operations",
+        "anchors": [
+          "until the observation ends",
+          "loses the entire frame"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "clock",
+    "split": "dev",
+    "source": "calls",
+    "query": "What gets erased when power is disconnected?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Image operations",
+        "anchors": [
+          "cached clock settings"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "ferry-approval",
+    "split": "dev",
+    "source": "calls",
+    "query": "How much money did finance authorize for ferry tickets?",
+    "kind": "near_miss",
+    "gold": [
+      {
+        "title": "Field visit",
+        "anchors": []
+      }
+    ],
+    "distractors": [
+      {
+        "title": "Freight incident",
+        "kind": "call"
+      }
+    ]
+  },
+  {
+    "id": "blank",
+    "split": "dev",
+    "source": "calls",
+    "query": "How often do I water a cactus in winter?",
+    "kind": "off_topic"
+  },
+  {
+    "id": "maps",
+    "split": "holdout",
+    "source": "calls",
+    "query": "Which conditions keep the old charts from warping?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Museum collection",
+        "anchors": [
+          "relative humidity below fifty percent",
+          "maps curl"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "alarm",
+    "split": "holdout",
+    "source": "calls",
+    "query": "Who gets notified if the display case triggers an alert?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Museum collection",
+        "anchors": [
+          "text to the conservator"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "dough",
+    "split": "holdout",
+    "source": "calls",
+    "query": "How should we keep the bread from ripping when we shape it?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Bakery trials",
+        "anchors": [
+          "warm on the bench",
+          "too cold"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "oven",
+    "split": "holdout",
+    "source": "calls",
+    "query": "What was fixed on the second oven?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Bakery trials",
+        "anchors": [
+          "repaired thermostat"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "markers",
+    "split": "holdout",
+    "source": "calls",
+    "query": "What will help walkers find the route after wading across?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Trail stewardship",
+        "anchors": [
+          "orange markers",
+          "visible from the water"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "glass",
+    "split": "holdout",
+    "source": "calls",
+    "query": "How do we stop fragile cargo moving during transport?",
+    "kind": "supported",
+    "gold": [
+      {
+        "title": "Freight incident",
+        "anchors": [
+          "rubber mats",
+          "crates slid"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "bridge-date",
+    "split": "holdout",
+    "source": "calls",
+    "query": "Which month is bridge construction scheduled to start?",
+    "kind": "near_miss",
+    "gold": [
+      {
+        "title": "Trail stewardship",
+        "anchors": []
+      }
+    ],
+    "distractors": [
+      {
+        "title": "Field visit",
+        "kind": "call"
+      }
+    ]
+  },
+  {
+    "id": "optic",
+    "split": "holdout",
+    "source": "calls",
+    "query": "How long does sunlight take to reach Neptune?",
+    "kind": "off_topic"
+  },
+  {
+    "id": "literal-schedule",
+    "split": "dev",
+    "source": "calls",
+    "kind": "supported",
+    "query": "\"schedule row\"",
+    "gold": [
+      {
+        "title": "Dispatch design",
+        "anchors": [
+          "commit together"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "literal-maintenance",
+    "split": "dev",
+    "source": "calls",
+    "kind": "supported",
+    "query": "\"maintenance window\"",
+    "gold": [
+      {
+        "title": "Image operations",
+        "anchors": [
+          "starts at midnight"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "literal-crossing",
+    "split": "holdout",
+    "source": "calls",
+    "kind": "supported",
+    "query": "\"orange markers\"",
+    "gold": [
+      {
+        "title": "Trail stewardship",
+        "anchors": [
+          "orange markers"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "literal-pallet",
+    "split": "holdout",
+    "source": "calls",
+    "kind": "supported",
+    "query": "\"rubber mats\"",
+    "gold": [
+      {
+        "title": "Freight incident",
+        "anchors": [
+          "rubber mats"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "duplicate",
+    "split": "dev",
+    "kind": "supported",
+    "source": "all",
+    "query": "How do we avoid emailing the same purchase confirmation twice?",
+    "gold": [
+      {
+        "kind": "coding",
+        "title": "Mail delivery retries",
+        "anchors": [
+          "idempotency key"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "samples",
+    "split": "dev",
+    "kind": "supported",
+    "source": "all",
+    "query": "How can the probes use fewer network requests?",
+    "gold": [
+      {
+        "kind": "coding",
+        "title": "Sampling the sensors",
+        "anchors": [
+          "sixty readings"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "atomic",
+    "split": "holdout",
+    "kind": "supported",
+    "source": "all",
+    "query": "How do readers avoid opening a half-written catalog?",
+    "gold": [
+      {
+        "kind": "coding",
+        "title": "Publisher recovery",
+        "anchors": [
+          "atomically rename"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "clock-outage",
+    "split": "holdout",
+    "kind": "supported",
+    "source": "all",
+    "query": "What time source works if the terminal loses internet?",
+    "gold": [
+      {
+        "kind": "coding",
+        "title": "Kiosk timekeeping",
+        "anchors": [
+          "battery-backed clock"
+        ]
+      }
+    ]
+  }
+]
