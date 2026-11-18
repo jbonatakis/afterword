@@ -156,18 +156,15 @@ struct InlineTranscriptNotice: View {
 struct InlineParagraphEditor: View {
     let paragraph: TranscriptParagraph
     @ObservedObject var draft: TranscriptDraft
-    @FocusState private var focused: Bool
+    @FocusState.Binding var focusedParagraph: Int?
     var body: some View {
         TextField("Paragraph text", text: $draft.text[paragraph.id], axis: .vertical)
             .textFieldStyle(.plain).font(.system(size: 15)).lineSpacing(5)
             .fixedSize(horizontal: false, vertical: true)
             .padding(6).background(Color.accentColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.accentColor.opacity(focused ? 0.5 : 0.15)))
-            .padding(-6).focused($focused).disabled(draft.saving)
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.accentColor.opacity(focusedParagraph == paragraph.id ? 0.5 : 0.15)))
+            .padding(-6).focused($focusedParagraph, equals: paragraph.id).disabled(draft.saving)
             .accessibilityLabel("Edit \(paragraph.source.label) at \(Transcript.timestamp(paragraph.start))")
-            .onAppear {
-                if draft.focusedParagraph == paragraph.id { focused = true }
-            }
     }
 }
 

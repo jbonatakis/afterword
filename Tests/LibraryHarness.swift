@@ -54,6 +54,11 @@ import Lookback
         let states = CurrentValueSubject<RecordingState, Never>(.idle)
         let playback = RecordingPlayback(states: states.eraseToAnyPublisher())
         defer { playback.shutdown() }
+        if CommandLine.arguments.contains("--reader") {
+            playback.select(recording)
+            try await checkLongTranscript(input: input, recording: recording, playback: playback)
+            return
+        }
         let sourcesOnly = CommandLine.arguments.contains("--sources")
         if !sourcesOnly {
             playback.select(recording)
@@ -349,30 +354,7 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         print("PASS immediate speaker save without text editing, original/text/timing preservation, search/playback stability, no-op choice, and failed-save retry")
 
-        var stressSegments: [TranscriptSegment] = []
-        for index in 0..<80 {
-            let source: TranscriptSource = index.isMultiple(of: 2) ? .microphone : .system
-            let text = "Passage \(index). " + String(repeating: "A longer paragraph exercises wrapping and selection. ", count: index % 10 + 1)
-            stressSegments.append(TranscriptSegment(source: source, start: Double(index), end: Double(index + 1), text: text, timing: "segment"))
-        }
-        let stressParagraphs = TranscriptParagraph.make(from: stressSegments)
-        func reader(_ query: String) -> ReadableTranscript {
-            ReadableTranscript(paragraphs: stressParagraphs, edited: false, query: query, playback: playback, playbackDisabled: false,
-                               draft: nil, canEdit: false, editParagraph: { _ in }, participants: ["Alex", "Sam"], automaticParticipant: "Alex",
-                               assignParticipant: { _, _ in }, editParticipants: {})
-        }
-        let stressHost = NSHostingView(rootView: reader(""))
-        let stressWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 420, height: 500), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        stressWindow.contentView = stressHost; stressWindow.orderFront(nil); playback.play()
-        for index in 0..<20 {
-            stressWindow.setContentSize(NSSize(width: index.isMultiple(of: 2) ? 420 : 700, height: 500))
-            stressHost.rootView = reader("Passage \(index * 3).")
-            playback.seek(Double(index * 3))
-            playback.changeTrack(index.isMultiple(of: 2) ? .microphone : .system, in: updated)
-            await pump(0.06)
-        }
-        playback.pause(); stressWindow.orderOut(nil)
-        print("PASS 80-paragraph reader resize/search/playback stress check")
+        try await checkLongTranscript(input: input, recording: updated, playback: playback)
 
         let fixtureTrash = root.appendingPathComponent(".fixture-trash")
         try FileManager.default.createDirectory(at: fixtureTrash, withIntermediateDirectories: true)
@@ -403,6 +385,75 @@ import Lookback
         require(!library.managing && !recorder.transcription.libraryMutationActive, "Trash failed to release its mutation guard")
         require(library.issues.isEmpty, "Deleted call remained as a missing library folder")
         print("PASS call/version deletion, recording destination guard, playback unload, and recent-recording cleanup using fixture Trash")
+    }
+
+    @MainActor static func checkLongTranscript(input: TranscriptionInput, recording: LibraryRecording, playback: RecordingPlayback) async throws {
+        var stressSegments: [TranscriptSegment] = []
+        for index in 0..<375 {
+            let source: TranscriptSource = index.isMultiple(of: 2) ? .microphone : .system
+            let text = "Passage \(index). " + String(repeating: "A longer paragraph exercises wrapping and selection. ", count: index % 10 + 1)
+            stressSegments.append(TranscriptSegment(source: source, start: Double(index), end: Double(index + 1), text: text, timing: "segment"))
+        }
+        let stressParagraphs = TranscriptParagraph.make(from: stressSegments)
+        func reader(_ query: String, matches: [Int] = [], draft: TranscriptDraft? = nil) -> ReadableTranscript {
+            ReadableTranscript(paragraphs: stressParagraphs, edited: false, query: query, playback: playback, playbackDisabled: false,
+                               draft: draft, canEdit: true, editParagraph: { _ in }, participants: ["Alex", "Sam"], automaticParticipant: "Alex",
+                               assignParticipant: { _, _ in }, editParticipants: {}, searchMatches: matches)
+        }
+        let initialHit = stressParagraphs.count / 2
+        let stressHost = NSHostingView(rootView: reader("selected evidence", matches: [initialHit]))
+        let stressWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 420, height: 500), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        stressWindow.contentView = stressHost; stressWindow.orderFront(nil)
+        await pump()
+        func transcriptTable(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView { return table }
+            return view.subviews.lazy.compactMap { transcriptTable(in: $0) }.first
+        }
+        guard let table = transcriptTable(in: stressHost) else { throw RecorderError.message("Missing transcript list") }
+        require(table.numberOfRows == stressParagraphs.count + 1, "Missing transcript paragraphs or footer")
+        let mounted = (0..<table.numberOfRows).filter { table.rowView(atRow: $0, makeIfNecessary: false) != nil }
+        require(!mounted.isEmpty && mounted.count < 40, "The transcript mounted \(mounted.count) rows on open")
+        require(NSLocationInRange(initialHit, table.rows(in: table.visibleRect)), "Opening a search result did not reveal its paragraph")
+        let last = stressParagraphs.count - 1
+        stressHost.rootView = reader("selected evidence", matches: [last])
+        await pump()
+        require(NSLocationInRange(last, table.rows(in: table.visibleRect)), "Search failed to reveal an offscreen paragraph")
+        playback.play()
+        for index in 0..<20 {
+            stressWindow.setContentSize(NSSize(width: index.isMultiple(of: 2) ? 420 : 700, height: 500))
+            stressHost.rootView = reader("Passage \(index * 3).")
+            playback.seek(Double(index * 3))
+            playback.changeTrack(index.isMultiple(of: 2) ? .microphone : .system, in: recording)
+            await pump(0.06)
+        }
+        playback.pause()
+        let stressDocument = try Transcript(input: input, model: SpeechModel.catalog[0], engine: "fixture", language: "en", segments: stressSegments)
+        let version = LibraryTranscript(url: recording.transcripts[0].url, document: stressDocument, error: nil, date: Date(), fileModificationDate: Date())
+        let edit = TranscriptDraft(version: version, focusedParagraph: last, details: recording.details)
+        for _ in 0..<40 {
+            NSApp.activate(ignoringOtherApps: true)
+            stressWindow.makeKeyAndOrderFront(nil)
+            await pump(0.05)
+            if NSApp.isActive && stressWindow.isKeyWindow { break }
+        }
+        require(stressWindow.isKeyWindow, "The editor test window could not obtain keyboard focus")
+        stressHost.rootView = reader("", draft: edit)
+        for _ in 0..<40 {
+            await pump(0.05)
+            if let editor = stressWindow.firstResponder as? NSTextView, editor.isEditable, editor.string == edit.text[last] { break }
+        }
+        guard let editor = stressWindow.firstResponder as? NSTextView, editor.isEditable, editor.string == edit.text[last] else {
+            throw RecorderError.message("The requested offscreen transcript editor did not receive keyboard focus")
+        }
+        editor.selectAll(nil)
+        editor.insertText("Edited at the end of a long transcript", replacementRange: editor.selectedRange())
+        stressWindow.makeFirstResponder(table)
+        table.scrollRowToVisible(0); await pump()
+        table.scrollRowToVisible(last); await pump()
+        require(edit.text[last] == "Edited at the end of a long transcript", "Recycling a row lost its draft")
+        require(stressWindow.firstResponder === table, "Revisiting a recycled row stole edit focus")
+        stressWindow.orderOut(nil)
+        print("PASS 375-paragraph reader mounted \(mounted.count) rows, revealed offscreen matches and editors, preserved edits on scroll, and handled resizing during playback")
     }
 
     @MainActor static func checkGitHub(library: RecordingLibraryModel) async throws {

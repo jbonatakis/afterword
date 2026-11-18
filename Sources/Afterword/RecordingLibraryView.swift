@@ -491,7 +491,16 @@ private struct RecordingDetail: View {
     @State private var versionID: String?
     @State private var reviewingSpeakers = false
     @State private var showingAttendance = false
-    @State private var showingSummary = false
+    @State private var selectedSummary: Bool?
+    private var showingSummary: Bool {
+        get {
+            if let selectedSummary { return selectedSummary }
+            if library.summaryDrafts[recording.id] != nil { return true }
+            if draft != nil { return false }
+            return query.isEmpty ? recording.summary?.current != nil : library.searchHits[recording.id]?.summaryMatch == true
+        }
+        nonmutating set { selectedSummary = newValue }
+    }
     private struct SuggestionRequest: Equatable {
         let versionID: String?
         let attendees: [CallAttendee]
@@ -560,7 +569,7 @@ private struct RecordingDetail: View {
                 if let error = recording.detailsError {
                     Label("Couldn’t read call details: " + error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange).lineLimit(3)
                 }
-                Picker("Call content", selection: $showingSummary) {
+                Picker("Call content", selection: Binding(get: { showingSummary }, set: { showingSummary = $0 })) {
                     Text("Summary").tag(true)
                     Text("Transcript").tag(false)
                 }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Call content").disabled(draft != nil || library.summaryDrafts[recording.id] != nil)
@@ -658,7 +667,11 @@ private struct RecordingDetail: View {
             .backward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position - 10) }),
             .forward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position + 10) })
         ]).frame(width: 0, height: 0))
-        .onAppear { playback.select(recording); showingSummary = library.summaryDrafts[recording.id] != nil || (draft == nil && recording.summary?.current != nil); selectMatchingVersion() }
+        .onAppear {
+            if selectedSummary == nil { selectedSummary = showingSummary }
+            playback.select(recording)
+            selectMatchingVersion()
+        }
         .task(id: suggestionRequest) { await loadSpeakerSuggestions() }
         .onReceive(NotificationCenter.default.publisher(for: VoiceProfiles.changed)) { _ in voiceRevision += 1 }
         .onReceive(recorder.calendar.$directory.removeDuplicates().dropFirst()) { _ in voiceRevision += 1 }
@@ -708,7 +721,9 @@ struct ReadableTranscript: View {
     let paragraphs: [TranscriptParagraph]
     let edited: Bool
     let query: String
-    @ObservedObject var playback: RecordingPlayback
+    let playback: RecordingPlayback
+    @State private var playbackReady = false
+    @FocusState private var focusedParagraph: Int?
     let playbackDisabled: Bool
     let draft: TranscriptDraft?
     let canEdit: Bool
@@ -725,8 +740,13 @@ struct ReadableTranscript: View {
     var searchMatches: [Int] = []
     private var firstMatch: Int? {
         if let match = searchMatches.first(where: { id in paragraphs.contains { $0.id == id } }) { return match }
-        return query.isEmpty ? nil : paragraphs.first {
-            !LibrarySearchQuery(query).highlightRanges(in: $0.text).isEmpty || !LibrarySearchQuery(query).highlightRanges(in: $0.speakerLabel(automaticParticipant: automaticParticipant.map { displayNames[$0] ?? $0 }, participantNames: participantNames.mapValues { displayNames[$0] ?? $0 })).isEmpty
+        guard !query.isEmpty else { return nil }
+        let parsed = LibrarySearchQuery(query)
+        let automaticName = automaticParticipant.map { displayNames[$0] ?? $0 }
+        let names = participantNames.mapValues { displayNames[$0] ?? $0 }
+        return paragraphs.first {
+            !parsed.highlightRanges(in: $0.text).isEmpty ||
+                !parsed.highlightRanges(in: $0.speakerLabel(automaticParticipant: automaticName, participantNames: names)).isEmpty
         }?.id
     }
     var body: some View {
@@ -735,74 +755,104 @@ struct ReadableTranscript: View {
                                    description: Text(edited ? "This edited version has no text. Choose another version or transcribe the recording again." : "You can listen to the audio or try another transcription model."))
         } else {
             ScrollViewReader { proxy in
-                ScrollView {
-                    // macOS 15 can loop in LazySubviewPlacements while playback
-                    // updates selectable paragraphs. Keep their geometry stable.
-                    VStack(alignment: .leading, spacing: 26) {
-                        ForEach(paragraphs) { paragraph in
-                            VStack(alignment: .leading, spacing: 9) {
-                                HStack(spacing: 10) {
-                                    Circle().fill(paragraph.source == .microphone ? Color.accentColor : .secondary).frame(width: 7, height: 7)
-                                    if paragraph.source == .system {
-                                        if let draft {
-                                            DraftParticipantPicker(paragraph: paragraph, draft: draft, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames,
-                                                                   assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
-                                                .disabled(!canEdit)
-                                        } else {
-                                            let group = paragraph.segments.first?.speakerGroup
-                                            ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames, speakerGroup: group,
-                                                              suggestedParticipant: group.flatMap { speakerSuggestions[$0] },
-                                                              assignGroup: assignGroup.map { action in { group, name in action(group, name, paragraph.id) } }, start: paragraph.start,
-                                                              assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
-                                                .disabled(!canEdit)
-                                        }
-                                    } else { Text(paragraph.source.label).font(.callout.weight(.semibold)) }
-                                    if assignment?.paragraph == paragraph.id, assignment?.error == nil {
-                                        ProgressView().controlSize(.small).help("Saving speaker…").accessibilityLabel("Saving speaker")
-                                    }
-                                    Button(Transcript.timestamp(paragraph.start)) {
-                                        playback.seek(paragraph.start); playback.play()
-                                    }.buttonStyle(.plain).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                        .disabled(playbackDisabled || !playback.ready)
-                                        .help("Play from \(Transcript.timestamp(paragraph.start))")
-                                        .accessibilityLabel("Play from \(Transcript.timestamp(paragraph.start))")
-                                    Spacer()
-                                    if playback.playing && playback.position >= paragraph.start && playback.position < paragraph.end {
-                                        Image(systemName: "speaker.wave.2.fill").font(.caption).foregroundStyle(Color.accentColor)
-                                    }
-                                    if draft == nil {
-                                        Button { editParagraph(paragraph.id) } label: { Image(systemName: "pencil").font(.caption) }
-                                            .buttonStyle(.plain).foregroundStyle(.secondary).disabled(!canEdit)
-                                            .help("Edit this paragraph").accessibilityLabel("Edit paragraph at \(Transcript.timestamp(paragraph.start))")
-                                    }
-                                }
-                                if assignment?.paragraph == paragraph.id, let error = assignment?.error {
-                                    Text("Couldn’t save speaker: \(error)").font(.caption).foregroundStyle(.red).textSelection(.enabled)
-                                }
-                                if let draft {
-                                    InlineParagraphEditor(paragraph: paragraph, draft: draft)
-                                } else {
-                                    Text(highlighted(paragraph.text)).font(.system(size: 15)).lineSpacing(5)
-                                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }.id(paragraph.id)
-                        }
-                        Text("“Recorder” follows the microphone track. Other speaker names use the call’s participant assignments.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: 760).padding(28).frame(maxWidth: .infinity)
+                List {
+                    ForEach(paragraphs) { paragraph in
+                        paragraphRow(paragraph)
+                            .frame(maxWidth: 760, alignment: .leading)
+                            .frame(maxWidth: .infinity)
+                            .listRowInsets(EdgeInsets(top: 13, leading: 28, bottom: 13, trailing: 28))
+                            .listRowSeparator(.hidden)
+                    }
+                    Text("“Recorder” follows the microphone track. Other speaker names use the call’s participant assignments.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 13, leading: 28, bottom: 28, trailing: 28))
+                        .listRowSeparator(.hidden)
                 }
+                .listStyle(.plain).scrollContentBackground(.hidden)
+                .onReceive(playback.$ready.removeDuplicates()) { playbackReady = $0 }
                 .onAppear { if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
                 .onChange(of: query) { _, _ in if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
                 .onChange(of: searchMatches) { _, _ in if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
+                .task(id: draft.map(ObjectIdentifier.init)) {
+                    guard let target = draft?.focusedParagraph else { return }
+                    proxy.scrollTo(target)
+                    await Task.yield()
+                    if !Task.isCancelled { focusedParagraph = target }
+                }
             }
         }
     }
+
+    private func paragraphRow(_ paragraph: TranscriptParagraph) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 10) {
+                Circle().fill(paragraph.source == .microphone ? Color.accentColor : .secondary).frame(width: 7, height: 7)
+                if paragraph.source == .system {
+                    if let draft {
+                        DraftParticipantPicker(paragraph: paragraph, draft: draft, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames,
+                                               assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
+                            .disabled(!canEdit)
+                    } else {
+                        let group = paragraph.segments.first?.speakerGroup
+                        ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames, speakerGroup: group,
+                                          suggestedParticipant: group.flatMap { speakerSuggestions[$0] },
+                                          assignGroup: assignGroup.map { action in { group, name in action(group, name, paragraph.id) } }, start: paragraph.start,
+                                          assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
+                            .disabled(!canEdit)
+                    }
+                } else { Text(paragraph.source.label).font(.callout.weight(.semibold)) }
+                if assignment?.paragraph == paragraph.id, assignment?.error == nil {
+                    ProgressView().controlSize(.small).help("Saving speaker…").accessibilityLabel("Saving speaker")
+                }
+                Button(Transcript.timestamp(paragraph.start)) {
+                    playback.seek(paragraph.start); playback.play()
+                }.buttonStyle(.plain).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .disabled(playbackDisabled || !playbackReady)
+                    .help("Play from \(Transcript.timestamp(paragraph.start))")
+                    .accessibilityLabel("Play from \(Transcript.timestamp(paragraph.start))")
+                Spacer()
+                ParagraphPlaybackIndicator(playback: playback, start: paragraph.start, end: paragraph.end)
+                if draft == nil {
+                    Button { editParagraph(paragraph.id) } label: { Image(systemName: "pencil").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(!canEdit)
+                        .help("Edit this paragraph").accessibilityLabel("Edit paragraph at \(Transcript.timestamp(paragraph.start))")
+                }
+            }
+            if assignment?.paragraph == paragraph.id, let error = assignment?.error {
+                Text("Couldn’t save speaker: \(error)").font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
+            if let draft {
+                InlineParagraphEditor(paragraph: paragraph, draft: draft, focusedParagraph: $focusedParagraph)
+            } else {
+                Text(highlighted(paragraph.text)).font(.system(size: 15)).lineSpacing(5)
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
     private func highlighted(_ text: String) -> AttributedString {
+        guard !query.isEmpty else { return AttributedString(text) }
         let result = NSMutableAttributedString(string: text)
         for range in LibrarySearchQuery(query).highlightRanges(in: text) {
             result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.3), range: range)
         }
         return AttributedString(result)
+    }
+}
+
+private struct ParagraphPlaybackIndicator: View {
+    let playback: RecordingPlayback
+    let start: Double
+    let end: Double
+    @State private var active = false
+
+    var body: some View {
+        Image(systemName: "speaker.wave.2.fill").font(.caption).foregroundStyle(Color.accentColor)
+            .opacity(active ? 1 : 0).accessibilityLabel("Playing").accessibilityHidden(!active)
+            .onReceive(playback.$playing.combineLatest(playback.$position)
+                .map { playing, position in playing && start <= position && position < end }
+                .removeDuplicates()) { active = $0 }
     }
 }
 
