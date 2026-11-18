@@ -57,6 +57,20 @@ final class AgentAccessTests: XCTestCase {
         try AgentAccessStore.save(.init(enabled: true), directory: state)
         XCTAssertTrue(try items(service.call("list_calls", arguments: [:])).isEmpty)
     }
+    func testRecordingSourceSwitchPreservesGrantsAndRestrictsRunningHelper() throws {
+        try fixture()
+        let callID = try id()
+        let original = try AgentAccessStore.load(directory: state)
+        try ActivitySourceStore.save([.github], directory: state)
+        XCTAssertEqual(try items(service.call("list_calls", arguments: [:])).count, 0)
+        XCTAssertThrowsError(try service.call("get_transcript", arguments: ["call_id": callID]))
+        try ActivitySourceStore.save([.recordings], directory: state)
+        XCTAssertEqual(try id(), callID)
+        XCTAssertEqual(try AgentAccessStore.load(directory: state), original)
+        try Data("invalid".utf8).write(to: state.appendingPathComponent("Sources.json"))
+        XCTAssertThrowsError(try service.call("list_calls", arguments: [:]))
+    }
+
     func testSavedNamesVersionsSearchAndReferencesWithoutChangingSources() throws {
         let call = try fixture()
         try CallDetailsStore.writeInitial(.init(title: "Planning", participants: ["Corinne"], tags: ["Roadmap"]), to: call.appendingPathComponent("CallDetails.json"))

@@ -59,14 +59,30 @@ struct AgentCall {
 public final class AgentLibrary {
     private var index: LibrarySearchIndex?
     private var codingAttached = false
+    private var indexedSources: Set<ActivitySource>?
     private var indexedFolders: [String]?
     public let directory: URL
     private var peopleURL: URL { directory.deletingLastPathComponent().appendingPathComponent("People.json") }
     public init(directory: URL = AgentAccessStore.directory) { self.directory = directory }
 
+    private struct Access: Equatable {
+        let grants: AgentAccessConfiguration
+        let sources: Set<ActivitySource>
+
+        var enabled: Bool { grants.enabled }
+        var folders: [String] { sources.contains(.recordings) ? grants.folders : [] }
+        var allowCodingSessions: Bool { sources.contains(.coding) && grants.allowCodingSessions }
+        var allowSummaryWrites: Bool { sources.contains(.recordings) && grants.allowSummaryWrites }
+    }
+
+    private func access() throws -> Access {
+        try Access(grants: AgentAccessStore.load(directory: directory),
+                   sources: ActivitySourceStore.load(directory: directory) ?? Set(ActivitySource.allCases))
+    }
+
     public func call(_ name: String, arguments: [String: Any]) throws -> [String: Any] {
         try AgentTools.validate(name, arguments: arguments)
-        let configuration = try AgentAccessStore.load(directory: directory)
+        let configuration = try access()
         guard configuration.enabled else {
             index?.stopSemanticSearch(); index = nil; indexedFolders = nil
             throw AgentFailure("Agent access is disabled. Enable it in Afterword Settings → Agent Access.")
@@ -76,12 +92,13 @@ public final class AgentLibrary {
             throw AgentFailure("An allowed folder was replaced by a symbolic link. Review Agent Access settings.")
         }
         let scope = AgentJSON.hash(try AgentJSON.data(configuration.folders.sorted()))
-        if indexedFolders != configuration.folders {
+        if indexedFolders != configuration.folders || indexedSources != configuration.sources {
             index?.stopSemanticSearch()
             index = try LibrarySearchIndex(roots: roots, confined: true,
                 directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
                 embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"), peopleURL: peopleURL)
             codingAttached = false
+            indexedSources = configuration.sources
             indexedFolders = configuration.folders
         }
         guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
@@ -94,7 +111,7 @@ public final class AgentLibrary {
         let githubDirectory =
             directory == AgentAccessStore.directory ? GitHubArchive.directory : directory.appendingPathComponent("GitHub")
         let usesGitHub = ["search_activity", "get_github_item", "get_coding_session", "get_call"].contains(name)
-        let github = usesGitHub && GitHubArchive.exists(in: githubDirectory) ? try GitHubArchive(directory: githubDirectory) : nil
+        let github = usesGitHub && configuration.sources.contains(.github) && GitHubArchive.exists(in: githubDirectory) ? try GitHubArchive(directory: githubDirectory) : nil
         let grantsRevision = try github?.revision(shared: true)
         if name == "get_github_item" {
             let args = AgentArguments(arguments)
@@ -115,7 +132,7 @@ public final class AgentLibrary {
             let textOffset = args.integer("text_offset", default: 0)
             var result = try page(Array(actions.dropFirst(start)), args: args) { Self.githubPassage($0, offset: textOffset) }
             result["item"] = Self.githubHeader(hit); result["revision"] = revision
-            guard try github.revision(shared: true) == grantsRevision, try AgentAccessStore.load(directory: directory) == configuration
+            guard try github.revision(shared: true) == grantsRevision, try access() == configuration
             else { throw AgentFailure("GitHub access or content changed. Retry.") }
             guard try AgentJSON.data(result).count <= 1_048_576 else { throw AgentFailure("Result exceeds 1 MiB. Reduce limit.") }
             return result
@@ -127,7 +144,7 @@ public final class AgentLibrary {
             var response = try codingSession(archive, args: AgentArguments(arguments), grantsRevision: grantsRevision)
             try linkGitHubPassages(in: &response, archive: github)
             guard try github?.revision(shared: true) == grantsRevision else { throw AgentFailure("GitHub access changed. Retry.") }
-            guard try archive.revision == revision, try AgentAccessStore.load(directory: directory) == configuration else {
+            guard try archive.revision == revision, try access() == configuration else {
                 throw AgentFailure("Coding session access or history changed. Retry.")
             }
             guard try AgentJSON.data(response).count <= 1_048_576 else { throw AgentFailure("Result exceeds 1 MiB. Reduce limit.") }
@@ -248,7 +265,7 @@ public final class AgentLibrary {
                 throw AgentFailure("A readable source transcript is required. Read get_transcript before saving a summary.")
             }
             let saved = try CallSummaryStore.save(args.string("markdown")!, for: call.recording, source: version, author: "agent", peopleURL: peopleURL) {
-                guard try AgentAccessStore.load(directory: self.directory) == configuration,
+                guard try self.access() == configuration,
                       roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }),
                       roots.contains(where: { CallFileOperations.contains($0, call.recording.url) }),
                       try AgentJSON.identity(call.recording.url) == call.id else {
@@ -264,7 +281,7 @@ public final class AgentLibrary {
         default: throw AgentFailure("Unknown tool.")
         }
         // A running client loses access on its next request without needing to restart.
-        guard try name == "save_call_summary" || AgentAccessStore.load(directory: directory) == configuration else {
+        guard try name == "save_call_summary" || access() == configuration else {
             index.stopSemanticSearch()
             throw AgentFailure("Agent access settings changed during this request. Retry.")
         }

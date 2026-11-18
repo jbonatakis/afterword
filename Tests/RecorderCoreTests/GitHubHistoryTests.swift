@@ -66,6 +66,19 @@ final class GitHubHistoryTests: XCTestCase {
         XCTAssertTrue(try db.selections().allSatisfy { !$0.shared })
     }
 
+    func testGitHubOnlySourceAndLiveSourceChanges() throws {
+        try commit([(item(), passage("inline", "Fixture comment", kind: .inline))])
+        try db.share(repo.id, enabled: true)
+        let service = AgentLibrary(directory: root)
+        try ActivitySourceStore.save([.github], directory: root)
+        XCTAssertEqual(try service.call("search_activity", arguments: ["source": "github"])["total"] as? Int, 1)
+        try ActivitySourceStore.save([.coding], directory: root)
+        XCTAssertThrowsError(try service.call("get_github_item", arguments: ["item_id": "PR1"]))
+        XCTAssertEqual(try service.call("search_activity", arguments: [:])["total"] as? Int, 0)
+        try ActivitySourceStore.save([.github], directory: root)
+        XCTAssertEqual(try service.call("search_activity", arguments: ["source": "github"])["total"] as? Int, 1)
+    }
+
     func testScopeChecksCoverSearchDirectReadsPaginationAndEmbeddings() throws {
         try commit([
             (item(), passage("review", "", kind: .review)),

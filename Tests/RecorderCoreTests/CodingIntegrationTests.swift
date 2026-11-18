@@ -250,6 +250,20 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertEqual(old.first?.archived, true)
     }
 
+    func testCodingOnlySourceAndLiveSourceChanges() throws {
+        let archive = try imported()
+        let id = try XCTUnwrap(archive.sessions().first).id
+        try AgentAccessStore.save(.init(enabled: true, folders: ["/missing-recordings"], allowCodingSessions: true), directory: root)
+        let service = AgentLibrary(directory: root)
+        try ActivitySourceStore.save([.coding], directory: root)
+        XCTAssertEqual(try service.call("search_activity", arguments: ["source": "coding"])["total"] as? Int, 1)
+        try ActivitySourceStore.save([], directory: root)
+        XCTAssertThrowsError(try service.call("get_coding_session", arguments: ["session_id": id]))
+        XCTAssertEqual(try service.call("search_activity", arguments: [:])["total"] as? Int, 0)
+        try ActivitySourceStore.save([.coding], directory: root)
+        XCTAssertEqual(try service.call("search_activity", arguments: ["source": "coding"])["total"] as? Int, 1)
+    }
+
     func testAgentAccessRevocationCitationsAndDateFilters() throws {
         let archive = try imported()
         let id = try XCTUnwrap(archive.sessions().first).id
