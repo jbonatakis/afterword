@@ -471,7 +471,20 @@ import Lookback
         library.search = ""
         await library.refresh()?.value
         require(library.visibleGitHub.isEmpty && library.githubReferences.isEmpty, "Removed GitHub item remained in the library")
-        print("PASS native GitHub timeline, Markdown, source filters, qualified navigation, and removal")
+        let disconnected = GitHubCoordinator(directory: library.github.directory.appendingPathComponent("new-account"))
+        let settings = NSHostingView(rootView: GitHubSettingsView(github: disconnected).frame(width: 560, height: 640))
+        window.contentView = settings
+        func hasTokenField(_ view: NSView) -> Bool {
+            if view is NSSecureTextField { return !view.isHiddenOrHasHiddenAncestor }
+            return view.subviews.contains(where: hasTokenField)
+        }
+        for _ in 0..<40 {
+            await pump(0.05)
+            settings.layoutSubtreeIfNeeded()
+            if hasTokenField(settings) { break }
+        }
+        require(hasTokenField(settings), "GitHub settings must show a secure token field on first connection")
+        print("PASS native GitHub timeline, Markdown, source filters, qualified navigation, removal, and token setup")
     }
 
     @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {

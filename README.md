@@ -156,7 +156,7 @@ MCP clients can use **search_activity** across their allowed calls. Separately e
 
 ## GitHub history
 
-**Settings → GitHub** connects a GitHub.com account and lets you choose repositories. The **GitHub** sidebar shows issues and pull requests you opened, commented on, or reviewed. Each timeline contains your own contributions with links to the originals. Search by text, qualified item number, contribution type, or date. Repositories have separate controls for local import and sharing through MCP. [Setup, search, and sync](docs/github-history.md)
+**Settings → GitHub** connects your GitHub.com account with a fine-grained personal access token or an existing GitHub App. The default token setup opens GitHub with read permissions preselected. Choose your resource owner and repositories on GitHub, paste the token into Afterword, then pick the repositories to import. The **GitHub** sidebar shows issues and pull requests you opened, commented on, or reviewed. Each timeline contains your own contributions with links to the originals. Search by text, qualified item number, contribution type, or date. Repositories have separate controls for local import and sharing through MCP. [Setup, search, and sync](docs/github-history.md)
 
 ## Agent access (MCP)
 

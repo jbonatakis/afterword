@@ -7,6 +7,9 @@ struct GitHubSettingsView: View {
     @State private var remove: GitHubSelection?
     @State private var disconnect = false
     @State private var repositorySearch = ""
+    @State private var authMethod = GitHubConnectionMethod.personalToken
+    @State private var token = ""
+    @State private var changingConnection = false
     private var bundledID: String? {
         (Bundle.main.object(forInfoDictionaryKey: "AfterwordGitHubClientID") as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
@@ -17,11 +20,65 @@ struct GitHubSettingsView: View {
             !selected.contains($0.id) && (repositorySearch.isEmpty || $0.name.localizedCaseInsensitiveContains(repositorySearch))
         }
     }
+    @ViewBuilder private var connectionSetup: some View {
+        Picker("Connect with", selection: $authMethod) {
+            ForEach(GitHubConnectionMethod.allCases, id: \.self) { method in Text(method.rawValue).tag(method) }
+        }.pickerStyle(.segmented).disabled(github.connecting)
+        if authMethod == .personalToken {
+            Link(
+                "Create a read-only token on GitHub",
+                destination: URL(
+                    string:
+                        "https://github.com/settings/personal-access-tokens/new?name=Afterword&description=Read%20my%20issue%20and%20pull%20request%20history&issues=read&pull_requests=read"
+                )!)
+            Text(
+                "On GitHub, choose the resource owner and repositories. For work repositories, choose the organization. It may require approval."
+            )
+            .font(.callout).foregroundStyle(.secondary)
+            SecureField("Fine-grained personal access token", text: $token)
+            Button("Connect with token") {
+                github.connect(token: token)
+                token = ""
+            }.disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || github.connecting)
+        } else {
+            if bundledID == nil {
+                TextField("GitHub App client ID", text: $customID)
+                if clientID.isEmpty {
+                    Link(
+                        "Register a read-only GitHub App",
+                        destination: URL(
+                            string:
+                                "https://github.com/settings/apps/new?name=Afterword%20History&url=https%3A%2F%2Fgithub.com%2Fjbonatakis%2Fafterword&issues=read&pull_requests=read&webhook_active=false&public=true"
+                        )!)
+                    Text("Enable device flow and expiring user tokens, then install the app on your selected repositories.").font(
+                        .caption)
+                } else {
+                    Link("Manage GitHub App registrations", destination: URL(string: "https://github.com/settings/apps")!)
+                }
+            }
+            Button("Connect GitHub App") { github.connect(clientID: clientID) }.disabled(clientID.isEmpty || github.connecting)
+        }
+    }
     var body: some View {
         Form {
             Section("GitHub.com account") {
-                if let viewer = github.snapshot.account { LabeledContent("Connected account", value: viewer.login) }
-                if let code = github.deviceCode {
+                if let viewer = github.snapshot.account {
+                    LabeledContent("Connected account", value: viewer.login)
+                    if let method = github.snapshot.method { LabeledContent("Connection", value: method.rawValue) }
+                }
+                if !github.replacementRemovals.isEmpty {
+                    Text(
+                        "The new connection cannot read these imported repositories. Switching removes their local history and MCP access."
+                    )
+                    ForEach(github.replacementRemovals) { Text($0.name) }
+                    HStack {
+                        Button("Switch and remove history", role: .destructive) { github.confirmReplacement() }
+                        Button("Keep current connection") {
+                            github.discardReplacement()
+                            changingConnection = false
+                        }
+                    }
+                } else if let code = github.deviceCode {
                     LabeledContent("Device code") { Text(code).monospaced().textSelection(.enabled) }
                     HStack {
                         Button("Copy code and open GitHub") {
@@ -31,31 +88,27 @@ struct GitHubSettingsView: View {
                         }
                         Button("Cancel") { github.cancel() }
                     }
-                } else if github.snapshot.account == nil || github.snapshot.locked {
-                    if bundledID == nil {
-                        TextField("GitHub App client ID", text: $customID)
-                        if clientID.isEmpty {
-                            Link(
-                                "Register a read-only GitHub App",
-                                destination: URL(
-                                    string:
-                                        "https://github.com/settings/apps/new?name=Afterword%20History&url=https%3A%2F%2Fgithub.com%2Fjbonatakis%2Fafterword&issues=read&pull_requests=read&webhook_active=false&public=true"
-                                )!)
-                            Text("Enable device flow and expiring user tokens, then install the app on your selected repositories.")
-                                .font(.caption)
-                        } else {
-                            Link("Manage GitHub App registrations", destination: URL(string: "https://github.com/settings/apps")!)
+                } else if github.snapshot.account == nil || github.snapshot.locked || changingConnection {
+                    if github.snapshot.locked { Text("History is locked. Reconnect the same GitHub account to verify access.") }
+                    connectionSetup
+                    if changingConnection && !github.snapshot.locked {
+                        Button("Cancel") {
+                            if github.connecting { github.cancel() }
+                            changingConnection = false
+                            token = ""
                         }
                     }
-                    if github.snapshot.locked { Text("History is locked. Reconnect the same GitHub account to verify access.") }
-                    Button(github.snapshot.locked ? "Reconnect GitHub" : "Connect GitHub") { github.connect(clientID: clientID) }
-                        .disabled(clientID.isEmpty || github.busy)
-                }
-                if github.snapshot.account != nil {
+                } else {
                     HStack {
-                        Button("Refresh") { github.refresh() }.disabled(github.busy || github.snapshot.locked)
-                        Button("Disconnect and remove history…", role: .destructive) { disconnect = true }
+                        Button("Change connection…") {
+                            authMethod = .personalToken
+                            changingConnection = true
+                        }
+                        Button("Refresh") { github.refresh() }.disabled(github.busy)
                     }
+                }
+                if github.snapshot.account != nil && github.replacementRemovals.isEmpty {
+                    Button("Disconnect and remove history…", role: .destructive) { disconnect = true }
                 }
                 if github.busy { ProgressView().controlSize(.small) }
                 if let message = github.message { Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -95,7 +148,17 @@ struct GitHubSettingsView: View {
                     }
                 }
                 Section("Available repositories") {
-                    Link("Manage GitHub App installations", destination: URL(string: "https://github.com/settings/installations")!)
+                    if github.snapshot.method == .personalToken {
+                        Link(
+                            "Manage personal access tokens",
+                            destination: URL(string: "https://github.com/settings/personal-access-tokens")!)
+                        Text(
+                            "Missing a repository? Check the token’s resource owner, selected repositories, read permissions and organization approval, then refresh."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
+                    } else if github.snapshot.method == .app {
+                        Link("Manage GitHub App installations", destination: URL(string: "https://github.com/settings/installations")!)
+                    }
                     TextField("Filter repositories", text: $repositorySearch)
                     ForEach(remaining) { repo in
                         HStack {
@@ -108,6 +171,12 @@ struct GitHubSettingsView: View {
                 }
             }
         }.formStyle(.grouped)
+            .onChange(of: authMethod) { _, _ in token = "" }
+            .onChange(of: github.connectionVersion) { _, _ in
+                changingConnection = false
+                token = ""
+            }
+            .onDisappear { token = "" }
             .alert("Disconnect GitHub and remove local history?", isPresented: $disconnect) {
                 Button("Disconnect and remove", role: .destructive) { github.disconnect() }
                 Button("Cancel", role: .cancel) {}
