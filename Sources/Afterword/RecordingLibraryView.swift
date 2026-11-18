@@ -127,17 +127,24 @@ struct LibrarySidebar: View {
         return .activity
     }
 
+    private var rootChildren: [LibraryFilter] {
+        guard root == .activity else { return root.children }
+        return root.children.filter { child in
+            guard let source = child.source else { return false }
+            return sources.contains(source)
+        }
+    }
+
     var body: some View {
         List(selection: $selection) {
-            LibrarySidebarRow(filter: root, sources: sources, selection: $selection, expanded: $expanded)
+            LibrarySidebarRow(filter: root, children: rootChildren, selection: $selection, expanded: $expanded)
         }.listStyle(.sidebar)
     }
 }
 
 private struct LibrarySidebarRow: View {
     let filter: LibraryFilter
-    let sources: Set<ActivitySource>
-    private var children: [LibraryFilter] { filter.children.filter { $0.source.map(sources.contains) ?? true } }
+    let children: [LibraryFilter]
     @Binding var selection: LibraryFilter
     @Binding var expanded: Set<LibraryFilter>
 
@@ -155,7 +162,7 @@ private struct LibrarySidebarRow: View {
                 }
             })) {
                 ForEach(children) { child in
-                    LibrarySidebarRow(filter: child, sources: sources, selection: $selection, expanded: $expanded)
+                    LibrarySidebarRow(filter: child, children: child.children, selection: $selection, expanded: $expanded)
                 }
             } label: { label }.tag(filter)
         }

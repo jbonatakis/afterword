@@ -20,7 +20,13 @@ if [[ $# -gt 0 && "$1" != -* ]]; then
     harness="$1"
     shift
 fi
-xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
+if [[ "${1:-}" == "--optimized" ]]; then
+    shift
+    optimization=-O
+else
+    optimization=-Onone
+fi
+xcrun swiftc "$optimization" -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     -module-cache-path "$PWD/.build/module-cache" -I "$binary_dir/Modules" \
     -I Sources/CaptureBridge/include -framework CoreAudio -framework AVFoundation -lsqlite3 -framework Carbon -framework IOKit -framework EventKit \
     "$harness" Sources/Afterword/LibrarySummaryMonitor.swift Sources/Afterword/CallSummaryView.swift Sources/Afterword/MarkdownContent.swift Sources/Afterword/EmbeddingSettings.swift Sources/Afterword/RecordingLibraryModel.swift Sources/Afterword/RecordingLibraryView.swift Sources/Afterword/CodingSessions.swift Sources/Afterword/GitHubConnection.swift Sources/Afterword/GitHubViews.swift Sources/Afterword/GitHubRepositoryPicker.swift Sources/Afterword/RecordingLibraryWindow.swift Sources/Afterword/LibraryKeyboard.swift Sources/Afterword/CallEditors.swift Sources/Afterword/AttendanceEditor.swift Sources/Afterword/CalendarCoordinator.swift Sources/Afterword/CalendarViews.swift Sources/Afterword/SpeakerReviewSheet.swift Sources/Afterword/PersonVoiceClipsView.swift \
