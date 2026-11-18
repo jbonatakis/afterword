@@ -162,7 +162,7 @@ struct CodingSessionDetail: View {
                                             Text(message.role == "User" ? "You" : message.role).font(.headline)
                                             if let date = message.timestamp { Text(date.formatted()).font(.caption).foregroundStyle(.secondary) }
                                         }
-                                        if !message.text.isEmpty { Text(verbatim: message.text).textSelection(.enabled) }
+                                        if !message.text.isEmpty { MarkdownContent(markdown: message.text) }
                                         if !message.tools.isEmpty {
                                             DisclosureGroup("\(message.tools.count) tool call\(message.tools.count == 1 ? "" : "s")") {
                                                 Text(message.tools.joined(separator: ", ")).font(.caption).textSelection(.enabled)
