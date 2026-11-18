@@ -7,7 +7,7 @@ Afterword puts your GitHub.com contributions alongside recordings and coding ses
 1. Open **Settings → GitHub** and choose **Create a read-only token on GitHub**. The form requests read access for Issues and Pull requests. GitHub includes Metadata read access automatically.
 2. Choose the **Resource owner** whose repositories you want, such as your employer’s organization. Choose **Only select repositories**, select the repositories and generate the fine-grained personal access token. Each token covers one resource owner. Organizations can restrict tokens or require approval before they can read private repositories. [GitHub’s fine-grained token guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
 3. Paste the token into the secure field in Afterword and click **Connect with token**. Afterword verifies your GitHub account and saves the credential in your Mac login Keychain.
-4. Under **Available repositories**, click **Import** beside each repository you want. The default import covers your last 90 days. To import older contributions, choose **All my available history** on that repository. You can search as soon as the first contributions arrive.
+4. Open **Choose repositories…**, filter by owner or search for a repository name, and check the repositories you want. Your choices carry across searches. Turn on **Share through MCP** to share this batch with connected agents, then click **Import**. The default import covers your last 90 days. To import older contributions, choose **All my available history** on that repository. You can search as soon as the first contributions arrive.
 
 Use **Change connection…** to switch an existing GitHub App connection to a token or replace an expiring token. Use the same GitHub account to keep existing imports and sharing settings. If the replacement loses access to an imported repository, Afterword lists the affected repositories and asks before deleting their local history and sharing grants. You can keep the current connection instead.
 
@@ -40,7 +40,7 @@ Afterword verifies repository access at startup, on refresh, and about every 15 
 
 **Pause sync** keeps a repository searchable and still checks access. **Remove** deletes its local history and agent grant. **Disconnect and remove history** removes every imported repository and the Keychain credential. Offline reads show the saved snapshot and its last access check. A verified loss of repository access removes the local copy on the next check. An expired or revoked personal token, or an invalid GitHub App refresh credential, locks history and clears sharing. Reconnect the same account and choose what to share again.
 
-GitHub repositories start private to the native library. To give a connected agent access, enable **Settings → Agent Access** and explicitly share each repository. A running MCP client picks up grant changes on its next request. [MCP tools and examples](mcp.md#github-activity)
+GitHub repositories start private to the native library. To give a connected agent access, enable **Settings → Agent Access** and share the repositories you choose. For existing imports, open **Manage repository sharing…**, select the repositories, and click **Share via MCP** or **Stop sharing**. A running MCP client picks up grant changes on its next request. [MCP tools and examples](mcp.md#github-activity)
 
 ## Verify a live connection
 

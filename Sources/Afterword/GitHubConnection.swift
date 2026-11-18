@@ -114,6 +114,11 @@ struct GitHubSnapshot {
     var available: [GitHubRepository] = []
 }
 
+enum GitHubRepositoryAction {
+    case add(shared: Bool)
+    case setSharing(Bool)
+}
+
 actor GitHubWorker {
     let directory: URL
     let client: GitHubClient
@@ -210,17 +215,32 @@ actor GitHubWorker {
     func change(_ change: GitHubCoordinator.Change) throws {
         let db = try GitHubArchive(directory: directory)
         switch change {
-        case .select(let repo):
-            guard available.contains(repo) else {
-                throw RecorderError.message("Refresh GitHub access before adding this repository.")
-            }
-            try db.select(repo)
         case .remove(let id): try db.remove(id)
         case .share(let id, let on): try db.share(id, enabled: on)
         case .pause(let id, let on): try db.pause(id, enabled: on)
         case .depth(let id, let all): try db.setDepth(id, all: all)
         }
     }
+    func applyRepositories(_ ids: Set<String>, action: GitHubRepositoryAction, accountID: String) throws {
+        let db = try GitHubArchive(directory: directory)
+        guard try db.account?.id == accountID, try !db.locked else {
+            throw RecorderError.message("The GitHub connection changed. Reopen the repository picker.")
+        }
+        switch action {
+        case .add(let shared):
+            let repos = available.filter { ids.contains($0.id) }
+            guard Set(repos.map(\.id)) == ids else {
+                throw RecorderError.message("Some selected repositories are no longer available. Review your selection.")
+            }
+            try db.select(repos, shared: shared)
+        case .setSharing(let enabled):
+            guard try ids.isSubset(of: Set(db.selections().map(\.id))) else {
+                throw RecorderError.message("Some selected repositories are no longer imported. Review your selection.")
+            }
+            try db.share(ids, enabled: enabled)
+        }
+    }
+
     private func credential(_ saved: GitHubCredential, force: Bool, current: UUID) async throws -> GitHubCredential {
         guard case .app(let clientID, let oldTokens) = saved.authorization else {
             if force { throw GitHubServiceError.credentials }
@@ -332,7 +352,6 @@ actor GitHubWorker {
 
 @MainActor final class GitHubCoordinator: ObservableObject {
     enum Change {
-        case select(GitHubRepository)
         case remove(String)
         case share(String, Bool)
         case pause(String, Bool)
@@ -394,6 +413,7 @@ actor GitHubWorker {
             do { try await action() } catch { if !Task.isCancelled { message = error.localizedDescription } }
             guard current == generation else { return }
             await publish()
+            guard current == generation else { return }
             busy = false
             connecting = false
             deviceCode = nil
@@ -437,6 +457,17 @@ actor GitHubWorker {
     func discardReplacement() {
         replacementRemovals = []
         Task { await worker.discardReplacement() }
+    }
+    func applyRepositories(_ ids: Set<String>, action: GitHubRepositoryAction, accountID: String) async throws {
+        guard !ids.isEmpty else { return }
+        guard !connecting, replacementRemovals.isEmpty else {
+            throw RecorderError.message("Finish changing the GitHub connection first.")
+        }
+        try await worker.applyRepositories(ids, action: action, accountID: accountID)
+        await publish()
+        if case .add = action, !connecting, replacementRemovals.isEmpty, snapshot.account?.id == accountID {
+            run { try await self.sync() }
+        }
     }
     func change(_ change: Change) {
         switch change {

@@ -484,7 +484,43 @@ import Lookback
             if hasTokenField(settings) { break }
         }
         require(hasTokenField(settings), "GitHub settings must show a secure token field on first connection")
+        try await checkGitHubPicker(in: window)
         print("PASS native GitHub timeline, Markdown, source filters, qualified navigation, removal, and token setup")
+    }
+
+    @MainActor static func checkGitHubPicker(in window: NSWindow) async throws {
+        let api = GitHubRepository(id: "api", name: "team/core-api")
+        let warehouse = GitHubRepository(id: "data", name: "team/data-warehouse")
+        let other = GitHubRepository(id: "other", name: "other/data-warehouse")
+        let repos = [api, warehouse, other] + (0..<600).map { GitHubRepository(id: "r\($0)", name: "samples/repo-\($0)") }
+        require(GitHubRepositoryPicker.matches(repos, owner: "team", query: "DATA ware") == [warehouse],
+                "Owner and multi-word repository filters disagreed")
+        require(GitHubRepositoryPicker.matches(repos, owner: "", query: "https://github.com/team/core-api.git") == [api],
+                "Pasting a repository URL failed")
+        let exact = GitHubRepository(id: "core", name: "team/core")
+        require(GitHubRepositoryPicker.matches([api, exact], owner: "", query: "core") == [exact, api],
+                "An exact repository name should come first")
+        let host = NSHostingView(rootView: GitHubRepositoryPicker(scope: .available, available: repos, imported: [],
+                                                                  shared: [], loading: false) { _, _ in
+            require(false, "Filtering the repository picker changed stored settings")
+        })
+        window.contentView = host
+        window.setContentSize(NSSize(width: 620, height: 510))
+        await pump()
+        func descendant<T: NSView>(_ type: T.Type, in node: NSView) -> T? {
+            if let match = node as? T, (node as? NSTextField)?.isEditable != false { return match }
+            return node.subviews.lazy.compactMap { descendant(type, in: $0) }.first
+        }
+        guard let scroll = descendant(NSScrollView.self, in: host), let text = descendant(NSTextField.self, in: host),
+              window.makeFirstResponder(text), let editor = text.currentEditor() as? NSTextView else {
+            throw RecorderError.message("Native repository list or search field missing")
+        }
+        let fullHeight = scroll.documentView?.frame.height ?? 0
+        require(fullHeight > scroll.frame.height * 2, "The picker did not lay out the full repository list")
+        editor.insertText("warehouse", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        await pump()
+        require((scroll.documentView?.frame.height ?? fullHeight) < fullHeight / 2, "Typing in the repository picker did not filter the list")
+        print("PASS repository picker native list and search across 603 repositories")
     }
 
     @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {

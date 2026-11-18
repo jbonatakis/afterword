@@ -6,20 +6,14 @@ struct GitHubSettingsView: View {
     @AppStorage("githubPublicClientID") private var customID = ""
     @State private var remove: GitHubSelection?
     @State private var disconnect = false
-    @State private var repositorySearch = ""
     @State private var authMethod = GitHubConnectionMethod.personalToken
     @State private var token = ""
     @State private var changingConnection = false
+    @State private var expandedRepository: String?
     private var bundledID: String? {
         (Bundle.main.object(forInfoDictionaryKey: "AfterwordGitHubClientID") as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
     private var clientID: String { (bundledID ?? customID).trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var remaining: [GitHubRepository] {
-        let selected = Set(github.snapshot.selections.map(\.id))
-        return github.snapshot.available.filter {
-            !selected.contains($0.id) && (repositorySearch.isEmpty || $0.name.localizedCaseInsensitiveContains(repositorySearch))
-        }
-    }
     @ViewBuilder private var connectionSetup: some View {
         Picker("Connect with", selection: $authMethod) {
             ForEach(GitHubConnectionMethod.allCases, id: \.self) { method in Text(method.rawValue).tag(method) }
@@ -114,18 +108,33 @@ struct GitHubSettingsView: View {
                 if let message = github.message { Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
             }
             if github.snapshot.account != nil && !github.snapshot.locked {
+                Section("Repositories") {
+                    GitHubRepositoryPickerButton(github: github)
+                    if github.snapshot.method == .personalToken {
+                        Link(
+                            "Manage personal access tokens",
+                            destination: URL(string: "https://github.com/settings/personal-access-tokens")!)
+                        Text(
+                            "Missing a repository? Check the token’s resource owner, selected repositories, read permissions and organization approval, then refresh."
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
+                    } else if github.snapshot.method == .app {
+                        Link("Manage GitHub App installations", destination: URL(string: "https://github.com/settings/installations")!)
+                    }
+                }
                 Section("Imported repositories") {
                     if github.snapshot.selections.isEmpty {
-                        Text("Choose a repository below to import your contributions from the last 90 days.")
+                        Text("New imports start with your contributions from the last 90 days.")
                     }
                     ForEach(github.snapshot.selections) { selection in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(selection.repo.name).font(.headline)
-                            Text(
-                                selection.paused
-                                    ? "Paused · \(selection.queued) pages queued"
-                                    : "\(selection.status) · \(selection.queued) pages queued"
-                            ).font(.caption)
+                        DisclosureGroup(
+                            isExpanded: Binding(
+                                get: { expandedRepository == selection.id },
+                                set: { expanded in
+                                    expandedRepository = expanded ? selection.id : nil
+                                })
+                        ) {
+                            Text("\(selection.queued) pages queued").font(.caption)
                             if let success = selection.lastSuccess { Text("Last synced \(success.formatted())").font(.caption) }
                             if let checked = selection.checked { Text("Access checked \(checked.formatted())").font(.caption) }
                             Picker(
@@ -144,30 +153,15 @@ struct GitHubSettingsView: View {
                                 }
                                 Button("Remove…", role: .destructive) { remove = selection }
                             }
-                        }.padding(.vertical, 4)
-                    }
-                }
-                Section("Available repositories") {
-                    if github.snapshot.method == .personalToken {
-                        Link(
-                            "Manage personal access tokens",
-                            destination: URL(string: "https://github.com/settings/personal-access-tokens")!)
-                        Text(
-                            "Missing a repository? Check the token’s resource owner, selected repositories, read permissions and organization approval, then refresh."
-                        )
-                        .font(.caption).foregroundStyle(.secondary)
-                    } else if github.snapshot.method == .app {
-                        Link("Manage GitHub App installations", destination: URL(string: "https://github.com/settings/installations")!)
-                    }
-                    TextField("Filter repositories", text: $repositorySearch)
-                    ForEach(remaining) { repo in
-                        HStack {
-                            Text(repo.name)
-                            Spacer()
-                            Button("Import") { github.change(.select(repo)) }
+                        } label: {
+                            HStack {
+                                Text(selection.repo.name).lineLimit(1)
+                                Spacer()
+                                Text(selection.paused ? "Paused" : selection.status).foregroundStyle(.secondary).font(.caption)
+                                    .lineLimit(1)
+                            }
                         }
                     }
-                    if remaining.isEmpty { Text("No matching repositories available to add.").foregroundStyle(.secondary) }
                 }
             }
         }.formStyle(.grouped)
@@ -262,6 +256,7 @@ struct GitHubGrantSettings: View {
             } else if github.snapshot.selections.isEmpty {
                 Text("Choose repositories in GitHub settings to make them available here.").foregroundStyle(.secondary)
             } else {
+                GitHubRepositoryPickerButton(github: github, scope: .imported).disabled(!enabled)
                 ForEach(github.snapshot.selections) { repo in
                     Toggle(repo.repo.name, isOn: Binding(get: { repo.shared }, set: { github.change(.share(repo.id, $0)) })).disabled(
                         !enabled)

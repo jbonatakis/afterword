@@ -95,9 +95,18 @@ private final class FixtureGitHub: URLProtocol {
         try await worker.sync {}
         let original = try await worker.snapshot()
         precondition(original.method == .app && original.available.count == 2)
+        let ids = Set(original.available.map(\.id))
+        do {
+            try await worker.applyRepositories(ids.union(["missing"]), action: .add(shared: true), accountID: "U")
+            preconditionFailure("A stale selection partially imported repositories")
+        } catch RecorderError.message {}
+        let initialSelections = try db.selections()
+        precondition(initialSelections.isEmpty)
+        try await worker.applyRepositories(ids, action: .add(shared: false), accountID: "U")
+        let local = try db.selections()
+        precondition(local.count == 2 && local.allSatisfy { !$0.shared })
+        try await worker.applyRepositories(ids, action: .setSharing(true), accountID: "U")
         for repo in original.available {
-            try await worker.change(.select(repo))
-            try await worker.change(.share(repo.id, true))
             try await worker.change(.pause(repo.id, true))
         }
         let oldEpochs = try db.selections().map(\.epoch)
