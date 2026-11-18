@@ -95,10 +95,7 @@ struct EmbeddingSettingsView: View {
                 if let message = embeddings.message { Text(message).font(.caption).textSelection(.enabled) }
             }
             Section("Search index") {
-                Text(library.semanticStatus?.message ?? "Keyword search").font(.callout)
-                if let status = library.semanticStatus, status.enabled, status.total > 0 {
-                    ProgressView(value: Double(status.indexed), total: Double(status.total))
-                }
+                LibraryIndexProgress(presentation: library.searchPresentation, showBar: true)
                 Text("Indexing pauses while recording or transcribing. Participant names and speaker assignments always come from the current transcript.").font(.caption).foregroundStyle(.secondary)
                 Button("Retry indexing") { library.retrySemanticSearch() }.disabled(!embeddings.settings.enabled)
             }

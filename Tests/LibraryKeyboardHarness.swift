@@ -152,8 +152,13 @@ import RecorderCore
         require((window.firstResponder as? NSTextView)?.isEditable == true, "Command-F did not focus search (key: \(NSApp.keyWindow === window), available: \(window.canPerform(.search)), responder: \(String(describing: window.firstResponder)))")
         require(!window.canPerform(.rename) && !window.canPerform(.trash) && !window.canPerform(.playPause) && !window.canPerform(.backward), "Search input leaked shortcuts")
         await key("r", code: 15, window: window)
+        var libraryUpdates = 0
+        let typing = library.objectWillChange.sink { libraryUpdates += 1 }
         await key(" ", code: 49, window: window)
-        await key("e", code: 14, window: window); await pump()
+        await key("e", code: 14, window: window)
+        typing.cancel()
+        require(libraryUpdates == 0, "Typing submitted intermediate queries to the entire library view")
+        await pump()
         require(library.search == "r e", "Search did not accept shortcut letters")
         await key("\u{7f}", code: 51, window: window); await pump()
         require(library.search == "r " && window.attachedSheet == nil, "Backspace in search opened Trash or failed to edit")

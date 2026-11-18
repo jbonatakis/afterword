@@ -9,12 +9,25 @@ struct ParticipantAssignmentStatus {
     var error: String?
 }
 
+@MainActor final class LibrarySearchPresentation: ObservableObject {
+    @Published fileprivate(set) var text = ""
+    @Published fileprivate(set) var status: SemanticSearchStatus?
+}
+
 @MainActor final class RecordingLibraryModel: ObservableObject {
     @Published private(set) var recordings: [LibraryRecording] = []
     @Published private(set) var refreshing = false
     @Published private(set) var issues: [String] = []
     @Published var selection: String? { didSet { defaults.set(selection, forKey: "librarySelection") } }
-    @Published var search = "" { didSet { updateSearch() } }
+    let searchPresentation = LibrarySearchPresentation()
+    var search: String {
+        get { searchPresentation.text }
+        set {
+            guard newValue != search else { return }
+            searchPresentation.text = newValue
+            updateSearch()
+        }
+    }
     let coding: CodingCoordinator
     @Published private(set) var codingHits: [String: CodingHit] = [:]
     @Published private(set) var visibleCoding: [CodingSession] = []
@@ -25,7 +38,7 @@ struct ParticipantAssignmentStatus {
     let embeddings: EmbeddingCoordinator
     @Published var searchSpeaker = "" { didSet { updateSearch() } }
     @Published private(set) var speakerNames: [String] = []
-    @Published private(set) var semanticStatus: SemanticSearchStatus?
+    var semanticStatus: SemanticSearchStatus? { searchPresentation.status }
     private var semanticTimer: Timer?
     private var semanticPolling = false
     private var polledSemanticStatus: SemanticSearchStatus?
@@ -110,17 +123,19 @@ struct ParticipantAssignmentStatus {
         semanticPolling = true
         let history = searchHistory
         Task { [weak self] in
-            let result = await Task.detached(priority: .utility) {
+            let status = await Task.detached(priority: .utility) {
                 if retry { index.retrySemanticSearch() } else { index.refreshSemanticSearch() }
-                return (index.semanticStatus(allVersions: history), index.speakerNames)
+                return index.semanticStatus(allVersions: history)
             }.value
             guard let self, !self.stopped else { return }
-            let changed = self.polledSemanticStatus != result.0
-            self.polledSemanticStatus = result.0
-            if changed { self.semanticStatus = result.0 }
-            if self.speakerNames != result.1 { self.speakerNames = result.1 }
             self.semanticPolling = false
-            if (changed || retry) && !self.searching && !self.search.isEmpty { self.updateSearch(debounce: false) }
+            guard self.searchIndex === index else { return }
+            let previous = self.polledSemanticStatus
+            self.polledSemanticStatus = status
+            if previous != status { self.searchPresentation.status = status }
+            let availabilityChanged = previous?.state != status.state || previous?.model != status.model ||
+                (previous?.indexed == 0 && status.indexed > 0)
+            if (availabilityChanged || retry) && !self.searching && !self.search.isEmpty { self.updateSearch(debounce: false) }
         }
     }
     func retrySemanticSearch() { pollSemanticSearch(retry: true) }
@@ -161,7 +176,7 @@ struct ParticipantAssignmentStatus {
             do {
                 let index = try existing ?? LibrarySearchIndex(roots: roots, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL)
                 try index.useCodingArchive(in: codingDirectory)
-                return LibraryRefresh(index: index, recordings: try index.synchronize(), error: nil, issues: index.issues)
+                return LibraryRefresh(index: index, recordings: try index.synchronize(), error: nil, issues: index.issues, speakers: index.speakerNames)
             } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
         }
         scan = task
@@ -173,6 +188,7 @@ struct ParticipantAssignmentStatus {
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
             self.recordings = result.recordings; self.issues = result.issues
+            if self.speakerNames != result.speakers { self.speakerNames = result.speakers }
             self.pollSemanticSearch()
             await self.updateSearch(debounce: false)?.value
         }
@@ -180,18 +196,20 @@ struct ParticipantAssignmentStatus {
     @discardableResult func updateSearch(debounce: Bool = true) -> Task<Void, Never>? {
         searchTask?.cancel()
         let token = UUID(); searchGeneration = token
-        if LibrarySearchQuery(search).isEmpty && searchSpeaker.isEmpty {
+        if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && searchSpeaker.isEmpty {
             searchHits = [:]; resultQuery = ""; searching = false
             matchedRecordings = recordings; matchedCoding = coding.sessions; codingHits = [:]; applyFilter(); return nil
         }
         guard let index = searchIndex else { return nil }
-        searching = true
+        if !searching { searching = true }
         let query = search, history = searchHistory, speaker = searchSpeaker, project = codingProject, branch = codingBranch
         let task = Task { [weak self] in
             if debounce { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
             let work = Task.detached(priority: .userInitiated) { Result {
+                try Task.checkCancellation()
                 let calls = try index.hybridSearch(query, allVersions: history, speaker: speaker.isEmpty ? nil : speaker)
+                try Task.checkCancellation()
                 let coding = speaker.isEmpty ? try index.codingSearch(query, project: project.isEmpty ? nil : project, branch: branch.isEmpty ? nil : branch).hits : []
                 return (calls, coding)
             } }
@@ -203,7 +221,7 @@ struct ParticipantAssignmentStatus {
                 self.codingHits = Dictionary(uniqueKeysWithValues: codingResults.map { ($0.session.id, $0) })
                 self.matchedCoding = codingResults.map(\.session)
                 let hits = result.hits
-                self.semanticStatus = result.status
+                self.searchPresentation.status = result.status
                 let byID = Dictionary(uniqueKeysWithValues: self.recordings.map { ($0.id, $0) })
                 self.searchHits = Dictionary(uniqueKeysWithValues: hits.map { ($0.recordingID, $0) })
                 self.resultQuery = query
@@ -428,6 +446,7 @@ private struct LibraryRefresh: Sendable {
     let recordings: [LibraryRecording]
     let error: String?
     var issues: [String] = []
+    var speakers: [String] = []
 }
 
 enum LibraryFilter: String, CaseIterable, Identifiable {

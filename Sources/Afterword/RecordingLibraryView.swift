@@ -4,6 +4,32 @@ import RecorderCore
 
 private enum LibraryFocus: Hashable { case callList, title(String) }
 
+private struct LibrarySearchField: ViewModifier {
+    @ObservedObject var presentation: LibrarySearchPresentation
+    let setQuery: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content.searchable(text: Binding(get: { presentation.text }, set: setQuery),
+                           placement: .toolbar, prompt: "Search calls and coding sessions")
+    }
+}
+
+struct LibraryIndexProgress: View {
+    @ObservedObject var presentation: LibrarySearchPresentation
+    var showBar = false
+    var body: some View {
+        if let status = presentation.status, status.enabled {
+            if showBar {
+                Text(status.message).font(.callout)
+                if status.total > 0 { ProgressView(value: Double(status.indexed), total: Double(status.total)) }
+            } else {
+                Text(status.message).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 12).padding(.top, 8)
+            }
+        } else if showBar { Text("Keyword search").font(.callout) }
+    }
+}
+
 struct RecordingLibraryView: View {
     @ObservedObject var library: RecordingLibraryModel
     @ObservedObject var recorder: RecordingCoordinator
@@ -97,10 +123,7 @@ struct RecordingLibraryView: View {
                         .accessibilityIdentifier("recording-list")
                 }
                 Divider()
-                if let status = library.semanticStatus, status.enabled {
-                    Text(status.message).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 12).padding(.top, 8)
-                }
+                LibraryIndexProgress(presentation: library.searchPresentation)
                 HStack {
                     if library.filter != .coding {
                         Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
@@ -126,7 +149,7 @@ struct RecordingLibraryView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .searchable(text: $library.search, placement: .toolbar, prompt: "Search calls and coding sessions")
+        .modifier(LibrarySearchField(presentation: library.searchPresentation, setQuery: { library.search = $0 }))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
@@ -230,7 +253,6 @@ struct RecordingLibraryView: View {
             if let recording = library.selectedRecording { playback.select(recording) }
             else { playback.clear() }
         }
-        .onChange(of: library.search) { _, _ in reconcileSelection() }
         .onChange(of: library.filter) { _, _ in reconcileSelection() }
         .onChange(of: library.renamingID) { previous, current in
             if previous != nil && current == nil { focus = .callList }

@@ -148,7 +148,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         semantic.refresh(calls, codingArchive: codingArchive)
     }
     public func retrySemanticSearch() { semantic.retry(); refreshSemanticSearch() }
-    public func semanticStatus(allVersions: Bool = false) -> SemanticSearchStatus { semantic.snapshot(allVersions: allVersions).0 }
+    public func semanticStatus(allVersions: Bool = false) -> SemanticSearchStatus { semantic.progress(allVersions: allVersions) }
     private func remove(_ id: String) throws {
         try db.execute("DELETE FROM documents WHERE id IN (SELECT key FROM versions WHERE call_id = ?)", [id])
         try db.execute("DELETE FROM passages WHERE key IN (SELECT key FROM versions WHERE call_id = ?)", [id])

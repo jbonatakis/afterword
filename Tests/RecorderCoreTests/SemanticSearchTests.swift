@@ -93,6 +93,30 @@ final class SemanticSearchTests: XCTestCase {
         try enable(); engine.refresh(calls); settle(engine)
         XCTAssertEqual(counter.value, 6)
     }
+
+    func testPollingPicksUpAnotherIndexersBatchAndResumesAtMissingPassages() throws {
+        let model = EmbeddingModel.catalog[0]
+        try enable(model)
+        let priority = EmbeddingPriority()
+        try priority.setBusy(true, directory: root)
+        let counter = Counter()
+        let engine = SemanticSearchEngine(directory: root) { texts, model, _, _ in
+            counter.add(texts.count); return texts.map { _ in self.vector(model) }
+        }
+        let calls = [try call()]
+        engine.refresh(calls)
+        let chunks = SemanticChunker.chunks(calls[0])
+        let db = try SearchDatabase(url: root.appendingPathComponent("Vectors-v1.sqlite"))
+        let encoded = String(decoding: try JSONEncoder().encode(vector(model)), as: UTF8.self)
+        try db.execute("INSERT INTO vectors VALUES (?,?,?)", [model.cacheKey, chunks[0].hash, encoded])
+        engine.refresh(calls)
+        XCTAssertEqual(engine.progress(allVersions: false).indexed, 1)
+        XCTAssertEqual(engine.progress(allVersions: false), engine.snapshot(allVersions: false).0)
+        try priority.setBusy(false, directory: root)
+        engine.refresh(calls); settle(engine)
+        XCTAssertEqual(counter.value, chunks.count - 1)
+        XCTAssertEqual(engine.progress(allVersions: false).state, "ready")
+    }
     func testRecordingPriorityPausesAcrossInstances() throws {
         try enable()
         let priority = EmbeddingPriority(); try priority.setBusy(true, directory: root)
