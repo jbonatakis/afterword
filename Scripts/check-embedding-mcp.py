@@ -3,9 +3,26 @@
 Uses only synthetic speech and private temporary configuration. Does not change
 production settings. Arguments: MCP executable, downloaded model directory.
 """
-import asyncio, fcntl, json, os, pathlib, sys, tempfile, time, wave
+import asyncio, fcntl, json, os, pathlib, subprocess, sys, tempfile, time, wave
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+def check_batched_vectors(worker, model, pooling, directory):
+    texts = ["Draw the map contours.", "A violin has four strings.", "Long passage. " * 600, "Save the selected palette."]
+    input_path, output_path = directory / "input.json", directory / "output.json"
+
+    def embed(passages):
+        input_path.write_text(json.dumps(passages))
+        subprocess.run([worker, model, pooling, input_path, output_path], check=True, stderr=subprocess.DEVNULL)
+        return json.loads(output_path.read_text())
+
+    together = embed(texts)
+    assert len(together) == len(texts)
+    for passage, vector in zip(texts, together):
+        single, = embed([passage])
+        assert len(vector) == len(single)
+        # Normalized vectors should retain their direction regardless of batch neighbors.
+        assert abs(1 - sum(a * b for a, b in zip(single, vector))) < 0.001
 
 async def main():
     executable = pathlib.Path(sys.argv[1]).resolve()
@@ -33,6 +50,8 @@ async def main():
                 off=await call('list_calls',{})
                 assert off['search_status']['state']=='disabled'
                 for model_id,filename in models:
+                    check_batched_vectors(executable.with_name("EmbeddingWorker"), weights/filename,
+                                          "cls" if model_id == "bge-small" else "last", base)
                     (embedding/'Settings.json').write_text(json.dumps(dict(enabled=True,modelID=model_id)))
                     deadline=time.monotonic()+30
                     while True:
