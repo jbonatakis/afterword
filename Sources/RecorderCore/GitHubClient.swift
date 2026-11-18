@@ -34,7 +34,7 @@ public struct GitHubClient: Sendable {
         config.timeoutIntervalForRequest = 45
         self.session = session ?? URLSession(configuration: config)
     }
-    private func request(_ url: URL, token: String? = nil, body: Data? = nil) async throws -> Object {
+    private func request(_ url: URL, token: String? = nil, body: Data? = nil, acceptsOAuthErrors: Bool = false) async throws -> Object {
         try Task.checkCancellation()
         var request = URLRequest(url: url)
         request.setValue("Afterword", forHTTPHeaderField: "User-Agent")
@@ -48,7 +48,6 @@ public struct GitHubClient: Sendable {
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw GitHubServiceError.response("Invalid GitHub response.") }
-        if http.statusCode == 401 { throw GitHubServiceError.credentials }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? Object
         let message = json?["message"] as? String ?? ""
         let limited = (json?["errors"] as? [Object])?.contains { $0["type"] as? String == "RATE_LIMITED" } == true
@@ -62,13 +61,32 @@ public struct GitHubClient: Sendable {
             let reset = http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
             throw GitHubServiceError.retry(delay ?? reset ?? Date().addingTimeInterval(limited ? 900 : 60))
         }
+        // GitHub reports OAuth protocol errors on both successful and 4xx HTTP responses.
+        if acceptsOAuthErrors, (400..<500).contains(http.statusCode), let json, json["error"] is String { return json }
+        if http.statusCode == 401 { throw GitHubServiceError.credentials }
         guard (200..<300).contains(http.statusCode), let json else {
             throw GitHubServiceError.response("GitHub returned HTTP \(http.statusCode). Check the installation and retry.")
         }
         return json
     }
     private func oauth(_ path: String, _ values: [String: String]) async throws -> Object {
-        try await request(URL(string: "https://github.com/login/" + path)!, body: JSONEncoder().encode(values))
+        let response = try await request(
+            URL(string: "https://github.com/login/" + path)!, body: JSONEncoder().encode(values), acceptsOAuthErrors: true)
+        switch response["error"] as? String {
+        case nil, "authorization_pending", "slow_down": return response
+        case "device_flow_disabled":
+            throw GitHubServiceError.response(
+                "In your GitHub App settings, under “Identifying and authorizing users”, select “Enable Device Flow” and save. Then click Connect GitHub again.")
+        case "incorrect_client_credentials", "invalid_client":
+            if values["grant_type"] == "refresh_token" { throw GitHubServiceError.credentials }
+            throw GitHubServiceError.response("Copy the Client ID from your GitHub App’s General settings into Afterword and try again.")
+        case "bad_refresh_token", "invalid_grant": throw GitHubServiceError.credentials
+        case "expired_token":
+            if values["grant_type"] == "refresh_token" { throw GitHubServiceError.credentials }
+            throw GitHubServiceError.expired
+        case "access_denied": throw GitHubServiceError.denied
+        default: throw GitHubServiceError.response("GitHub rejected the authorization request. Check your GitHub App settings and retry.")
+        }
     }
     public func deviceCode(clientID: String) async throws -> GitHubDeviceCode {
         let json = try await oauth("device/code", ["client_id": clientID, "scope": "offline_access"])
@@ -101,8 +119,6 @@ public struct GitHubClient: Sendable {
             case nil: return try tokens(json)
             case "authorization_pending": continue
             case "slow_down": interval = max(interval + 5, json["interval"] as? Int ?? 0)
-            case "expired_token": throw GitHubServiceError.expired
-            case "access_denied": throw GitHubServiceError.denied
             default: throw GitHubServiceError.response("GitHub could not authorize this device.")
             }
         }
@@ -111,9 +127,6 @@ public struct GitHubClient: Sendable {
     public func renew(clientID: String, refresh: String) async throws -> GitHubTokens {
         let json = try await oauth(
             "oauth/access_token", ["client_id": clientID, "refresh_token": refresh, "grant_type": "refresh_token"])
-        if ["bad_refresh_token", "invalid_grant", "expired_token"].contains(json["error"] as? String ?? "") {
-            throw GitHubServiceError.credentials
-        }
         return try tokens(json)
     }
     private func rest(_ path: String, token: String) async throws -> Object {

@@ -34,15 +34,18 @@ struct GitHubSettingsView: View {
                 } else if github.snapshot.account == nil || github.snapshot.locked {
                     if bundledID == nil {
                         TextField("GitHub App client ID", text: $customID)
-                        Link(
-                            "Register a read-only GitHub App",
-                            destination: URL(
-                                string:
-                                    "https://github.com/settings/apps/new?name=Afterword%20History&url=https%3A%2F%2Fgithub.com%2Fjbonatakis%2Fafterword&issues=read&pull_requests=read&webhook_active=false&public=true"
-                            )!)
-                        Text(
-                            "Enable device flow and expiring user tokens. On the registration page, choose Install App and select your repositories."
-                        ).font(.caption)
+                        if clientID.isEmpty {
+                            Link(
+                                "Register a read-only GitHub App",
+                                destination: URL(
+                                    string:
+                                        "https://github.com/settings/apps/new?name=Afterword%20History&url=https%3A%2F%2Fgithub.com%2Fjbonatakis%2Fafterword&issues=read&pull_requests=read&webhook_active=false&public=true"
+                                )!)
+                            Text("Enable device flow and expiring user tokens, then install the app on your selected repositories.")
+                                .font(.caption)
+                        } else {
+                            Link("Manage GitHub App registrations", destination: URL(string: "https://github.com/settings/apps")!)
+                        }
                     }
                     if github.snapshot.locked { Text("History is locked. Reconnect the same GitHub account to verify access.") }
                     Button(github.snapshot.locked ? "Reconnect GitHub" : "Connect GitHub") { github.connect(clientID: clientID) }

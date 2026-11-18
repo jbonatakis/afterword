@@ -98,8 +98,23 @@ final class GitHubClientTests: XCTestCase {
             } catch GitHubServiceError.retry(let until) { XCTAssertGreaterThan(until.timeIntervalSinceNow, 175) }
         }
     }
+    func testDisabledDeviceFlowExplainsHowToEnableIt() throws {
+        GitHubStub.respond = { _, _ in
+            (400, [:], ["error": "device_flow_disabled", "error_description": "Device Flow must be explicitly enabled for this App"])
+        }
+        try exercise { api in
+            do {
+                _ = try await api.deviceCode(clientID: "public")
+                throw RecorderError.message("Disabled device flow was accepted")
+            } catch GitHubServiceError.response(let message) {
+                XCTAssertTrue(message.contains("Enable Device Flow"))
+                XCTAssertTrue(message.contains("Identifying and authorizing users"))
+            }
+        }
+    }
     func testInstallationPagesDeviceRefreshAndRateLimit() throws {
         var pages: [String] = []
+        var polls = 0
         GitHubStub.respond = { req, body in
             let path = req.url!.path
             pages.append(path)
@@ -109,7 +124,11 @@ final class GitHubClientTests: XCTestCase {
             }
             if path == "/login/oauth/access_token" {
                 XCTAssertNil(body["client_secret"])
-                if body["refresh_token"] as? String == "expired" { return (200, [:], ["error": "bad_refresh_token"]) }
+                if body["device_code"] != nil {
+                    polls += 1
+                    if polls == 1 { return (400, [:], ["error": "authorization_pending"]) }
+                }
+                if body["refresh_token"] as? String == "expired" { return (400, [:], ["error": "bad_refresh_token"]) }
                 return (200, [:], ["access_token": "rotated", "refresh_token": "new", "expires_in": 28800])
             }
             XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
@@ -138,6 +157,7 @@ final class GitHubClientTests: XCTestCase {
             let code = try await api.deviceCode(clientID: "public")
             let authorized = try await api.authorize(clientID: "public", code: code)
             XCTAssertEqual(authorized.refresh, "new")
+            XCTAssertEqual(polls, 2)
             let renewed = try await api.renew(clientID: "public", refresh: "old")
             XCTAssertEqual(renewed.access, "rotated")
             do {
