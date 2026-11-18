@@ -280,12 +280,35 @@ public final class AgentLibrary {
                 let byID = Dictionary(uniqueKeysWithValues: filteredCalls.map { ($0.recording.id, $0) })
                 let result = try index.hybridSearch(query, keywordOnly: keyword, recordingIDs: Set(byID.keys))
                 status = result.status; searchRevision += result.revision
+                let parsed = LibrarySearchQuery(query)
+                let versionKeys = Set(result.hits.compactMap { hit -> String? in
+                    guard let call = byID[hit.recordingID], let version = call.recording.transcripts.first(where: { $0.id == hit.versionID }) else { return nil }
+                    return call.versionID(version)
+                })
+                let lexical = try index.rankedLexicalExcerpts(parsed, versions: versionKeys)
                 callItems = result.hits.compactMap { hit in
                     guard let call = byID[hit.recordingID] else { return nil }
                     var item: [String: Any] = ["kind": "call", "call_id": call.id, "title": call.recording.name,
                         "date": AgentJSON.date(call.recording.date), "text": hit.snippet ?? call.recording.name,
                         "paragraph_ids": hit.paragraphIDs, "summary_match": hit.summaryMatch]
-                    item["version_id"] = call.recording.transcripts.first(where: { $0.id == hit.versionID }).map(call.versionID)
+                    if let version = call.recording.transcripts.first(where: { $0.id == hit.versionID }) {
+                        let key = call.versionID(version)
+                        item["version_id"] = key
+                        let paragraphs = version.document?.paragraphs ?? []
+                        let semantic = result.excerptChunks[version.id, default: []].compactMap { CallExcerpt.semantic($0, paragraphs: paragraphs) }
+                        let excerpts = CallExcerpt.select(query: parsed, lexical: lexical[key, default: []], semantic: semantic)
+                        if let first = excerpts.first {
+                            item["text"] = first.text
+                            item["paragraph_ids"] = first.ids
+                            if excerpts.count > 1 {
+                                item["more_passages"] = excerpts.dropFirst().map { ["text": $0.text, "paragraph_ids": $0.ids] as [String: Any] }
+                            }
+                        } else if let first = hit.paragraphIDs.first, paragraphs.indices.contains(first) {
+                            // A speaker-name match can have no matching words in the body.
+                            item["text"] = String(paragraphs[first].text.prefix(CallExcerpt.characterLimit))
+                            item["paragraph_ids"] = [first]
+                        }
+                    }
                     return item
                 }
             }

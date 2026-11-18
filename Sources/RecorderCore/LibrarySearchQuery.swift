@@ -30,9 +30,15 @@ public struct LibrarySearchQuery: Sendable {
             (string.substring(with: $0.range).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")), $0.range)
         }
     }
+    private var ftsTerms: [String] {
+        terms.map { "\"" + $0.words.joined(separator: " ") + "\"" + ($0.prefix ? "*" : "") }
+    }
     var expression: String? {
         guard !terms.isEmpty else { return nil }
-        return terms.map { "\"" + $0.words.joined(separator: " ") + "\"" + ($0.prefix ? "*" : "") }.joined(separator: " AND ")
+        return ftsTerms.joined(separator: " AND ")
+    }
+    var excerptExpression: String? {
+        terms.isEmpty ? nil : "body : (" + ftsTerms.joined(separator: " OR ") + ")"
     }
     // Evidence can span paragraphs or fields. The document query establishes
     // eligibility; this OR query finds the paragraphs contributing its terms.

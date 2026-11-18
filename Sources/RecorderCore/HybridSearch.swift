@@ -4,11 +4,13 @@ public struct LibrarySearchResult: Sendable {
     public let hits: [LibrarySearchHit]
     public let status: SemanticSearchStatus
     public let revision: String
+    var excerptChunks: [String: [SemanticChunk]] = [:]
 }
 struct PassageSearchResult {
     let passages: [LibrarySearchPassage]
     let status: SemanticSearchStatus
     let revision: String
+    var excerptChunks: [String: [SemanticChunk]] = [:]
 }
 
 extension LibrarySearchQuery {
@@ -129,7 +131,7 @@ extension LibrarySearchIndex {
             if a.versionID != b.versionID { return a.versionID < b.versionID }
             return a.context.lowerBound < b.context.lowerBound
         }
-        return .init(passages: ranked.map(\.0), status: status, revision: revision)
+        return .init(passages: ranked.map(\.0), status: status, revision: revision, excerptChunks: matchingChunks)
     }
     public func hybridSearch(_ text: String, allVersions: Bool = false, speaker: String? = nil, keywordOnly: Bool = false, recordingIDs: Set<String>? = nil) throws -> LibrarySearchResult {
         let eligible = calls.filter { recordingIDs == nil || recordingIDs!.contains($0.recording.id) }
@@ -155,6 +157,6 @@ extension LibrarySearchIndex {
             if scores[a.recordingID] != scores[b.recordingID] { return scores[a.recordingID, default: 0] > scores[b.recordingID, default: 0] }
             return a.recordingID < b.recordingID
         }
-        return .init(hits: hits, status: result.status, revision: result.revision)
+        return .init(hits: hits, status: result.status, revision: result.revision, excerptChunks: result.excerptChunks)
     }
 }

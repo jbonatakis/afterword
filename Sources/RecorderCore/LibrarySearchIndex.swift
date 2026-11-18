@@ -194,6 +194,21 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         let rows = try db.rows("SELECT key, paragraph, snippet(passages, 3, '', '', ' … ', 28) FROM passages WHERE passages MATCH ? ORDER BY CAST(paragraph AS INTEGER)", [expression])
         return Dictionary(grouping: rows, by: { $0[0] }).mapValues { $0.map { (Int($0[1])!, $0[2]) } }
     }
+    func rankedLexicalExcerpts(_ query: LibrarySearchQuery, versions: Set<String>) throws -> [String: [CallExcerpt]] {
+        guard !versions.isEmpty, let expression = query.excerptExpression else { return [:] }
+        lock.lock(); defer { lock.unlock() }
+        try beginRead(); defer { try? db.execute("ROLLBACK") }
+        let rows = try db.rows("""
+            SELECT key, paragraph, snippet(passages, 3, '', '', ' … ', 28) FROM passages
+            WHERE passages MATCH ? ORDER BY bm25(passages), key, CAST(paragraph AS INTEGER)
+            """, [expression])
+        var excerpts: [String: [CallExcerpt]] = [:]
+        for row in rows where versions.contains(row[0]) {
+            guard let id = Int(row[1]) else { continue }
+            excerpts[row[0], default: []].append(.init(text: String(row[2].prefix(CallExcerpt.characterLimit)), ids: [id]))
+        }
+        return excerpts
+    }
     public func search(_ text: String, allVersions: Bool = false) throws -> [LibrarySearchHit] {
         lock.lock(); defer { lock.unlock() }
         try beginRead(); defer { try? db.execute("ROLLBACK") }

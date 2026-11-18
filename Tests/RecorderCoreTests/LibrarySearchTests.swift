@@ -46,6 +46,19 @@ final class LibrarySearchTests: XCTestCase {
         try AgentAccessStore.save(.init(enabled: true, folders: [root.path]), directory: state)
         return AgentLibrary(directory: state)
     }
+    func testActivityExcerptQuotesAndCitationsInKeywordMode() throws {
+        try fixture(text: ["We need a spare part.", "Here is a receipt.",
+                           "The spare part receipt is on file.", "Another unrelated spare."])
+        let library = try service()
+        let result = try library.call("search_activity", arguments: ["source": "calls", "mode": "keyword", "query": "\"spare part receipt\""])
+        let item = try XCTUnwrap((result["items"] as? [[String: Any]])?.first)
+        XCTAssertEqual(item["paragraph_ids"] as? [Int], [2])
+        XCTAssertTrue((item["text"] as? String)?.contains("spare part receipt") == true)
+        XCTAssertNil(item["more_passages"])
+        let transcript = try library.call("get_transcript", arguments: ["call_id": try XCTUnwrap(item["call_id"]), "version_id": try XCTUnwrap(item["version_id"])])
+        XCTAssertEqual((transcript["items"] as? [[String: Any]])?[2]["text"] as? String, item["text"] as? String)
+    }
+
     func testDirectoryRenameRefreshesExistingTranscriptSearchAndAgentRevision() throws {
         let raw = "invite@example.test"
         let folder = try fixture(text: ["Hello", "Discuss the budget"])
