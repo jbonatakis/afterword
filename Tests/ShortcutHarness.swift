@@ -30,7 +30,7 @@ import RecorderCore
         let previousApp = NSWorkspace.shared.frontmostApplication
         let rawName = "AfterwordShortcutCheck_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let name = KeyboardShortcuts.Name(rawName, initial: initial)
-        let shortcut = RecordingShortcut(name: name)
+        let shortcut = RecordingShortcut(name: name, register: false)
         defer {
             shortcut.shutdown()
             UserDefaults.standard.removeObject(forKey: "KeyboardShortcuts_" + rawName)
@@ -51,7 +51,13 @@ import RecorderCore
             case .none: break
             }
         }
-        require(shortcut.issue == nil && KeyboardShortcuts.isEnabled(for: name), "Initial global registration failed")
+        require(!KeyboardShortcuts.isEnabled(for: name), "An inactive source registered its shortcut")
+        shortcut.start()
+        require(KeyboardShortcuts.isEnabled(for: name), "Enabling the source failed to register its shortcut")
+        shortcut.shutdown()
+        require(!KeyboardShortcuts.isEnabled(for: name), "Disabling the source kept its shortcut registered")
+        shortcut.start()
+        require(shortcut.issue == nil && KeyboardShortcuts.isEnabled(for: name), "Re-enabling the source failed to restore its shortcut")
         require(name.shortcut == initial, "Initial shortcut not stored")
 
         // A duplicate registration proves this key combination is reserved by
@@ -61,7 +67,8 @@ import RecorderCore
                                         EventHotKeyID(signature: 0x43525453, id: 1), GetApplicationEventTarget(), 0, &duplicate)
         if let duplicate { UnregisterEventHotKey(duplicate) }
         require(status != noErr, "Shortcut was not reserved globally")
-        print("PASS default shortcut and global registration")
+        print("PASS global shortcut registration, release, and restoration")
+        if CommandLine.arguments.contains("--registration-only") { return }
 
         guard CGPreflightPostEventAccess() else {
             print("SKIP key delivery/UI automation: keyboard event posting is not already authorized. No permission was requested.")

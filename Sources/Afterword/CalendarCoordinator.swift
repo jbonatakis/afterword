@@ -99,7 +99,7 @@ actor CalendarReader: CalendarReading {
         do { directory = try PeopleDirectory.load(from: directoryURL) } catch { directoryError = error.localizedDescription }
         authorized = hasAccess()
     }
-    var locked: Bool { recorder?.locked ?? true }
+    var locked: Bool { recorder?.sourceEnabled != true || recorder?.locked == true }
     var canStart: Bool { connected && authorized && !locked && directoryError == nil && !directory.selfEmails.isEmpty && recorder?.noticesAccepted == true }
     var startHelp: String? {
         if !connected || !authorized { return "Connect macOS Calendar and allow access in Calendar settings first." }
@@ -109,7 +109,7 @@ actor CalendarReader: CalendarReading {
         return directoryError
     }
     func startMonitoring(refreshImmediately: Bool = true) {
-        guard connected, timer == nil else { return }
+        guard recorder?.sourceEnabled == true, connected, timer == nil else { return }
         observers.append(NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         })
@@ -160,6 +160,7 @@ actor CalendarReader: CalendarReading {
     func shutdown() {
         connectionGeneration = UUID(); connecting = false; loading = false
         stopMonitoring()
+        reminder = nil
         upcomingWindow?.close(); peopleWindow?.close()
     }
     func disconnect() {
@@ -218,6 +219,7 @@ actor CalendarReader: CalendarReading {
         }
     }
     @discardableResult func refresh() -> Task<Void, Never>? {
+        guard recorder?.sourceEnabled == true else { return nil }
         refreshTask?.cancel(); generation = UUID()
         let generation = generation
         authorized = hasAccess()

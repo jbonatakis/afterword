@@ -275,6 +275,7 @@ actor GitHubWorker {
     }
 
     func sync(update: @Sendable () async -> Void) async throws {
+        try Task.checkCancellation()
         guard GitHubArchive.exists(in: directory) else { return }
         let db = try GitHubArchive(directory: directory)
         guard let viewer = try db.account else { return }
@@ -375,11 +376,12 @@ actor GitHubWorker {
         worker = GitHubWorker(directory: directory)
     }
     func start() {
-        refresh()
+        guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in Task { @MainActor in self?.refresh() } }
+        refresh()
     }
     func stop() {
-        timer?.invalidate()
+        timer?.invalidate(); timer = nil
         cancel()
     }
     func cancel() {
@@ -391,6 +393,7 @@ actor GitHubWorker {
         deviceCode = nil
     }
     private func publish() async {
+        guard !Task.isCancelled else { return }
         let current = generation
         do {
             let next = try await worker.snapshot()
@@ -399,6 +402,7 @@ actor GitHubWorker {
             snapshot = next
             if historyChanged { changed?() }
         } catch {
+            guard current == generation else { return }
             snapshot = .init()
             message = error.localizedDescription
             changed?()
@@ -424,7 +428,7 @@ actor GitHubWorker {
         try await worker.sync { [weak self] in await self?.publish() }
     }
     func refresh() {
-        guard task == nil else { return }
+        guard timer != nil, task == nil else { return }
         run {
             await self.publish()
             try await self.sync()

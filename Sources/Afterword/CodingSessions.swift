@@ -14,6 +14,7 @@ private actor CodingImportWorker {
     init(directory: URL) { self.directory = directory }
 
     func refresh(change: CodingCoordinator.Change?, discover: Bool) throws -> CodingSnapshot {
+        try Task.checkCancellation()
         if change == nil && !CodingArchive.exists(in: directory) {
             return .init(settings: nil, available: [], accounts: [], sessions: [], issue: nil)
         }
@@ -55,13 +56,19 @@ private actor CodingImportWorker {
         worker = CodingImportWorker(directory: directory)
     }
     func start() {
-        refresh()
+        guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in if self?.enabled == true { self?.refresh() } }
         }
+        refresh()
     }
-    func stop() { timer?.invalidate(); task?.cancel() }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        task?.cancel(); task = nil; busy = false
+        wantsDiscovery = false; pendingChanges = []
+    }
     func refresh(_ change: Change? = nil, discover: Bool = false) {
+        guard timer != nil else { return }
         guard !busy else {
             if let change { pendingChanges.append(change) }
             wantsDiscovery = wantsDiscovery || discover
@@ -82,7 +89,10 @@ private actor CodingImportWorker {
                 if discover || !rules.folders.isEmpty || !projects.isEmpty || !providers.contains(.codex) { accounts = next.accounts }
                 if discover || !enabled { available = next.available }
                 if updated { changed?() }
-            } catch { issue = error.localizedDescription }
+            } catch {
+                guard !Task.isCancelled else { return }
+                issue = error.localizedDescription
+            }
             busy = false
             if !pendingChanges.isEmpty || wantsDiscovery {
                 let next = pendingChanges.isEmpty ? nil : pendingChanges.removeFirst()

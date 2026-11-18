@@ -33,12 +33,15 @@ import RecorderCore
         guard let recording else { return nil }
         return recording.lastPathComponent == RecordingTrack.mixed.filename ? recording.deletingLastPathComponent().lastPathComponent : recording.lastPathComponent
     }
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, loadRecording: Bool = true) {
         self.defaults = defaults
         let saved = defaults.string(forKey: "transcriptionModel")
         selectedID = SpeechModel.catalog.first { $0.id == saved }?.id ?? SpeechModel.catalog[0].id
         autoTranscribe = defaults.bool(forKey: "autoTranscribe")
         reduceSpeakerBleed = SpeakerBleedReduction.preference(in: defaults)
+        if loadRecording { restoreRecording() }
+    }
+    func restoreRecording() {
         if let path = defaults.string(forKey: "transcriptionRecording"), FileManager.default.fileExists(atPath: path) {
             recording = URL(fileURLWithPath: path)
         }

@@ -6,8 +6,9 @@ import IOKit.pwr_mgt
 import RecorderCore
 
 @MainActor final class RecordingCoordinator: ObservableObject {
-    let transcription = TranscriptionCoordinator()
-    let shortcut = RecordingShortcut()
+    let transcription: TranscriptionCoordinator
+    lazy var shortcut = RecordingShortcut(register: false)
+    private(set) var sourceEnabled = false
     let peopleURL: URL
     lazy var calendar = CalendarCoordinator(recorder: self, directoryURL: peopleURL)
     @Published private(set) var state: RecordingState = .idle {
@@ -61,12 +62,30 @@ import RecorderCore
         case .recoverable: return "Recoverable recording"
         }
     }
-    init(peopleURL: URL? = nil) {
+    init(peopleURL: URL? = nil, enabled: Bool = true) {
+        transcription = TranscriptionCoordinator(loadRecording: false)
         self.peopleURL = peopleURL ?? PeopleDirectory.fileURL
         destination = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music/Call Recordings").path, isDirectory: true)
         noticesAccepted = UserDefaults.standard.bool(forKey: "noticesAccepted")
         if let data = defaults.data(forKey: "selection"), let selection = try? JSONDecoder().decode(MicrophoneSelection.self, from: data), case .device(let uid) = selection { selectedUID = uid }
         if let data = defaults.data(forKey: "channels"), let choices = try? JSONDecoder().decode([String: ChannelPreference].self, from: data) { channelPreferences = choices }
+        if enabled { setSourceEnabled(true) }
+    }
+
+    func setSourceEnabled(_ enabled: Bool) {
+        guard enabled != sourceEnabled, !locked else { return }
+        sourceEnabled = enabled
+        guard enabled else {
+            shortcut.shutdown()
+            observers.removeAll(); preferenceObservers.removeAll()
+            for token in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
+            workspaceObservers.removeAll()
+            engine = nil; resolved = nil; devices = []; selectedChannel = -1
+            message = nil; recoveries = []
+            return
+        }
+        transcription.restoreRecording()
+        shortcut.start()
         engine = RecordingEngine { [weak self] event in Task { @MainActor in self?.receive(event) } }
         do { observers = try DeviceCatalog.observe { [weak self] in Task { @MainActor in self?.refreshDevices() } } }
         catch { message = error.localizedDescription }
@@ -82,7 +101,7 @@ import RecorderCore
         shortcut.onToggle = { [weak self] in self?.toggleRecording() }
     }
     func refreshDevices() {
-        guard !locked else { return }
+        guard sourceEnabled, !locked else { return }
         do {
             devices = try DeviceCatalog.inputs()
             resolved = try DeviceSelection.resolve(selection, devices: devices, defaultID: DeviceCatalog.defaultInputID())
@@ -121,7 +140,7 @@ import RecorderCore
         if panel.runModal() == .OK, let url = panel.url { destination = url; defaults.set(url.path, forKey: "destination") }
     }
     func start(preview: Bool = false, callDetails: CallDetails? = nil) {
-        guard !locked else { return }
+        guard sourceEnabled, !locked else { return }
         message = nil; savedFile = nil; refreshDevices()
         guard let resolved else { return }
         guard let channel = DeviceSelection.channel(for: resolved, preferences: channelPreferences) else {
@@ -190,13 +209,13 @@ import RecorderCore
     func refreshRecoveries() {
         Task { [weak self] in
             let sessions = await Task.detached(priority: .utility) { Recovery.scan() }.value
-            guard let self, !self.locked else { return }
+            guard let self, self.sourceEnabled, !self.locked else { return }
             self.recoveries = sessions
             if !sessions.isEmpty && self.state == .idle && self.savedFile == nil { self.lifecycle.finish(.recoverable); self.state = .recoverable }
         }
     }
     func recover(_ candidate: RecoveryCandidate, useCurrentDestination: Bool = false) {
-        guard !locked, candidate.canRecover else { return }
+        guard sourceEnabled, !locked, candidate.canRecover else { return }
         lifecycle.finish(.finalizing); state = .finalizing; message = nil
         engine?.recover(candidate, destination: useCurrentDestination ? destination : nil)
     }

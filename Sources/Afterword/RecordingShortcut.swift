@@ -6,7 +6,7 @@ extension KeyboardShortcuts.Name {
     static let toggleCallRecording = Self("toggleCallRecording", initial: .init(.r, modifiers: [.control, .option, .command]))
 }
 
-/// Registers at app launch, independent of whether the menu or Settings has opened.
+/// Active while the Recordings source is enabled.
 @MainActor final class RecordingShortcut: ObservableObject {
     let name: KeyboardShortcuts.Name
     @Published private(set) var label = ""
@@ -14,8 +14,12 @@ extension KeyboardShortcuts.Name {
     var onToggle: (() -> Void)?
     private var refreshTask: Task<Void, Never>?
 
-    init(name: KeyboardShortcuts.Name = .toggleCallRecording) {
+    init(name: KeyboardShortcuts.Name = .toggleCallRecording, register: Bool = true) {
         self.name = name
+        if register { start() }
+    }
+
+    func start() {
         // Key-up produces one action per press, including when the key is held.
         KeyboardShortcuts.onKeyUp(for: name) { [weak self] in self?.onToggle?() }
         refresh()
