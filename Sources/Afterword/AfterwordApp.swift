@@ -1,23 +1,35 @@
 import SwiftUI
+import Combine
 import AppKit
 import CoreAudio
 import RecorderCore
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-    let recorder = RecordingCoordinator()
+    let recorder = RecordingCoordinator(enabled: false)
     lazy var library = RecordingLibraryModel(recorder: recorder)
     lazy var playback = RecordingPlayback(recorder: recorder)
+    private var sourceSubscription: AnyCancellable?
     private var statusItem: RecorderStatusItem?
     private lazy var libraryWindow = RecordingLibraryWindow(
         library: library, recorder: recorder, playback: playback,
         showControls: { [weak self] in self?.showRecordingControls() })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        recorder.calendar.startMonitoring()
-        statusItem = RecorderStatusItem(recorder: recorder, showLibrary: { [weak self] in self?.showLibrary() })
+        sourceSubscription = library.$sources.map { $0.contains(.recordings) }.removeDuplicates().sink { [weak self] enabled in
+            guard let self else { return }
+            if enabled {
+                recorder.calendar.startMonitoring()
+                statusItem = RecorderStatusItem(recorder: recorder, showLibrary: { [weak self] in self?.showLibrary() })
+            } else if statusItem != nil {
+                recorder.calendar.shutdown()
+                statusItem?.shutdown(); statusItem = nil
+                playback.clear()
+            }
+            LibraryKeyboardMenus.install(recordings: enabled)
+        }
         DispatchQueue.main.async { [weak self] in
             self?.showLibrary()
-            LibraryKeyboardMenus.install()
+            if let self { LibraryKeyboardMenus.install(recordings: library.sources.contains(.recordings)) }
         }
     }
     func showLibrary() { libraryWindow.present() }
@@ -44,9 +56,8 @@ import RecorderCore
     }
     func applicationWillTerminate(_ notification: Notification) {
         library.shutdown()
-        recorder.calendar.shutdown()
+        if recorder.sourceEnabled { recorder.calendar.shutdown(); recorder.shortcut.shutdown() }
         recorder.transcription.shutdown()
-        recorder.shortcut.shutdown()
         playback.shutdown()
         statusItem?.shutdown()
     }
@@ -56,30 +67,64 @@ import RecorderCore
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
         Settings {
-            TabView {
-                RecorderSettings(recorder: delegate.recorder).tabItem { Label("Recording", systemImage: "waveform") }
-                TranscriptionSettings(transcription: delegate.recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }
-                EmbeddingSettingsView(library: delegate.library, embeddings: delegate.library.embeddings).tabItem { Label("Search", systemImage: "magnifyingglass") }
-                CalendarSettings(calendar: delegate.recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }
-                CodingSettingsView(coding: delegate.library.coding).tabItem { Label("Coding", systemImage: "chevron.left.forwardslash.chevron.right") }
-                GitHubSettingsView(github: delegate.library.github).tabItem { Label("GitHub", systemImage: "arrow.triangle.branch") }
-                AgentAccessSettings(library: delegate.library).tabItem { Label("Agent Access", systemImage: "point.3.connected.trianglepath.dotted") }
-            }.padding(12).frame(width: 560, height: 640)
+            AfterwordSettings(library: delegate.library, recorder: delegate.recorder)
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Show Recordings") { delegate.showLibrary() }.keyboardShortcut("1", modifiers: .command)
-                Button("Upcoming Calls") { delegate.recorder.calendar.showUpcoming() }.keyboardShortcut("2", modifiers: .command)
-                Button("People & Groups") { delegate.recorder.calendar.showPeople() }
+                Button("Show Library") { delegate.showLibrary() }.keyboardShortcut("1", modifiers: .command)
+                RecordingMenuCommands(library: delegate.library, recorder: delegate.recorder)
             }
             CommandGroup(replacing: .sidebar) {
                 Button("Toggle Sidebar") { delegate.library.sidebarVisible.toggle() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
             }
             CommandGroup(replacing: .help) {
-                Button("Keyboard Shortcuts") { LibraryKeyboardMenus.showHelp() }
+                Button("Keyboard Shortcuts") { LibraryKeyboardMenus.showHelp(recordings: delegate.library.sources.contains(.recordings)) }
             }
         }
+    }
+}
+
+private struct RecordingMenuCommands: View {
+    @ObservedObject var library: RecordingLibraryModel
+    let recorder: RecordingCoordinator
+
+    var body: some View {
+        if library.sources.contains(.recordings) {
+            Button("Upcoming Calls") { recorder.calendar.showUpcoming() }.keyboardShortcut("2", modifiers: .command)
+            Button("People & Groups") { recorder.calendar.showPeople() }
+        }
+    }
+}
+
+private struct AfterwordSettings: View {
+    @ObservedObject var library: RecordingLibraryModel
+    let recorder: RecordingCoordinator
+
+    var body: some View {
+        TabView(selection: $library.settingsTab) {
+            Form {
+                Section("Library sources") {
+                    SourceToggles(selection: Binding(get: { library.sources }, set: library.setSources))
+                    Text("Turning off a source pauses its background work and hides it from the library and connected agents. Turn it on again to restore your setup.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let error = library.sourceError { Text(error).foregroundStyle(.red) }
+                }
+            }.formStyle(.grouped).tabItem { Label("Sources", systemImage: "rectangle.stack") }.tag("sources")
+            if library.sources.contains(.recordings) {
+                RecorderSettings(recorder: recorder).tabItem { Label("Recording", systemImage: "waveform") }.tag("recordings")
+                TranscriptionSettings(transcription: recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }.tag("transcription")
+                CalendarSettings(calendar: recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }.tag("calendar")
+            }
+            if library.sources.contains(.coding) {
+                CodingSettingsView(coding: library.coding).tabItem { Label("Coding", systemImage: "terminal") }.tag("coding")
+            }
+            if library.sources.contains(.github) {
+                GitHubSettingsView(github: library.github).tabItem { Label("GitHub", systemImage: "arrow.triangle.branch") }.tag("github")
+            }
+            EmbeddingSettingsView(library: library, embeddings: library.embeddings).tabItem { Label("Search", systemImage: "magnifyingglass") }.tag("search")
+            AgentAccessSettings(library: library).tabItem { Label("Agent Access", systemImage: "point.3.connected.trianglepath.dotted") }.tag("agents")
+        }.padding(12).frame(width: 620, height: 640)
     }
 }
 

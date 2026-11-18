@@ -6,6 +6,12 @@ Transcription prepares speaker groups and caches them on this Mac. When clips fr
 
 **Qualification status:** 157 core audio/export/recovery/transcription/speaker/library/calendar/MCP tests pass, along with native echo-stream checks. The signed MCP helper passes an official-client integration check. Local transcription is exercised against real models, including separate-track fixtures and silent intervals. Forced termination recovery preserves separate sources. The 16 kHz webcam passes short live capture/cleanup checks. Broader real-call source separation, endurance, and timing qualification remain outstanding; see [the test report](docs/TEST-REPORT.md).
 
+## Choose your sources
+
+On first launch, select **Recordings**, **Coding sessions**, **GitHub**, or any combination. With one source enabled, the library opens directly to that source. For coding sessions, choose Claude Code or Codex and your projects in **Settings → Coding**. For GitHub, connect your account and select repositories in **Settings → GitHub**.
+
+Change these choices in **Settings → Sources**. Turning off Recordings releases the global shortcut, removes recording controls, and stops watching recording folders and calendars. Turning off Coding sessions or GitHub stops that import. Disabled sources are hidden from search and MCP. Re-enabling a source restores its saved history, settings, and sharing grants. Upgrading from an existing library keeps all three sources available.
+
 ## Build and run
 
 With Apple's Command Line Tools (Swift 6.2+ and the macOS 26 SDK), Git, [uv](https://docs.astral.sh/uv/), and Python 3.12 available to uv:
@@ -49,7 +55,7 @@ The checked-in native project has app, core framework, C library, and XCTest tar
 
 ## Recording library (version 0.8)
 
-The app opens a regular Mac window and appears in the Dock and app switcher. The toolbar keeps a visibly labeled **Record → Stop** button in the same place; while recording, a small red status dot and **Recording · elapsed time** appear above the library. The status row is informational, and the toolbar button stops the recording. The menu-bar recorder and your configured global shortcut remain available. Closing the library pauses playback and keeps Afterword running; use **Quit Afterword** to exit. Reopen the library from the Dock, **File → Show Recordings** (Command–1), or **Library** in the menu-bar panel.
+The app opens a regular Mac window and appears in the Dock and app switcher. The toolbar keeps a visibly labeled **Record → Stop** button in the same place; while recording, a small red status dot and **Recording · elapsed time** appear above the library. The status row is informational, and the toolbar button stops the recording. The menu-bar recorder and your configured global shortcut remain available. Closing the library pauses playback and keeps Afterword running; use **Quit Afterword** to exit. Reopen the library from the Dock, **File → Show Library** (Command–1), or **Library** in the menu-bar panel.
 
 - Recordings in the configured save folder appear automatically, including older single-file recordings. **Recording folders → Add recordings folder…** adds other folders in place; removing a folder from the library does not delete its files. The current recording destination remains included. Previous destinations remain available until removed.
 - **Recordings → Needs summary** lists transcribed calls awaiting their first summary. Select a call to open its Summary tab. Saving a summary in Afterword or through MCP removes it from this list.

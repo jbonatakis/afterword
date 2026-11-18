@@ -16,36 +16,42 @@ struct AgentAccessSettings: View {
                 Toggle("Enable agent access", isOn: Binding(get: { configuration.enabled }, set: { enabled in
                     var next = configuration; next.enabled = enabled; save(next)
                 }))
-                Text("Let MCP clients search and read saved call information, summaries, and transcripts from the folders you select.")
+                Text("Let MCP clients read the saved activity you choose to share.")
                     .font(.caption).foregroundStyle(.secondary)
-                Toggle("Share imported coding sessions", isOn: Binding(get: { configuration.allowCodingSessions }, set: { allowed in
-                    var next = configuration; next.allowCodingSessions = allowed; save(next)
-                })).disabled(!configuration.enabled)
-                Text("Includes saved prompts, replies, project paths, and tool names from imported projects.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("Allow agents to save summaries", isOn: Binding(get: { configuration.allowSummaryWrites }, set: { allowed in
-                    var next = configuration; next.allowSummaryWrites = allowed; save(next)
-                })).disabled(!configuration.enabled)
-                Text("Agents can create and update summaries in allowed folders. Previous versions are kept, and newer edits are protected from being overwritten.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if library.sources.contains(.coding) {
+                    Toggle("Share imported coding sessions", isOn: Binding(get: { configuration.allowCodingSessions }, set: { allowed in
+                        var next = configuration; next.allowCodingSessions = allowed; save(next)
+                    })).disabled(!configuration.enabled)
+                    Text("Includes saved prompts, replies, project paths, and tool names from imported projects.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if library.sources.contains(.recordings) {
+                    Toggle("Allow agents to save summaries", isOn: Binding(get: { configuration.allowSummaryWrites }, set: { allowed in
+                        var next = configuration; next.allowSummaryWrites = allowed; save(next)
+                    })).disabled(!configuration.enabled)
+                    Text("Agents can create and update summaries in allowed folders. Previous versions are kept, and newer edits are protected from being overwritten.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            GitHubGrantSettings(github: library.github, enabled: configuration.enabled)
-            Section("Allowed recording folders") {
-                if folders.isEmpty { Text("Add a recording folder to the library first.").foregroundStyle(.secondary) }
-                ForEach(folders, id: \.self) { path in
-                    Toggle(isOn: Binding(get: { configuration.folders.contains(path) }, set: { allowed in
-                        var next = configuration
-                        if allowed { next.folders.append(path) } else { next.folders.removeAll { $0 == path } }
-                        save(next)
-                    })) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(URL(fileURLWithPath: path).lastPathComponent)
-                            Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            if library.sources.contains(.github) { GitHubGrantSettings(github: library.github, enabled: configuration.enabled) }
+            if library.sources.contains(.recordings) {
+                Section("Allowed recording folders") {
+                    if folders.isEmpty { Text("Add a recording folder to the library first.").foregroundStyle(.secondary) }
+                    ForEach(folders, id: \.self) { path in
+                        Toggle(isOn: Binding(get: { configuration.folders.contains(path) }, set: { allowed in
+                            var next = configuration
+                            if allowed { next.folders.append(path) } else { next.folders.removeAll { $0 == path } }
+                            save(next)
+                        })) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(URL(fileURLWithPath: path).lastPathComponent)
+                                Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
                         }
                     }
-                }
-                if configuration.enabled && configuration.folders.isEmpty {
-                    Text("No calls are accessible until you select a folder.").font(.caption).foregroundStyle(.secondary)
+                    if configuration.enabled && configuration.folders.isEmpty {
+                        Text("No calls are accessible until you select a folder.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             Section("MCP server") {
@@ -57,7 +63,7 @@ struct AgentAccessSettings: View {
                 Text("Clients launch this executable with no arguments. The server works while Afterword is closed. Access changes apply to subsequent requests.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Audio, transcripts, and call details remain read-only. Your connected client controls which model receives retrieved text, including whether it uses a cloud service.")
+            Text("Your connected client controls which model receives retrieved text, including whether it uses a cloud service.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }

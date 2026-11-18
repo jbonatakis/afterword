@@ -10,7 +10,7 @@ private struct LibrarySearchField: ViewModifier {
 
     func body(content: Content) -> some View {
         content.searchable(text: Binding(get: { presentation.text }, set: setQuery),
-                           placement: .toolbar, prompt: "Search calls and coding sessions")
+                           placement: .toolbar, prompt: "Search library")
     }
 }
 
@@ -72,37 +72,90 @@ private extension LibraryFilter {
     }
 }
 
+struct SourceToggles: View {
+    @Binding var selection: Set<ActivitySource>
+
+    var body: some View {
+        ForEach(ActivitySource.allCases, id: \.self) { source in
+            Toggle(isOn: Binding(get: { selection.contains(source) }, set: { enabled in
+                var next = selection
+                if enabled { next.insert(source) } else { next.remove(source) }
+                selection = next
+            })) {
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(source.libraryFilter.rawValue)
+                        Group {
+                            switch source {
+                            case .recordings: Text("Record calls and transcribe them locally.")
+                            case .coding: Text("Import Claude Code and Codex sessions.")
+                            case .github: Text("Import your issues, pull requests, and reviews.")
+                            }
+                        }.font(.caption).foregroundStyle(.secondary)
+                    }
+                } icon: { source.libraryFilter.icon }
+            }
+        }
+    }
+}
+
+private struct LibrarySourceChooser: View {
+    @ObservedObject var library: RecordingLibraryModel
+    @State private var selection: Set<ActivitySource> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Choose your sources").font(.title.bold())
+            Text("What would you like to see in Afterword? You can change this in Settings.")
+                .foregroundStyle(.secondary)
+            SourceToggles(selection: $selection)
+            if let error = library.sourceError { Text(error).foregroundStyle(.red) }
+            Button("Open library") { library.setSources(selection) }
+                .keyboardShortcut(.defaultAction).disabled(selection.isEmpty)
+        }.frame(maxWidth: 360, alignment: .leading).padding(32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 struct LibrarySidebar: View {
     @Binding var selection: LibraryFilter
+    var sources = Set(ActivitySource.allCases)
     @State private var expanded: Set<LibraryFilter> = [.activity, .coding, .recordings]
+
+    private var root: LibraryFilter {
+        if sources.count == 1, let source = sources.first { return source.libraryFilter }
+        return .activity
+    }
 
     var body: some View {
         List(selection: $selection) {
-            LibrarySidebarRow(filter: .activity, selection: $selection, expanded: $expanded)
+            LibrarySidebarRow(filter: root, sources: sources, selection: $selection, expanded: $expanded)
         }.listStyle(.sidebar)
     }
 }
 
 private struct LibrarySidebarRow: View {
     let filter: LibraryFilter
+    let sources: Set<ActivitySource>
+    private var children: [LibraryFilter] { filter.children.filter { $0.source.map(sources.contains) ?? true } }
     @Binding var selection: LibraryFilter
     @Binding var expanded: Set<LibraryFilter>
 
     var body: some View {
         let label = Label { Text(filter.rawValue) } icon: { filter.icon }
-        if filter.children.isEmpty {
+        if children.isEmpty {
             label.tag(filter)
         } else {
             DisclosureGroup(isExpanded: Binding(get: { expanded.contains(filter) }, set: { open in
                 if open {
                     expanded.insert(filter)
                 } else {
-                    if filter == .activity || filter.children.contains(selection) { selection = filter }
+                    if filter == .activity || children.contains(selection) { selection = filter }
                     expanded.remove(filter)
                 }
             })) {
-                ForEach(filter.children) { child in
-                    LibrarySidebarRow(filter: child, selection: $selection, expanded: $expanded)
+                ForEach(children) { child in
+                    LibrarySidebarRow(filter: child, sources: sources, selection: $selection, expanded: $expanded)
                 }
             } label: { label }.tag(filter)
         }
@@ -119,6 +172,7 @@ struct RecordingLibraryView: View {
     @State private var managementError: String?
     @State private var discardTranscriptEdits: LibraryRecording?
     @State private var discardSummaryEdits: LibraryRecording?
+    @Environment(\.openSettings) private var openSettings
     @FocusState private var focus: LibraryFocus?
 
     private func recordingRow(_ recording: LibraryRecording) -> some View {
@@ -150,25 +204,27 @@ struct RecordingLibraryView: View {
     private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
-                LibrarySidebar(selection: $library.filter)
+                LibrarySidebar(selection: $library.filter, sources: library.sources)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
-                    TranscriptionActivity(transcription: recorder.transcription)
-                    Menu {
-                        Button("Add recordings folder…") { library.addFolder() }
-                        Divider()
-                        ForEach(library.roots, id: \.path) { folder in
-                            Menu(folder.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")) {
-                                Button("Show in Finder") { recorder.reveal(folder) }
-                                Button("Remove from library") { library.removeFolder(folder) }
-                                    .disabled(folder == recorder.destination.resolvingSymlinksInPath().standardizedFileURL)
+                    if library.sources.contains(.recordings) {
+                        TranscriptionActivity(transcription: recorder.transcription)
+                        Menu {
+                            Button("Add recordings folder…") { library.addFolder() }
+                            Divider()
+                            ForEach(library.roots, id: \.path) { folder in
+                                Menu(folder.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")) {
+                                    Button("Show in Finder") { recorder.reveal(folder) }
+                                    Button("Remove from library") { library.removeFolder(folder) }
+                                        .disabled(folder == recorder.destination.resolvingSymlinksInPath().standardizedFileURL)
+                                }
                             }
-                        }
-                    } label: { Label("Recording folders", systemImage: "folder") }
-                        .menuStyle(.borderlessButton)
+                        } label: { Label("Recording folders", systemImage: "folder") }
+                            .menuStyle(.borderlessButton)
+                        Button { recorder.calendar.showUpcoming() } label: { Label("Upcoming calls", systemImage: "calendar") }.buttonStyle(.plain)
+                        Button { recorder.calendar.showPeople() } label: { Label("People & groups", systemImage: "person.2") }.buttonStyle(.plain)
+                    }
                     SettingsLink { Label("Settings", systemImage: "gearshape") }.buttonStyle(.plain)
-                    Button { recorder.calendar.showUpcoming() } label: { Label("Upcoming calls", systemImage: "calendar") }.buttonStyle(.plain)
-                    Button { recorder.calendar.showPeople() } label: { Label("People & groups", systemImage: "person.2") }.buttonStyle(.plain)
                 }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(16)
             }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
         } content: {
@@ -184,9 +240,9 @@ struct RecordingLibraryView: View {
                         if !library.search.isEmpty {
                             Text("Try another phrase or a different library filter.")
                         } else if library.filter == .github {
-                            Text("Choose repositories in Settings → GitHub, or change the search filters.")
+                            Button("Configure GitHub…") { library.settingsTab = "github"; openSettings() }
                         } else if !library.filter.showsRecordings {
-                            Text("Choose projects in Settings → Coding to import sessions.")
+                            Button("Choose coding projects…") { library.settingsTab = "coding"; openSettings() }
                         } else if library.filter == .recordings {
                             Text("Record a call or add a folder of existing recordings.")
                         }
@@ -216,7 +272,7 @@ struct RecordingLibraryView: View {
                 Divider()
                 LibraryIndexProgress(presentation: library.searchPresentation)
                 HStack {
-                    if library.filter.showsRecordings {
+                    if library.sources.contains(.recordings) && library.filter.showsRecordings {
                         Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
                     }
                     if !library.visibleCoding.isEmpty || (library.filter.showsCoding && !library.filter.showsRecordings) {
@@ -267,12 +323,14 @@ struct RecordingLibraryView: View {
                             ForEach(GitHubActionKind.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
                         }
                     }
-                    Toggle("Search previous transcript versions", isOn: $library.searchHistory)
-                    Picker("Speaker", selection: $library.searchSpeaker) {
-                        Text("Any speaker").tag("")
-                        ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
-                    }.disabled(!library.filter.showsRecordings)
-                    if !library.coding.sessions.isEmpty && library.filter.showsCoding {
+                    if library.sources.contains(.recordings) && library.filter.showsRecordings {
+                        Toggle("Search previous transcript versions", isOn: $library.searchHistory)
+                        Picker("Speaker", selection: $library.searchSpeaker) {
+                            Text("Any speaker").tag("")
+                            ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    if library.sources.contains(.coding) && !library.coding.sessions.isEmpty && library.filter.showsCoding {
                         Picker("Coding project", selection: $library.codingProject) {
                             Text("Any project").tag("")
                             ForEach(library.coding.projects, id: \.self) { Text($0).tag($0) }
@@ -285,31 +343,33 @@ struct RecordingLibraryView: View {
                     Divider()
                     Text("Matches word beginnings · \"exact words or phrases\"")
                 } label: { Label("Search options", systemImage: library.searchHistory || !library.searchSpeaker.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
-                    .help(library.searchHistory ? "Searching all saved transcript versions" : "Searching the latest saved transcript")
+                    .help("Search options")
                 Button {
                     library.github.refresh(); library.coding.refresh(); library.refresh()
                 } label: {
                     Label("Refresh library", systemImage: "arrow.clockwise")
                 }
-                    .help("Refresh recordings and transcripts")
-                Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
-                    .help("Microphone, audio levels, and recording controls")
-                Button {
-                    if !recorder.noticesAccepted { showControls() }
-                    else { recorder.toggleRecording() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: recorder.locked ? "stop.fill" : "record.circle").accessibilityHidden(true)
-                        Text(recorder.locked ? recorder.state == .finalizing ? "Saving…" : "Stop" : "Record")
-                    }.frame(minWidth: 66).fixedSize()
+                    .help("Refresh enabled sources")
+                if library.sources.contains(.recordings) {
+                    Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
+                        .help("Microphone, audio levels, and recording controls")
+                    Button {
+                        if !recorder.noticesAccepted { showControls() }
+                        else { recorder.toggleRecording() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: recorder.locked ? "stop.fill" : "record.circle").accessibilityHidden(true)
+                            Text(recorder.locked ? recorder.state == .finalizing ? "Saving…" : "Stop" : "Record")
+                        }.frame(minWidth: 66).fixedSize()
+                    }
+                    .tint(recorder.locked ? .red : .accentColor)
+                    .help(recorder.state == .finalizing ? "Saving recording…" : recorder.state == .preparing ? "Cancel preparation" : recorder.isPreview ? "End audio test" : recorder.locked ? "Stop recording and save" : "Start recording")
+                    .disabled(recorder.state == .finalizing || (!recorder.locked && (recorder.resolved == nil || recorder.selectedChannel < 0)))
                 }
-                .tint(recorder.locked ? .red : .accentColor)
-                .help(recorder.state == .finalizing ? "Saving recording…" : recorder.state == .preparing ? "Cancel preparation" : recorder.isPreview ? "End audio test" : recorder.locked ? "Stop recording and save" : "Start recording")
-                .disabled(recorder.state == .finalizing || (!recorder.locked && (recorder.resolved == nil || recorder.selectedChannel < 0)))
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if recorder.locked || recorder.message != nil {
+            if library.sources.contains(.recordings) && (recorder.locked || recorder.message != nil) {
                 HStack {
                     if recorder.locked {
                         HStack(spacing: 6) {
@@ -339,7 +399,10 @@ struct RecordingLibraryView: View {
     }
 
     var body: some View {
-        libraryContent
+        Group {
+            if library.sources.isEmpty { LibrarySourceChooser(library: library) }
+            else { libraryContent }
+        }
         .background(LibraryCommandScope(bindings: keyboardBindings, cancelEditing: .init(enabled: {
             library.renamingID != nil || library.selectedRecording.map { library.transcriptDrafts[$0.id] != nil || library.summaryDrafts[$0.id] != nil } == true
         }, perform: cancelInlineEditing)).frame(width: 0, height: 0))

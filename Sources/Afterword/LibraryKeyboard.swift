@@ -12,7 +12,7 @@ enum LibraryCommand: Int, CaseIterable {
         case .editTranscript: return "Edit Transcript"
         case .save: return "Save Edits"
         case .copyTranscript: return "Copy Readable Transcript"
-        case .search: return "Search Recordings"
+        case .search: return "Search Library"
         case .playPause: return "Play / Pause"
         case .backward: return "Back 10 Seconds"
         case .forward: return "Forward 10 Seconds"
@@ -164,11 +164,12 @@ final class LibraryCommandView: NSView {
 }
 
 @MainActor enum LibraryKeyboardMenus {
-    static func install() {
+    static func install(recordings: Bool = true) {
         guard let main = NSApp.mainMenu else { return }
         for (title, commands) in [("Call", [LibraryCommand.rename, .trash, .details, .editTranscript, .save, .copyTranscript, .search]),
                                    ("Playback", [.playPause, .backward, .forward])] {
-            guard main.item(withTitle: title) == nil else { continue }
+            if let existing = main.item(withTitle: title) { existing.isHidden = !recordings; continue }
+            guard recordings else { continue }
             let menu = NSMenu(title: title)
             for command in commands {
                 let item = NSMenuItem(title: command.title, action: #selector(LibraryCommandWindow.runLibraryCommand(_:)), keyEquivalent: command.key)
@@ -180,7 +181,7 @@ final class LibraryCommandView: NSView {
             main.insertItem(item, at: index)
         }
     }
-    static func showHelp() { LibraryKeyboardHelp.shared.showShortcuts(nil) }
+    static func showHelp(recordings: Bool = true) { LibraryKeyboardHelp.shared.showShortcuts(recordings: recordings) }
 }
 
 @MainActor private final class LibraryKeyboardHelp: NSWindowController {
@@ -192,28 +193,35 @@ final class LibraryCommandView: NSView {
         super.init(window: window); window.center()
     }
     required init?(coder: NSCoder) { fatalError("Use init()") }
-    @objc func showShortcuts(_ sender: Any?) { showWindow(nil); window?.makeKeyAndOrderFront(nil) }
+    func showShortcuts(recordings: Bool) {
+        window?.contentViewController = NSHostingController(rootView: LibraryKeyboardHelpView(recordings: recordings))
+        showWindow(nil); window?.makeKeyAndOrderFront(nil)
+    }
 }
 
 struct LibraryKeyboardHelpView: View {
+    var recordings = true
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Keyboard Shortcuts").font(.title2.bold())
             Grid(alignment: .leading, horizontalSpacing: 36, verticalSpacing: 10) {
-                ForEach(LibraryCommand.allCases, id: \.rawValue) { command in
+                ForEach(recordings ? LibraryCommand.allCases : [.search], id: \.rawValue) { command in
                     GridRow { Text(command.title); Text(command.hint).foregroundStyle(.secondary) }
                 }
                 Divider()
-                GridRow { Text("Show Recordings / Upcoming Calls"); Text("⌘1 / ⌘2").foregroundStyle(.secondary) }
+                GridRow { Text("Show Library"); Text("⌘1").foregroundStyle(.secondary) }
+                if recordings { GridRow { Text("Upcoming Calls"); Text("⌘2").foregroundStyle(.secondary) } }
                 GridRow { Text("Confirm / Cancel dialog"); Text("Return / Escape").foregroundStyle(.secondary) }
-                GridRow { Text("Exit rename or transcript editing"); Text("Escape").foregroundStyle(.secondary) }
+                if recordings { GridRow { Text("Exit rename or transcript editing"); Text("Escape").foregroundStyle(.secondary) } }
             }.font(.callout)
-            Text("Delete requires focus in the call list and asks for confirmation. Letter and playback shortcuts stay inactive while typing or using a dialog.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("Escape returns to the call list. Unsaved transcript edits require confirmation before discarding.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("Your global start/stop recording shortcut is configured in Settings → Recording.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if recordings {
+                Text("Delete requires focus in the call list and asks for confirmation. Letter and playback shortcuts stay inactive while typing or using a dialog.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Escape returns to the call list. Unsaved transcript edits require confirmation before discarding.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Your global start/stop recording shortcut is configured in Settings → Recording.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }.padding(24).frame(width: 500)
     }
 }

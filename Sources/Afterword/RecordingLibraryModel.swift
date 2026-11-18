@@ -42,6 +42,11 @@ enum GitHubPeriod: String, CaseIterable {
             updateSearch()
         }
     }
+    @Published private(set) var sources: Set<ActivitySource> = []
+    @Published private(set) var sourceError: String?
+    @Published var settingsTab = "sources"
+    private let sourceDirectory: URL
+    private var peopleSubscription: AnyCancellable?
     let github: GitHubCoordinator
     private var githubHistory: [GitHubHit] = [] {
         didSet {
@@ -130,19 +135,34 @@ enum GitHubPeriod: String, CaseIterable {
                 ? GitHubArchive.directory : embeddingDirectory.deletingLastPathComponent().appendingPathComponent("GitHub"))
         coding = CodingCoordinator(directory: archiveDirectory)
         embeddings = EmbeddingCoordinator(directory: embeddingDirectory)
+        sourceDirectory = embeddingDirectory == EmbeddingSettings.directory ? AgentAccessStore.directory :
+            embeddingDirectory.deletingLastPathComponent().appendingPathComponent("MCP")
         self.defaults = defaults
         self.recorder = recorder
-        currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
-        selection = defaults.string(forKey: "librarySelection")
-        roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        currentDestination = recorder.destination
+        let savedSelection = defaults.string(forKey: "librarySelection")
+        let initial: Set<ActivitySource>
+        do {
+            if let saved = try ActivitySourceStore.load(directory: sourceDirectory) {
+                initial = saved
+            } else {
+                // Previous releases remembered the recording destination on every library launch.
+                let existing = defaults.object(forKey: "libraryFolders") != nil || defaults.object(forKey: "destination") != nil
+                    || CodingArchive.exists(in: archiveDirectory) || GitHubArchive.exists(in: github.directory)
+                initial = existing ? Set(ActivitySource.allCases) : []
+            }
+        } catch {
+            initial = []
+            sourceError = error.localizedDescription
+        }
         coding.changed = { [weak self] in
-            guard let self else { return }
+            guard let self, sources.contains(.coding) else { return }
             if !codingProject.isEmpty && !coding.projects.contains(codingProject) { codingProject = "" }
             if !codingBranch.isEmpty && !coding.sessions.contains(where: { $0.branch == self.codingBranch }) { codingBranch = "" }
             refresh()
         }
         github.changed = { [weak self] in
-            guard let self else { return }
+            guard let self, sources.contains(.github) else { return }
             let allowed = github.snapshot.locked ? [] : Set(github.snapshot.selections.map(\.id))
             githubHistory.removeAll { !allowed.contains($0.item.repositoryID) }
             matchedGitHub.removeAll { !allowed.contains($0.item.repositoryID) }
@@ -150,14 +170,10 @@ enum GitHubPeriod: String, CaseIterable {
             applyFilter()
             refresh()
         }
-        github.start()
-        coding.start()
-        recorder.calendar.library = self
-        recorder.calendar.$directory.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleLibraryRefresh() }.store(in: &subscriptions)
-        remember(recorder.destination)
-        recorder.$destination.removeDuplicates().sink { [weak self] folder in
-            self?.currentDestination = folder.resolvingSymlinksInPath().standardizedFileURL
-            self?.remember(folder); self?.refresh()
+        recorder.$destination.dropFirst().removeDuplicates().sink { [weak self] folder in
+            guard let self, sources.contains(.recordings) else { return }
+            currentDestination = folder.resolvingSymlinksInPath().standardizedFileURL
+            remember(folder); refresh()
         }.store(in: &subscriptions)
         recorder.$savedFile.compactMap { $0 }.sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
         recorder.transcription.$transcript.compactMap { $0 }.sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
@@ -165,11 +181,80 @@ enum GitHubPeriod: String, CaseIterable {
         recorder.$state.combineLatest(recorder.transcription.$busy).sink { [weak self] state, transcribing in
             self?.embeddings.setBusy([.preparing, .recording, .previewing, .finalizing].contains(state) || transcribing)
         }.store(in: &subscriptions)
-        semanticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollSemanticSearch() }
-        }
+        applySources(initial)
+        if !initial.isEmpty { selection = savedSelection }
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
+    }
+    func setSources(_ next: Set<ActivitySource>) {
+        guard sources != next, let recorder else { return }
+        if sources.contains(.recordings) && !next.contains(.recordings)
+            && (recorder.locked || recorder.transcription.busy || recorder.transcription.downloadingID != nil ||
+                managing || renamingID != nil || !summaryDrafts.isEmpty || !transcriptDrafts.isEmpty) {
+            sourceError = "Finish recording, transcription, downloads, or pending edits before turning off Recordings."
+            return
+        }
+        do {
+            try ActivitySourceStore.save(next, directory: sourceDirectory)
+            sourceError = nil
+            applySources(next)
+        } catch { sourceError = error.localizedDescription }
+    }
+
+    private func applySources(_ next: Set<ActivitySource>) {
+        guard let recorder else { return }
+        let previous = sources
+        scan?.cancel(); generation = UUID(); refreshing = false
+        searchTask?.cancel(); searchGeneration = UUID(); searching = false
+        searchIndex?.stopSemanticSearch(); searchIndex = nil
+        searchPresentation.status = nil; polledSemanticStatus = nil
+        let records = next.contains(.recordings)
+        recorder.setSourceEnabled(records)
+        sources = next
+        if records && !previous.contains(.recordings) {
+            roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+            currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
+            remember(currentDestination)
+            recorder.calendar.library = self
+            peopleSubscription = recorder.calendar.$directory.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleLibraryRefresh() }
+        } else if !records {
+            roots = []; recordings = []; matchedRecordings = []; searchHits = [:]; speakerNames = []
+            if !searchSpeaker.isEmpty { searchSpeaker = "" }
+            if searchHistory { searchHistory = false }
+            peopleSubscription = nil; summaryMonitor.stop()
+        }
+        if next.contains(.coding) {
+            if !previous.contains(.coding) { coding.start() }
+        } else {
+            coding.stop(); matchedCoding = []; codingHits = [:]
+        }
+        if next.contains(.github) {
+            if !previous.contains(.github) { github.start() }
+        } else {
+            github.stop(); githubHistory = []; matchedGitHub = []
+        }
+        if next.count == 1, let only = next.first, filter.source != only { filter = only.libraryFilter }
+        else if let current = filter.source, !next.contains(current) { filter = .activity }
+        issues = []
+        applyFilter()
+        if next.isEmpty {
+            semanticTimer?.invalidate(); semanticTimer = nil
+            if let scan {
+                let id = generation
+                Task { [weak self] in
+                    let result = await scan.value
+                    result.index?.stopSemanticSearch()
+                    if self?.generation == id { self?.scan = nil }
+                }
+            }
+        } else {
+            if semanticTimer == nil {
+                semanticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                    Task { @MainActor in self?.pollSemanticSearch() }
+                }
+            }
+            refresh()
+        }
     }
     func pollSemanticSearch(retry: Bool = false) {
         guard !stopped, !semanticPolling, let index = searchIndex else { return }
@@ -216,19 +301,27 @@ enum GitHubPeriod: String, CaseIterable {
         refresh()
     }
     @discardableResult func refresh() -> Task<Void, Never>? {
-        guard !stopped, !managing else { return nil }
+        guard !stopped, !sources.isEmpty, !managing else { return nil }
         summaryMonitor.watch(roots)
         needsRefresh = false; pendingRefreshTask?.cancel(); pendingRefreshTask = nil
-        scan?.cancel()
+        let previousScan = scan
+        previousScan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
-        let codingDirectory = coding.sessions.isEmpty ? nil : coding.directory
-        let githubDirectory = github.directory
+        let codingDirectory = sources.contains(.coding) && !coding.sessions.isEmpty ? coding.directory : nil
+        let githubDirectory = sources.contains(.github) ? github.directory : nil
+        let cacheDirectory = embeddingDirectory == EmbeddingSettings.directory ? LibrarySearchIndex.cacheDirectory :
+            embeddingDirectory.deletingLastPathComponent().appendingPathComponent("Search")
         let existing = indexRoots == roots ? searchIndex : nil
         if existing == nil { searchIndex?.stopSemanticSearch() }
         let task = Task.detached(priority: .utility) { () -> LibraryRefresh in
+            // SQLite cannot switch a fresh database to WAL from two concurrent opens.
+            // A cancelled scan can still be finishing its current filesystem operation.
+            _ = await previousScan?.value
             do {
-                let index = try existing ?? LibrarySearchIndex(roots: roots, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL)
+                try Task.checkCancellation()
+                let index = try existing ?? LibrarySearchIndex(roots: roots, directory: cacheDirectory, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL)
+                try Task.checkCancellation()
                 try index.useCodingArchive(in: codingDirectory)
                 try index.useGitHubArchive(in: githubDirectory, shared: false)
                 let githubItems = try index.githubSearch("", keywordOnly: true).hits
@@ -258,7 +351,7 @@ enum GitHubPeriod: String, CaseIterable {
             && !(filter == .github && hasGitHubFilters)
         {
             searchHits = [:]; resultQuery = ""; searching = false
-            matchedGitHub = githubHistory; matchedRecordings = recordings; matchedCoding = coding.sessions; codingHits = [:];
+            matchedGitHub = githubHistory; matchedRecordings = recordings; matchedCoding = sources.contains(.coding) ? coding.sessions : []; codingHits = [:];
             applyFilter(); return nil
         }
         guard let index = searchIndex else { return nil }
@@ -305,11 +398,11 @@ enum GitHubPeriod: String, CaseIterable {
         return task
     }
     private func applyFilter() {
-        visibleRecordings = matchedRecordings.filter { filter.includes($0) }
-        visibleCoding = matchedCoding.filter {
+        visibleRecordings = sources.contains(.recordings) ? matchedRecordings.filter { filter.includes($0) } : []
+        visibleCoding = sources.contains(.coding) ? matchedCoding.filter {
             filter.includes($0) && (codingProject.isEmpty || $0.project == codingProject) && (codingBranch.isEmpty || $0.branch == codingBranch)
-        }
-        visibleGitHub = filter == .activity || filter == .github ? matchedGitHub : []
+        } : []
+        visibleGitHub = sources.contains(.github) && (filter == .activity || filter == .github) ? matchedGitHub : []
         let rows =
             visibleRecordings.map(LibraryActivity.call) + visibleCoding.map(LibraryActivity.coding)
             + visibleGitHub.map(LibraryActivity.github)
@@ -335,7 +428,7 @@ enum GitHubPeriod: String, CaseIterable {
     }
     private func beginManagement() throws {
         guard !managing else { throw RecorderError.message("Another change is still saving. Try again in a moment.") }
-        managing = true; scan?.cancel(); scan = nil; generation = UUID(); refreshing = false
+        managing = true; scan?.cancel(); generation = UUID(); refreshing = false
     }
     @discardableResult private func finishManagement() -> Task<Void, Never>? { managing = false; return refresh() }
     func saveDetails(_ details: CallDetails, for recording: LibraryRecording, reveal: Bool = true, participantRenames: [String: String] = [:]) async throws {
@@ -568,12 +661,31 @@ enum LibraryActivity: Identifiable {
     }
 }
 
+extension ActivitySource {
+    var libraryFilter: LibraryFilter {
+        switch self {
+        case .recordings: return .recordings
+        case .coding: return .coding
+        case .github: return .github
+        }
+    }
+}
+
 enum LibraryFilter: String, Identifiable {
     case activity = "All activity", coding = "Coding sessions", codex = "Codex", claudeCode = "Claude Code"
     case github = "GitHub"
     case recordings = "Recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
     case needsSummary = "Needs summary"
     var id: Self { self }
+
+    var source: ActivitySource? {
+        switch self {
+        case .activity: return nil
+        case .github: return .github
+        case .coding, .claudeCode, .codex: return .coding
+        default: return .recordings
+        }
+    }
 
     var children: [Self] {
         switch self {
@@ -641,9 +753,6 @@ enum LibraryFilter: String, Identifiable {
             self?.captureActive = [.preparing, .previewing, .recording, .finalizing].contains(state)
             if self?.captureActive == true { self?.pause() }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
     }
     func select(_ recording: LibraryRecording) {
         guard recordingID != recording.id else { return }
@@ -671,16 +780,21 @@ enum LibraryFilter: String, Identifiable {
         guard let audio, ready, !captureActive else { return }
         if position >= duration - 0.05 { seek(0) }
         playing = audio.play()
+        if playing && timer == nil {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.tick() }
+            }
+        }
         if !playing { error = "Playback could not start. Check your audio output and try again." }
     }
-    func pause() { audio?.pause(); playing = false }
+    func pause() { audio?.pause(); playing = false; timer?.invalidate(); timer = nil }
     func seek(_ seconds: Double) {
         guard seconds.isFinite else { return }
         position = max(0, min(seconds, duration)); audio?.currentTime = position
     }
     private func tick() {
         guard playing, let audio else { return }
-        if !audio.isPlaying { playing = false; position = duration }
+        if !audio.isPlaying { pause(); position = duration }
         else { position = audio.currentTime }
     }
     func clear() { pause(); audio = nil; ready = false; recordingID = nil; position = 0; duration = 0; error = nil }

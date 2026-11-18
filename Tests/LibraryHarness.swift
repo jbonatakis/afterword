@@ -26,6 +26,7 @@ import Lookback
         let name = Bundle.main.bundleIdentifier!
         UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
+        if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }
         let folder = root.appendingPathComponent("Call-2026-11-14_09-30-00")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         for track in RecordingTrack.allCases {
@@ -87,6 +88,7 @@ import Lookback
         let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
         defer { library.shutdown() }
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
+        require(library.sources == Set(ActivitySource.allCases), "Upgrading an existing recording library hid a source")
         require(library.recordings.count == 1 && library.selectedRecording?.id == recording.id, "Library failed to load fixture")
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
@@ -454,6 +456,74 @@ import Lookback
         require(stressWindow.firstResponder === table, "Revisiting a recycled row stole edit focus")
         stressWindow.orderOut(nil)
         print("PASS 375-paragraph reader mounted \(mounted.count) rows, revealed offscreen matches and editors, preserved edits on scroll, and handled resizing during playback")
+    }
+
+    @MainActor static func checkSourceSelection(_ root: URL) async throws {
+        let support = root.appendingPathComponent("SourceSelection")
+        let embeddings = support.appendingPathComponent("Embeddings")
+        let suite = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let recorder = RecordingCoordinator(peopleURL: support.appendingPathComponent("People.json"), enabled: false)
+        let destination = support.appendingPathComponent("Recordings", isDirectory: true)
+        recorder.destination = destination
+        let library = RecordingLibraryModel(recorder: recorder, defaults: defaults, embeddingDirectory: embeddings)
+        defer { library.shutdown() }
+        require(library.sources.isEmpty && library.refresh() == nil, "A fresh library started source work")
+        require(!recorder.sourceEnabled && defaults.object(forKey: "libraryFolders") == nil, "First launch activated recording")
+        let recordingAvailability = library.$sources.sink { sources in
+            require(recorder.sourceEnabled == sources.contains(.recordings), "Calendar and menu observers saw stale recorder availability")
+        }
+        defer { recordingAvailability.cancel() }
+        let playback = RecordingPlayback(recorder: recorder)
+        defer { playback.shutdown() }
+        let controller = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
+        let window = controller.window!
+        controller.present()
+        let host = window.contentViewController!.view
+        defer { window.orderOut(nil) }
+        func sidebar(_ view: NSView) -> NSOutlineView? {
+            if let outline = view as? NSOutlineView { return outline }
+            return view.subviews.lazy.compactMap(sidebar).first
+        }
+        await pump()
+        require(sidebar(host) == nil, "First launch already displayed a library sidebar")
+        for source in [ActivitySource.github, .coding] {
+            library.setSources([source])
+            await library.refresh()?.value
+            let rowCount = source.libraryFilter.children.count + 1
+            for _ in 0..<30 {
+                await pump(0.05)
+                host.layoutSubtreeIfNeeded()
+                if sidebar(host)?.numberOfRows == rowCount { break }
+            }
+            require(sidebar(host)?.numberOfRows == rowCount, "The native sidebar displayed unrelated sources")
+            require(library.filter == source.libraryFilter && library.issues.isEmpty, "Opening \(source) selected \(library.filter) with issues \(library.issues)")
+            require(library.roots.isEmpty && defaults.object(forKey: "libraryFolders") == nil, "A non-recording source registered a folder")
+            require(!recorder.sourceEnabled && recorder.devices.isEmpty, "A non-recording source started the recorder")
+        }
+        require(!CodingArchive.exists(in: library.coding.directory) && !GitHubArchive.exists(in: library.github.directory),
+                "An unconfigured source created an archive")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
+        library.setSources([.recordings])
+        await library.refresh()?.value
+        let savedFolders = defaults.stringArray(forKey: "libraryFolders")
+        require(library.filter == .recordings && recorder.sourceEnabled && savedFolders?.count == 1, "Recordings did not start independently")
+        library.setSources([.recordings, .coding])
+        require(library.sources == [.recordings, .coding] && recorder.sourceEnabled, "Adding coding interrupted recording setup")
+        library.setSources([.github])
+        await library.refresh()?.value
+        require(!recorder.sourceEnabled && recorder.devices.isEmpty && library.roots.isEmpty, "Turning off recording left capture resources active")
+        require(defaults.stringArray(forKey: "libraryFolders") == savedFolders, "Turning off recording removed folder preferences")
+        library.setSources([.recordings])
+        require(library.roots.map(\.path) == savedFolders, "Re-enabling recording lost its folders")
+        library.setSources([])
+        require(library.activity.isEmpty && library.refresh() == nil, "Turning off all sources left activity visible")
+        let reopened = RecordingLibraryModel(recorder: recorder, defaults: defaults, embeddingDirectory: embeddings)
+        require(reopened.sources.isEmpty && reopened.roots.isEmpty, "An explicit empty selection was treated as an upgrade")
+        reopened.shutdown()
+        print("PASS fresh launch, each standalone source, live switching, folder preservation, and explicit empty selection on relaunch")
     }
 
     @MainActor static func checkGitHub(library: RecordingLibraryModel) async throws {

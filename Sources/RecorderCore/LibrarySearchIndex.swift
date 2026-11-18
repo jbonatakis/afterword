@@ -78,6 +78,8 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         db = try SearchDatabase(url: directory.appendingPathComponent("v2-" + scope + ".sqlite"))
     }
 
+    deinit { semantic.stop() }
+
     /// Stat every saved delivery, decode/hash only changed calls. No source writes.
     @discardableResult public func synchronize() throws -> [LibraryRecording] {
         lock.lock(); defer { lock.unlock() }
@@ -89,9 +91,10 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             let stored = try db.rows("SELECT id, fingerprint, revision FROM calls")
             let byID = Dictionary(uniqueKeysWithValues: stored.map { ($0[0], $0) })
             var next: [String: (fingerprint: String, call: AgentCall)] = [:]
-            let people = (try? PeopleDirectory.load(from: peopleURL)) ?? PeopleDirectory()
+            let people = discovery.candidates.isEmpty ? PeopleDirectory() : ((try? PeopleDirectory.load(from: peopleURL)) ?? PeopleDirectory())
             loadedCount = 0
             for candidate in discovery.candidates {
+                try Task.checkCancellation()
                 let id = try AgentJSON.identity(candidate.url)
                 if next[id] != nil { continue }
                 var prior: AgentCall?
