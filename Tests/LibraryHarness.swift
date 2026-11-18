@@ -408,6 +408,19 @@ import Lookback
         try archive.setEnabled(true); try archive.addProject("/projects/fixture")
         try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: projects))
         try archive.setEnabled(false)
+        let codexHome = root.appendingPathComponent("CodexHome")
+        let rollouts = codexHome.appendingPathComponent("sessions/2026/01/02")
+        try FileManager.default.createDirectory(at: rollouts, withIntermediateDirectories: true)
+        let thread = "00000000-0000-4000-a000-000000000001"
+        let rollout = """
+        {"type":"session_meta","payload":{"id":"\(thread)","cwd":"/projects/fixture"}}
+        {"type":"event_msg","payload":{"type":"user_message","message":"Review the layout"}}
+        {"type":"event_msg","payload":{"type":"agent_message","id":"answer","message":"## Grid layout\\n\\nUse **hexagons** for this grid."}}
+        """
+        try Data(rollout.utf8).write(to: rollouts.appendingPathComponent("rollout-fixture-\(thread).jsonl"))
+        try archive.setEnabled(true, for: .codex)
+        try archive.synchronize(reader: CodexReader(homeDirectory: codexHome))
+        try archive.setEnabled(false, for: .codex)
         library.coding.refresh()
         for _ in 0..<100 { if !library.coding.busy { break }; await pump(0.02) }
         await library.refresh()?.value
@@ -421,10 +434,10 @@ import Lookback
             let text = node.accessibilityAttributeValue(.value) as? String
             return (text.map { [$0] } ?? []) + children.flatMap(visibleText)
         }
-        for (query, heading) in [("preserves", "Current decision"), ("archivedterm", "Earlier decision")] {
+        for (query, heading, provider) in [("preserves", "Current decision", "Claude Code"), ("archivedterm", "Earlier decision", "Claude Code"), ("hexagons", "Grid layout", "Codex")] {
             library.search = query
             await library.updateSearch(debounce: false)?.value
-            guard let hit = library.codingHits[session.id] else { throw RecorderError.message("Missing coding search hit") }
+            guard let session = library.selectedCoding, let hit = library.codingHits[session.id] else { throw RecorderError.message("Missing coding search hit") }
             let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: library.coding.directory, hit: hit))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
@@ -437,12 +450,14 @@ import Lookback
                 if text.contains(heading) { break }
             }
             require(text.contains(heading) && !text.contains("## " + heading), "Coding message heading did not render: " + text)
-            require(text.contains("The retry") && !text.contains("**The retry**"), "Inline Markdown did not render")
+            require(text.contains(provider), "The detail is missing its coding provider")
+            let bold = provider == "Codex" ? "hexagons" : "The retry"
+            require(text.contains(bold) && !text.contains("**" + bold + "**"), "Inline Markdown did not render")
             if query == "preserves" { require(text.contains("```\n**literal**"), "Code fence lost literal Markdown") }
             require(!detail.hasAmbiguousLayout, "Coding detail layout is ambiguous")
             window.orderOut(nil)
         }
-        print("PASS coding search opens rendered Markdown in the conversation and recorded history")
+        print("PASS coding search opens labeled Claude Code and Codex sessions with rendered Markdown")
 
     }
 }

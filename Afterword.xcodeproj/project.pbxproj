@@ -18,7 +18,7 @@
 			"repositoryURL" = "https://github.com/jbonatakis/lookback.git";
 			"requirement" = {
 				"kind" = "revision";
-				"revision" = "cc5528c967b6c8ddd9b9a134921c42006e8d9c24";
+				"revision" = "7f512aa8e9e651399855f92c797321fa5ada6572";
 			};
 		};
 		"375BC5E7FF94B877A9021F8F" = {

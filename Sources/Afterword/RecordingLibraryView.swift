@@ -35,7 +35,7 @@ struct RecordingLibraryView: View {
             ForEach(library.visibleCoding) { session in
                 VStack(alignment: .leading, spacing: 5) {
                     Label(session.title, systemImage: "terminal").font(.headline).lineLimit(2)
-                    Text(URL(fileURLWithPath: session.project).lastPathComponent + " · " + session.updated.formatted())
+                    Text([session.providerName, URL(fileURLWithPath: session.project).lastPathComponent, session.updated.formatted()].joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary)
                     if let hit = library.codingHits[session.id] {
                         Text(hit.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)

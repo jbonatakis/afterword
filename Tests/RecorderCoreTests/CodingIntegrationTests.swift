@@ -36,6 +36,110 @@ final class CodingIntegrationTests: XCTestCase {
         return archive
     }
 
+    private var codexHome: URL { root.appendingPathComponent("codex-home") }
+    private let threadID = "00000000-0000-4000-a000-000000000001"
+    private func writeRollout(_ id: String, project: String, archived: Bool = false, header: [String: Any] = [:], rows: String = "") throws {
+        let folder = codexHome.appendingPathComponent(archived ? "archived_sessions" : "sessions/2026/01/02")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var meta = header
+        meta["id"] = id
+        meta["cwd"] = project
+        let first = try JSONSerialization.data(withJSONObject: ["type": "session_meta", "payload": meta])
+        try (first + Data(("\n" + rows).utf8)).write(to: folder.appendingPathComponent("rollout-2026-01-02-\(id).jsonl"))
+    }
+
+    func testCodexRollbackSearchCitationsAndIndependentOptIn() throws {
+        let rows = #"""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"initial"}}
+        {"type":"response_item","payload":{"type":"message","id":"prompt","role":"user","content":[{"type":"input_text","text":"Compare two tile designs"}]}}
+        {"type":"response_item","payload":{"type":"message","id":"answer","role":"assistant","content":[{"type":"output_text","text":"The abandoned mosaic was blue."}]}}
+        {"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"revised"}}
+        {"type":"response_item","payload":{"type":"message","id":"prompt","role":"user","content":[{"type":"input_text","text":"Choose the final tile design"}]}}
+        {"type":"response_item","payload":{"type":"function_call","id":"tool","call_id":"read","name":"inspect_tile","arguments":"SecretArgument"}}
+        {"type":"response_item","payload":{"type":"function_call_output","call_id":"read","output":"SecretResult"}}
+        {"type":"response_item","payload":{"type":"message","id":"answer","role":"assistant","content":[{"type":"output_text","text":"The selected tile is amber."}]}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        let store = try imported()
+        let sources: [any SessionReader] = [reader, try store.settings().codexReader(homeDirectory: codexHome)]
+        func refresh() throws { XCTAssertTrue(try store.refresh(discoverProjects: true, readers: sources).issues.isEmpty) }
+        try refresh()
+        XCTAssertEqual(try store.sessions().map(\.source), ["claude-code"])
+        try store.setEnabled(true, for: .codex)
+        try refresh()
+        let sessions = try store.sessions()
+        XCTAssertEqual(Set(sessions.map(\.source)), ["claude-code", "codex"])
+        XCTAssertEqual(Set(sessions.map(\.id)).count, 2)
+        let id = try XCTUnwrap(sessions.first { $0.source == "codex" }).id
+        let history = try store.history(id: id)
+        XCTAssertEqual(history.conversation.map(\.text), ["Choose the final tile design", "", "The selected tile is amber."])
+        XCTAssertEqual(history.conversation[1].tools, ["inspect_tile"])
+        XCTAssertEqual(Set(history.messages.map(\.id)).count, 5)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(history), as: UTF8.self).contains("Secret"))
+        let chunks = try store.embeddingChunks()
+        XCTAssertTrue(chunks.contains { $0.text.contains("Choose the final tile design") && $0.text.contains("The selected tile is amber.") })
+
+        try AgentAccessStore.save(.init(enabled: true), directory: root)
+        let agent = AgentLibrary(directory: root)
+        XCTAssertThrowsError(try agent.call("get_coding_session", arguments: ["session_id": id]))
+        try AgentAccessStore.save(.init(enabled: true, allowCodingSessions: true), directory: root)
+        for (term, view) in [("mosaic", "recorded"), ("amber", "conversation")] {
+            let found = try agent.call("search_activity", arguments: ["query": term, "source": "coding", "mode": "keyword"])
+            let hit = try XCTUnwrap((found["items"] as? [[String: Any]])?.first)
+            XCTAssertEqual(hit["source"] as? String, "codex")
+            XCTAssertEqual(hit["view"] as? String, view)
+            let messageID = try XCTUnwrap(hit["message_id"] as? String)
+            let page = try agent.call("get_coding_session", arguments: ["session_id": id, "view": view, "message_id": messageID, "limit": 1])
+            let message = try XCTUnwrap((page["items"] as? [[String: Any]])?.first)
+            XCTAssertTrue((message["text"] as? String)?.contains(term) == true)
+        }
+
+        // A rename touches only the thread index. Pausing Codex leaves Claude running.
+        let page = try agent.call("get_coding_session", arguments: ["session_id": id, "limit": 1])
+        let oldPageRevision = try XCTUnwrap(page["revision"] as? String)
+        let revision = try store.revision
+        try store.setEnabled(false, for: .codex)
+        try Data(#"{"id":"00000000-0000-4000-a000-000000000001","thread_name":"New tile name"}"#.utf8)
+            .write(to: codexHome.appendingPathComponent("session_index.jsonl"))
+        try refresh()
+        XCTAssertEqual(try store.revision, revision)
+        try store.setEnabled(true, for: .codex)
+        try refresh()
+        XCTAssertEqual(try store.history(id: id).session.title, "New tile name")
+        XCTAssertThrowsError(try agent.call("get_coding_session", arguments: ["session_id": id, "expected_revision": oldPageRevision]))
+        let renamed = try store.revision
+        try refresh()
+        XCTAssertEqual(try store.revision, renamed)
+        try store.removeProject(project)
+        XCTAssertTrue(try store.sessions().isEmpty)
+        XCTAssertTrue(try store.embeddingChunks().isEmpty)
+    }
+
+    func testCodexArchivedAndAccountScopedProjectDiscovery() throws {
+        let store = try CodingArchive(directory: archived)
+        try store.setEnabled(true, for: .codex)
+        try store.addProject(project)
+        try writeRollout(threadID, project: project, archived: true)
+        try writeRollout("00000000-0000-4000-a000-000000000002", project: "/projects/scoped",
+                         header: ["account_scoped": true, "creator_account_id": "a", "creator_user_id": "u"])
+        func discover() throws -> [String] {
+            let settings = try store.settings()
+            let result = try store.refresh(discoverProjects: true, readers: [settings.codexReader(homeDirectory: codexHome)])
+            XCTAssertTrue(result.issues.isEmpty)
+            return result.projects
+        }
+        XCTAssertEqual(try discover(), [project])
+        try store.setCodexScope(.init(accountID: "a", userID: "another"))
+        XCTAssertEqual(try discover(), [project])
+        try store.setCodexScope(.init(accountID: "a", userID: "u"))
+        XCTAssertEqual(try discover(), [project, "/projects/scoped"])
+        XCTAssertEqual(try store.sessions().map(\.project), [project])
+        try store.addProject("/projects/scoped")
+        _ = try discover()
+        XCTAssertEqual(Set(try store.sessions().map(\.project)), [project, "/projects/scoped"])
+    }
+
     func testOptInArchiveViewsAndCleanup() throws {
         let store = try CodingArchive(directory: archived)
         try store.synchronize(reader: reader)
@@ -43,7 +147,7 @@ final class CodingIntegrationTests: XCTestCase {
         try store.setEnabled(true)
         try store.synchronize(reader: reader)
         XCTAssertTrue(try store.sessions().isEmpty)
-        XCTAssertEqual(try CodingArchive.availableProjects(reader: reader), [project])
+        XCTAssertEqual(try store.refresh(discoverProjects: true, readers: [reader]).projects, [project])
         try store.addProject(project)
         try store.synchronize(reader: reader)
         let session = try XCTUnwrap(store.sessions().first)

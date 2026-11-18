@@ -142,11 +142,13 @@ Settings have Recording and Transcription tabs. Sources/destination lock during 
 
 ## Coding sessions
 
-In **Settings → Coding**, enable Claude Code import and select projects. Afterword uses [Lookback](https://github.com/jbonatakis/lookback) to read the local Claude Code projects store. It imports available sessions, checks for changes every minute while running, and checks again when you refresh the library. Pausing import keeps the archive. Removing a project from Coding settings deletes its Afterword history and stops future imports for that project.
+In **Settings → Coding**, enable Claude Code, Codex, or both and select the projects to import. The project list applies to all enabled sources. Afterword checks for changes every minute while running and when you refresh the library. Pausing a source keeps its saved sessions available. Removing a project deletes its Afterword history across sources and stops future imports for that project.
+
+Afterword uses Lookback to read Claude Code’s local projects and Codex’s active and archived local threads. Codex discovery uses `$CODEX_HOME` when set and otherwise opens `~/.codex`. It includes top-level sessions and user forks. To also import account-scoped threads, open **Account-scoped Codex sessions** and enter the matching `creator_account_id` and, when present, `creator_user_id` from your thread’s rollout header. [Lookback](https://github.com/jbonatakis/lookback)
 
 Open **Coding sessions** for an individual project conversation or **All activity** to search across calls and coding sessions. The conversation view follows the current branch. Recorded history includes earlier branches and pre-compaction messages. Search results open at the matching message and select the relevant view. Project and Git branch filters are in Search options. Tool names are available in collapsed disclosures. Afterword omits tool arguments and result payloads from the archive.
 
-The durable archive lives in `~/Library/Application Support/Afterword/CodingSessions`. It retains imported sessions when Claude Code rotates or deletes local transcripts. Search works immediately with keywords. The optional semantic model indexes session titles and coding passages locally, with prompt and response context and the existing recording priority rules.
+The durable archive lives in `~/Library/Application Support/Afterword/CodingSessions`. It retains imported sessions when the source rotates or deletes local transcripts. Search works immediately with keywords. The optional semantic model indexes session titles and coding passages locally, with prompt and response context and the existing recording priority rules.
 
 MCP clients can use **search_activity** across their allowed calls. Separately enable **Settings → Agent Access → Share imported coding sessions** to include imported projects and allow **get_coding_session**. Existing grants default to calls only.
 

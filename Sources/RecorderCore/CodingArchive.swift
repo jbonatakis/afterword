@@ -6,6 +6,7 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
     public let branch: String?
     public let started: Date?
     public let updated: Date
+    public var providerName: String { CodingProvider(rawValue: source)?.name ?? source }
 }
 
 public struct CodingMessage: Codable, Identifiable, Sendable {
@@ -28,9 +29,36 @@ public struct CodingHistory: Codable, Sendable {
     }
 }
 
+public enum CodingProvider: String, CaseIterable, Sendable {
+    case claudeCode = "claude-code"
+    case codex
+
+    public var name: String {
+        switch self {
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
+        }
+    }
+    // Keep the original Claude preference for existing archives.
+    fileprivate var enabledKey: String { self == .claudeCode ? "enabled" : "codexEnabled" }
+}
+
+public struct CodexScope: Equatable, Sendable {
+    public let accountID, userID: String
+    public init(accountID: String = "", userID: String = "") {
+        self.accountID = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.userID = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 public struct CodingImportSettings: Sendable {
-    public let enabled: Bool
+    public let providers: Set<CodingProvider>
+    public let codexScope: CodexScope
     public let projects: [String]
+
+    func codexReader(homeDirectory: URL? = nil) -> CodexReader {
+        CodexReader(homeDirectory: homeDirectory, includeArchived: true, accountID: codexScope.accountID, userID: codexScope.userID)
+    }
 }
 
 struct CodingPassage: Sendable {
@@ -76,11 +104,18 @@ public final class CodingArchive {
     }
 
     public func settings() throws -> CodingImportSettings {
-        try .init(enabled: db.rows("SELECT value FROM settings WHERE key='enabled'").first?.first == "1",
-                  projects: db.rows("SELECT path FROM projects ORDER BY path").map { $0[0] })
+        let values = try Dictionary(uniqueKeysWithValues: db.rows("SELECT key,value FROM settings").map { ($0[0], $0[1]) })
+        return try .init(providers: Set(CodingProvider.allCases.filter { values[$0.enabledKey] == "1" }),
+                         codexScope: .init(accountID: values["codexAccountID"] ?? "", userID: values["codexUserID"] ?? ""),
+                         projects: db.rows("SELECT path FROM projects ORDER BY path").map { $0[0] })
     }
-    public func setEnabled(_ value: Bool) throws {
-        try db.execute("INSERT OR REPLACE INTO settings VALUES ('enabled',?)", [value ? "1" : "0"])
+    public func setEnabled(_ value: Bool, for provider: CodingProvider = .claudeCode) throws {
+        try db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", [provider.enabledKey, value ? "1" : "0"])
+    }
+    public func setCodexScope(_ scope: CodexScope) throws {
+        try db.transaction {
+            try db.execute("INSERT OR REPLACE INTO settings VALUES ('codexAccountID',?),('codexUserID',?)", [scope.accountID, scope.userID])
+        }
     }
     public func addProject(_ path: String) throws {
         guard path.hasPrefix("/") else { throw RecorderError.message("Select a project with a working directory.") }
@@ -95,31 +130,52 @@ public final class CodingArchive {
         }
     }
 
-    public static func availableProjects(reader: any SessionReader = ClaudeCodeReader()) throws -> [String] {
-        Array(Set(try reader.listSessions().compactMap(\.workingDirectory).filter { $0.hasPrefix("/") })).sorted()
-    }
-    public func synchronize(reader: any SessionReader = ClaudeCodeReader()) throws {
+    public func refresh(discoverProjects: Bool, readers: [any SessionReader]? = nil) throws -> (projects: [String], issues: [String]) {
         let options = try settings()
-        guard options.enabled, !options.projects.isEmpty else { return }
+        var projects = Set<String>(), issues: [String] = []
+        guard discoverProjects || !options.projects.isEmpty else { return ([], []) }
+        let sources = readers ?? [ClaudeCodeReader(), options.codexReader()]
+        for reader in sources {
+            guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider) else { continue }
+            do {
+                try Task.checkCancellation()
+                let infos = try reader.listSessions()
+                if discoverProjects { projects.formUnion(infos.compactMap(\.workingDirectory).filter { $0.hasPrefix("/") }) }
+                if !options.projects.isEmpty { try synchronize(infos, reader: reader, provider: provider, options: options) }
+            } catch is CancellationError { throw CancellationError() }
+            catch { issues.append("\(provider.name): \(error.localizedDescription)") }
+        }
+        return (projects.sorted(), issues)
+    }
+
+    public func synchronize(reader: any SessionReader) throws {
+        let result = try refresh(discoverProjects: false, readers: [reader])
+        if !result.issues.isEmpty { throw RecorderError.message(result.issues.joined(separator: "\n")) }
+    }
+
+    private func synchronize(_ infos: [SessionInfo], reader: any SessionReader, provider: CodingProvider, options: CodingImportSettings) throws {
         let allowed = Set(options.projects)
-        let known = try Dictionary(uniqueKeysWithValues: db.rows("SELECT id,modified FROM sessions").map { ($0[0], $0[1]) })
+        let known = try Dictionary(uniqueKeysWithValues: db.rows("SELECT id,info FROM sessions").map { ($0[0], $0[1]) })
         var failures = 0
-        for info in try reader.listSessions() {
+        for info in infos {
             try Task.checkCancellation()
             guard let project = info.workingDirectory, allowed.contains(project) else { continue }
             let id = AgentJSON.hash(info.id.source + "/" + info.id.value)
             let stamp = String(info.modifiedAt.timeIntervalSince1970)
-            guard known[id] != stamp else { continue }
+            let session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
+                                        branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
             do {
+                // Codex can rename a thread in its index without modifying the rollout.
+                if let old = known[id], try JSONDecoder().decode(CodingSession.self, from: Data(old.utf8)) == session { continue }
                 let source = try reader.readSession(info.id)
-                let session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
-                                            branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
+                if let metadata = source.info, metadata.workingDirectory != project { continue }
                 let imported = Self.project(source, session: session)
                 try Task.checkCancellation()
                 try db.transaction {
                     let current = try settings()
-                    guard current.enabled, current.projects.contains(project) else { return }
-                    let previous = try db.rows("SELECT modified FROM sessions WHERE id=?", [id]).first?.first
+                    guard current.providers.contains(provider), current.projects.contains(project),
+                          provider != .codex || current.codexScope == options.codexScope else { return }
+                    let previous = try db.rows("SELECT info FROM sessions WHERE id=?", [id]).first?.first
                     guard previous == known[id] else { return } // A newer import won the race.
                     var history = imported
                     if previous != nil {
@@ -144,9 +200,12 @@ public final class CodingArchive {
     }
 
     private static func project(_ source: SessionHistory, session: CodingSession) -> CodingHistory {
-        let parents = Dictionary(source.recordedMessages.map { ($0.id, $0.parentID) }, uniquingKeysWith: { _, last in last })
-        var seen = Set<String>()
-        let messages = source.recordedMessages.compactMap { message -> CodingMessage? in
+        let nativeIDs = Set(source.recordedMessages.map(\.id))
+        var nearestVisible: [String: String] = [:]
+        var occurrences: [String: Int] = [:]
+        var idsByPosition: [Int: String] = [:]
+        var messages: [CodingMessage] = []
+        for (position, message) in source.recordedMessages.enumerated() {
             var text: [String] = [], tools: [String] = []
             for block in message.blocks {
                 switch block {
@@ -155,7 +214,21 @@ public final class CodingArchive {
                 default: break
                 }
             }
-            guard !text.isEmpty || !tools.isEmpty, seen.insert(message.id).inserted else { return nil }
+            let parent = message.parentID.flatMap { nearestVisible[$0] }
+            guard !text.isEmpty || !tools.isEmpty else {
+                nearestVisible[message.id] = parent
+                continue
+            }
+            // Rollbacks can reuse a native ID. Keep the original citation for the first occurrence.
+            var occurrence = occurrences[message.id, default: 0] + 1
+            var id = message.id
+            if occurrence > 1 {
+                id = "\(message.id)#\(occurrence)"
+                while nativeIDs.contains(id) { occurrence += 1; id = "\(message.id)#\(occurrence)" }
+            }
+            occurrences[message.id] = occurrence
+            idsByPosition[position] = id
+            nearestVisible[message.id] = id
             let role: String
             switch message.role {
             case .user: role = "User"
@@ -163,12 +236,25 @@ public final class CodingArchive {
             case .system: role = message.isCompactionSummary ? "Compaction summary" : "System"
             case .tool: role = "Tool"
             }
-            var parent = message.parentID
-            var visited = Set<String>()
-            while let id = parent, !seen.contains(id), visited.insert(id).inserted { parent = parents[id] ?? nil }
-            return .init(id: message.id, role: role, text: text.joined(separator: "\n\n"), parentID: parent, timestamp: message.timestamp, tools: tools)
+            messages.append(.init(id: id, role: role, text: text.joined(separator: "\n\n"), parentID: parent, timestamp: message.timestamp, tools: tools))
         }
-        return .init(session: session, messages: messages, conversationIDs: source.conversation.map(\.id).filter(seen.contains))
+        var conversationIDs: [String] = []
+        var activeParents: [String: String] = [:]
+        var previous: String?
+        for message in source.conversation {
+            if message.isCompactionSummary { previous = nil }
+            guard let position = message.recordedIndex, let id = idsByPosition[position] else { continue }
+            conversationIDs.append(id)
+            activeParents[id] = previous
+            previous = id
+        }
+        // Codex supplies an ordered active branch without parent IDs. Use that order for search context.
+        if session.source == CodingProvider.codex.rawValue {
+            messages = messages.map {
+                CodingMessage(id: $0.id, role: $0.role, text: $0.text, parentID: activeParents[$0.id], timestamp: $0.timestamp, tools: $0.tools)
+            }
+        }
+        return .init(session: session, messages: messages, conversationIDs: conversationIDs)
     }
 
     private func index(_ history: CodingHistory) throws {

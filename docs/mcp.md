@@ -102,7 +102,7 @@ The bundled helper is signed with the persistent app signing certificate under i
 
 ## Coding activity
 
-`search_activity` returns one result per allowed call or shared coding session. Supply a `query` to search titles and passages. Coding results include the best matching excerpt when available, with up to two additional citations in `more_passages`. Each citation has its own `message_id` and `view` for opening the source. A title-only match opens the session. Set `source` to `all`, `calls`, or `coding`, and `mode` to `hybrid` or `keyword`. An exact `project` or `branch` filter selects coding sessions.
+`search_activity` returns one result per allowed call or shared coding session. Supply a `query` to search titles and passages. Coding results identify their provider in `source` (`claude-code` or `codex`) and include the best matching excerpt when available, with up to two additional citations in `more_passages`. Each citation has its own `message_id` and `view` for opening the source. A title-only match opens the session. Set `source` to `all`, `calls`, or `coding`, and `mode` to `hybrid` or `keyword`. An exact `project` or `branch` filter selects coding sessions.
 
 Omit `query` to browse recent calls and sessions. With ISO time bounds (`from` inclusive, `to` exclusive), each active coding session shows conversation excerpts from that period and a `tool_only_message_count`. A session with only tool activity in the period still appears. Results sort by the most recent in-range activity (`last_activity_at` for coding sessions). An excerpt’s `date` is its message timestamp. For topic searches, date filters apply to each passage or to the session update date for a title match.
 

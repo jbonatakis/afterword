@@ -30,7 +30,7 @@ target_names = ["CaptureBridge", "RecorderCore", "AfterwordMCP", "Afterword", "R
 target_ids = {name: ident("target:" + name) for name in target_names}
 shortcut_package = add("package:KeyboardShortcuts", "XCLocalSwiftPackageReference", relativePath="Vendor/KeyboardShortcuts")
 shortcut_product = add("package-product:KeyboardShortcuts", "XCSwiftPackageProductDependency", productName="KeyboardShortcuts")
-lookback_package = add("package:Lookback", "XCRemoteSwiftPackageReference", repositoryURL="https://github.com/jbonatakis/lookback.git", requirement={"kind": "revision", "revision": "cc5528c967b6c8ddd9b9a134921c42006e8d9c24"})
+lookback_package = add("package:Lookback", "XCRemoteSwiftPackageReference", repositoryURL="https://github.com/jbonatakis/lookback.git", requirement={"kind": "revision", "revision": "7f512aa8e9e651399855f92c797321fa5ada6572"})
 lookback_product = add("package-product:Lookback", "XCSwiftPackageProductDependency", package=lookback_package, productName="Lookback")
 products = {}
 product_kinds = {"CaptureBridge": ("libCaptureBridge.a", "archive.ar", "com.apple.product-type.library.static"), "RecorderCore": ("RecorderCore.framework", "wrapper.framework", "com.apple.product-type.framework"), "Afterword": ("Afterword.app", "wrapper.application", "com.apple.product-type.application"), "RecorderCoreTests": ("RecorderCoreTests.xctest", "wrapper.cfbundle", "com.apple.product-type.bundle.unit-test")}

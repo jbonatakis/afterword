@@ -233,7 +233,9 @@ public final class AgentLibrary {
     private func codingSession(_ archive: CodingArchive, args: AgentArguments) throws -> [String: Any] {
         let history = try archive.history(id: args.string("session_id")!)
         let session = history.session
-        let revision = AgentJSON.hash(session.id + String(session.updated.timeIntervalSince1970))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let revision = AgentJSON.hash(try encoder.encode(session))
         try args.checkRevision(revision)
         let messages = args.string("view") == "recorded" ? history.messages : history.conversation
         var start = 0
@@ -300,7 +302,7 @@ public final class AgentLibrary {
                 hits = result.hits
             }
             codeItems = hits.map { hit in
-                var item: [String: Any] = ["kind": "coding", "session_id": hit.session.id, "title": hit.session.title,
+                var item: [String: Any] = ["kind": "coding", "source": hit.session.source, "session_id": hit.session.id, "title": hit.session.title,
                     "project": hit.session.project, "text": hit.text, "view": hit.archived ? "recorded" : "conversation"]
                 item["branch"] = hit.session.branch
                 item["message_id"] = hit.messageID
