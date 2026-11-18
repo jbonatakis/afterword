@@ -30,6 +30,83 @@ struct LibraryIndexProgress: View {
     }
 }
 
+private extension CodingProvider {
+    static let iconBundle: Bundle = {
+        #if SWIFT_PACKAGE
+        if let url = Bundle.main.url(forResource: "Afterword_Afterword", withExtension: "bundle"),
+           let bundle = Bundle(url: url) { return bundle }
+        return .module
+        #else
+        return .main
+        #endif
+    }()
+
+    static let images: [Self: NSImage] = [
+        Self.codex: "Codex", .claudeCode: "ClaudeCode"
+    ].compactMapValues { name in
+        iconBundle.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
+    }
+
+    @ViewBuilder var icon: some View {
+        if let image = Self.images[self] {
+            Image(nsImage: image).renderingMode(.original).resizable().scaledToFit().frame(width: 18, height: 18)
+        } else {
+            Image(systemName: "terminal")
+        }
+    }
+}
+
+private extension LibraryFilter {
+    @ViewBuilder var icon: some View {
+        switch self {
+        case .codex: CodingProvider.codex.icon
+        case .claudeCode: CodingProvider.claudeCode.icon
+        case .activity: Image(systemName: "rectangle.stack")
+        case .coding: Image(systemName: "terminal")
+        case .recordings: Image(systemName: "waveform")
+        case .transcribed: Image(systemName: "text.bubble")
+        case .untranscribed: Image(systemName: "text.badge.plus")
+        }
+    }
+}
+
+struct LibrarySidebar: View {
+    @Binding var selection: LibraryFilter
+    @State private var expanded: Set<LibraryFilter> = [.activity, .coding, .recordings]
+
+    var body: some View {
+        List(selection: $selection) {
+            LibrarySidebarRow(filter: .activity, selection: $selection, expanded: $expanded)
+        }.listStyle(.sidebar)
+    }
+}
+
+private struct LibrarySidebarRow: View {
+    let filter: LibraryFilter
+    @Binding var selection: LibraryFilter
+    @Binding var expanded: Set<LibraryFilter>
+
+    var body: some View {
+        let label = Label { Text(filter.rawValue) } icon: { filter.icon }
+        if filter.children.isEmpty {
+            label.tag(filter)
+        } else {
+            DisclosureGroup(isExpanded: Binding(get: { expanded.contains(filter) }, set: { open in
+                if open {
+                    expanded.insert(filter)
+                } else {
+                    if filter == .activity || filter.children.contains(selection) { selection = filter }
+                    expanded.remove(filter)
+                }
+            })) {
+                ForEach(filter.children) { child in
+                    LibrarySidebarRow(filter: child, selection: $selection, expanded: $expanded)
+                }
+            } label: { label }.tag(filter)
+        }
+    }
+}
+
 struct RecordingLibraryView: View {
     @ObservedObject var library: RecordingLibraryModel
     @ObservedObject var recorder: RecordingCoordinator
@@ -60,7 +137,10 @@ struct RecordingLibraryView: View {
         Section("Coding sessions") {
             ForEach(library.visibleCoding) { session in
                 VStack(alignment: .leading, spacing: 5) {
-                    Label(session.title, systemImage: "terminal").font(.headline).lineLimit(2)
+                    Label { Text(session.title) } icon: {
+                        if let provider = CodingProvider(rawValue: session.source) { provider.icon }
+                        else { Image(systemName: "terminal") }
+                    }.font(.headline).lineLimit(2)
                     Text([session.providerName, URL(fileURLWithPath: session.project).lastPathComponent, session.updated.formatted()].joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary)
                     if let hit = library.codingHits[session.id] {
@@ -74,13 +154,7 @@ struct RecordingLibraryView: View {
     private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
-                List(selection: $library.filter) {
-                    Section("Library") {
-                        ForEach(LibraryFilter.allCases) { filter in
-                            Label(filter.rawValue, systemImage: filter.symbol).tag(filter)
-                        }
-                    }
-                }.listStyle(.sidebar)
+                LibrarySidebar(selection: $library.filter)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     TranscriptionActivity(transcription: recorder.transcription)
@@ -100,14 +174,24 @@ struct RecordingLibraryView: View {
                     Button { recorder.calendar.showUpcoming() } label: { Label("Upcoming calls", systemImage: "calendar") }.buttonStyle(.plain)
                     Button { recorder.calendar.showPeople() } label: { Label("People & groups", systemImage: "person.2") }.buttonStyle(.plain)
                 }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(16)
-            }.navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 250)
+            }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
         } content: {
             VStack(spacing: 0) {
                 if library.visibleRecordings.isEmpty && library.visibleCoding.isEmpty {
                     ContentUnavailableView {
-                        Label(library.search.isEmpty ? (library.filter == .coding ? "No coding sessions" : "No recordings") : "No results", systemImage: library.search.isEmpty ? "waveform" : "magnifyingglass")
+                        if library.search.isEmpty {
+                            Label { Text(library.filter.emptyTitle) } icon: { library.filter.icon }
+                        } else {
+                            Label("No results", systemImage: "magnifyingglass")
+                        }
                     } description: {
-                        Text(library.search.isEmpty ? (library.filter == .coding ? "Choose projects in Settings → Coding to import sessions." : "Record a call or add a folder of existing recordings.") : "Try another phrase or a different library filter.")
+                        if !library.search.isEmpty {
+                            Text("Try another phrase or a different library filter.")
+                        } else if !library.filter.showsRecordings {
+                            Text("Choose projects in Settings → Coding to import sessions.")
+                        } else if library.filter == .recordings {
+                            Text("Record a call or add a folder of existing recordings.")
+                        }
                     }
                 } else {
                     Group {
@@ -125,10 +209,10 @@ struct RecordingLibraryView: View {
                 Divider()
                 LibraryIndexProgress(presentation: library.searchPresentation)
                 HStack {
-                    if library.filter != .coding {
+                    if library.filter.showsRecordings {
                         Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
                     }
-                    if !library.visibleCoding.isEmpty || library.filter == .coding {
+                    if !library.visibleCoding.isEmpty || !library.filter.showsRecordings {
                         Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")")
                     }
                     Spacer()
@@ -157,8 +241,8 @@ struct RecordingLibraryView: View {
                     Picker("Speaker", selection: $library.searchSpeaker) {
                         Text("Any speaker").tag("")
                         ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
-                    }.disabled(library.filter == .coding)
-                    if !library.coding.sessions.isEmpty && (library.filter == .activity || library.filter == .coding) {
+                    }.disabled(!library.filter.showsRecordings)
+                    if !library.coding.sessions.isEmpty && library.filter.showsCoding {
                         Picker("Coding project", selection: $library.codingProject) {
                             Text("Any project").tag("")
                             ForEach(library.coding.projects, id: \.self) { Text($0).tag($0) }

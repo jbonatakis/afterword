@@ -22,6 +22,7 @@ xcrun swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos
     Sources/Afterword/RecordingCoordinator.swift Sources/Afterword/RecordingShortcut.swift Sources/Afterword/TranscriptionCoordinator.swift \
     "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/Lookback.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
     "$binary_dir"/KeyboardShortcuts.build/*.swift.o -o "$app/Contents/MacOS/LibraryCheck"
+cp Sources/Afterword/Resources/*.png "$app/Contents/Resources/"
 cp -R "$binary_dir/KeyboardShortcuts_KeyboardShortcuts.bundle" "$app/Contents/Resources/"
 codesign --force --sign - --options runtime "$app"
 exec "$app/Contents/MacOS/LibraryCheck"

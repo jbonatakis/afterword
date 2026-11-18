@@ -41,16 +41,18 @@ for name, (path, kind, _) in product_kinds.items():
 groups = []
 for name in target_names:
     folder = ("Tests/" if name.endswith("Tests") else "Sources/") + name
-    refs, compiled, headers = [], [], []
+    refs, compiled, headers, resources = [], [], [], []
     for path in sorted((ROOT / folder).rglob("*")):
         if not path.is_file(): continue
         relative = str(path.relative_to(ROOT))
-        kind = {".swift": "sourcecode.swift", ".c": "sourcecode.c.c", ".h": "sourcecode.c.h", ".modulemap": "sourcecode.module-map"}.get(path.suffix, "text")
+        kind = {".swift": "sourcecode.swift", ".c": "sourcecode.c.c", ".h": "sourcecode.c.h", ".modulemap": "sourcecode.module-map", ".png": "image.png"}.get(path.suffix, "text")
         ref = file(relative, kind); refs.append(ref)
         if path.suffix in [".swift", ".c"]: compiled.append(build(relative, ref))
+        if name == "Afterword" and path.parent == ROOT / folder / "Resources" and path.suffix == ".png": resources.append(build(relative, ref))
         if path.suffix == ".h": headers.append(build(relative, ref, settings={"ATTRIBUTES": ["Public"]}))
     groups.append(add("group:" + name, "PBXGroup", children=refs, name=name, sourceTree="<group>"))
     phases = [phase(name + ":sources", "PBXSourcesBuildPhase", compiled)]
+    if resources: phases.append(phase(name + ":resources", "PBXResourcesBuildPhase", resources))
     if headers: phases.append(phase(name + ":headers", "PBXHeadersBuildPhase", headers))
     dependencies, links = [], []
     deps = {"CaptureBridge": [], "RecorderCore": ["CaptureBridge"], "AfterwordMCP": ["RecorderCore"], "Afterword": ["RecorderCore", "AfterwordMCP"], "RecorderCoreTests": ["RecorderCore"]}[name]

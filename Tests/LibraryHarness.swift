@@ -17,15 +17,15 @@ import Lookback
         }
         app.run()
     }
+    static func require(_ condition: @autoclosure () -> Bool, _ message: String) {
+        if !condition() { fputs("FAIL: \(message)\n", stderr); exit(1) }
+    }
+    static func pump(_ seconds: Double = 0.3) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-ui-" + UUID().uuidString)
         let name = Bundle.main.bundleIdentifier!
         UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
-        func require(_ condition: @autoclosure () -> Bool, _ message: String) {
-            if !condition() { fputs("FAIL: \(message)\n", stderr); exit(1) }
-        }
-        func pump(_ seconds: Double = 0.3) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
         let folder = root.appendingPathComponent("Call-2026-11-14_09-30-00")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         for track in RecordingTrack.allCases {
@@ -89,8 +89,13 @@ import Lookback
         library.search = ""; library.filter = .untranscribed
         await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.isEmpty, "Needs transcription filter was wrong")
-        library.filter = .all
+        library.filter = .recordings
         print("PASS async library refresh, initial selection, transcript search, and filters")
+
+        try await checkCodingSidebar(root: root, library: library)
+        library.filter = .recordings
+        library.search = ""
+        await library.refresh()?.value
 
         let originalVersion = recording.transcripts[0]
         let originalBytes = try Data(contentsOf: originalVersion.url)
@@ -393,6 +398,14 @@ import Lookback
         require(!library.managing && !recorder.transcription.libraryMutationActive, "Trash failed to release its mutation guard")
         require(library.issues.isEmpty, "Deleted call remained as a missing library folder")
         print("PASS call/version deletion, recording destination guard, playback unload, and recent-recording cleanup using fixture Trash")
+    }
+
+    @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {
+        let pending = root.appendingPathComponent("Call-2026-11-14_10-00-00")
+        try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: pending) }
+        let mixed = library.recordings[0].url.appendingPathComponent("Mixed.m4a")
+        try FileManager.default.copyItem(at: mixed, to: pending.appendingPathComponent("Mixed.m4a"))
         let projects = root.appendingPathComponent("ClaudeProjects")
         let project = projects.appendingPathComponent("fixture")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
@@ -424,6 +437,41 @@ import Lookback
         library.coding.refresh()
         for _ in 0..<100 { if !library.coding.busy { break }; await pump(0.02) }
         await library.refresh()?.value
+        let sidebar = NSHostingView(rootView: LibrarySidebar(selection: Binding(get: { library.filter }, set: { library.filter = $0 })))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 235, height: 320),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = sidebar; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        await pump()
+        func outline(in view: NSView) -> NSOutlineView? {
+            if let view = view as? NSOutlineView { return view }
+            return view.subviews.lazy.compactMap { outline(in: $0) }.first
+        }
+        guard let tree = outline(in: sidebar) else { throw RecorderError.message("Missing library sidebar outline") }
+        let rows: [(LibraryFilter, Int, [String])] = [
+            (.activity, 2, ["Claude Code", "Codex"]), (.coding, 0, ["Claude Code", "Codex"]),
+            (.codex, 0, ["Codex"]), (.claudeCode, 0, ["Claude Code"]),
+            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, [])
+        ]
+        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2], "Incorrect sidebar hierarchy")
+        for (index, (filter, recordings, providers)) in rows.enumerated() {
+            tree.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            await pump(0.05)
+            require(library.filter == filter && library.visibleRecordings.count == recordings &&
+                    library.visibleCoding.map(\.providerName).sorted() == providers, "Wrong contents for \(filter.rawValue)")
+            if filter == .untranscribed { require(library.selectedRecording?.url.lastPathComponent == pending.lastPathComponent, "Expected the recording awaiting transcription") }
+        }
+        tree.collapseItem(tree.item(atRow: 4)); await pump()
+        require(tree.numberOfRows == 5 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
+        tree.expandItem(tree.item(atRow: 4)); await pump()
+        require(tree.numberOfRows == 7, "Expanding Recordings did not restore its children")
+        library.filter = .claudeCode; library.search = "hexagons"
+        await library.updateSearch(debounce: false)?.value
+        require(library.visibleCoding.isEmpty, "A Codex search result leaked into Claude Code")
+        library.filter = .codex
+        require(library.selectedCoding?.providerName == "Codex", "Switching providers lost the matching search result")
+        print("PASS native sidebar hierarchy, branch selection, disclosure, and provider-scoped search")
+
         library.filter = .coding; library.search = "preserves"
         await library.updateSearch(debounce: false)?.value
         guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }

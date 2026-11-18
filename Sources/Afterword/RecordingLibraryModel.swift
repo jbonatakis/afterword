@@ -49,7 +49,7 @@ struct ParticipantAssignmentStatus {
     @Published private(set) var visibleRecordings: [LibraryRecording] = []
     @Published var filter: LibraryFilter = .activity {
         didSet {
-            if filter == .coding && !searchSpeaker.isEmpty { searchSpeaker = "" }
+            if !filter.showsRecordings && !searchSpeaker.isEmpty { searchSpeaker = "" }
             applyFilter()
         }
     }
@@ -235,9 +235,9 @@ struct ParticipantAssignmentStatus {
     }
     private func applyFilter() {
         visibleRecordings = matchedRecordings.filter { filter.includes($0) }
-        visibleCoding = filter == .activity || filter == .coding ? matchedCoding.filter {
-            (codingProject.isEmpty || $0.project == codingProject) && (codingBranch.isEmpty || $0.branch == codingBranch)
-        } : []
+        visibleCoding = matchedCoding.filter {
+            filter.includes($0) && (codingProject.isEmpty || $0.project == codingProject) && (codingBranch.isEmpty || $0.branch == codingBranch)
+        }
         if selectedRecording == nil && selectedCoding == nil { selection = visibleRecordings.first?.id ?? visibleCoding.first?.id }
     }
     private func beginManagement() throws {
@@ -449,14 +449,52 @@ private struct LibraryRefresh: Sendable {
     var speakers: [String] = []
 }
 
-enum LibraryFilter: String, CaseIterable, Identifiable {
-    case activity = "All activity", coding = "Coding sessions", all = "All recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
-    var id: String { rawValue }
-    var symbol: String {
-        switch self { case .activity: return "rectangle.stack"; case .coding: return "terminal"; case .all: return "waveform"; case .transcribed: return "text.bubble"; case .untranscribed: return "text.badge.plus" }
+enum LibraryFilter: String, Identifiable {
+    case activity = "All activity", coding = "Coding sessions", codex = "Codex", claudeCode = "Claude Code"
+    case recordings = "Recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
+    var id: Self { self }
+
+    var children: [Self] {
+        switch self {
+        case .activity: return [.coding, .recordings]
+        case .coding: return [.codex, .claudeCode]
+        case .recordings: return [.transcribed, .untranscribed]
+        default: return []
+        }
     }
+
+    var showsRecordings: Bool {
+        switch self {
+        case .coding, .codex, .claudeCode: return false
+        default: return true
+        }
+    }
+    var showsCoding: Bool { self == .activity || !showsRecordings }
+
     func includes(_ recording: LibraryRecording) -> Bool {
-        switch self { case .coding: return false; case .activity, .all: return true; case .transcribed: return recording.hasTranscript; case .untranscribed: return !recording.hasTranscript }
+        switch self {
+        case .transcribed: return recording.hasTranscript
+        case .untranscribed: return !recording.hasTranscript
+        default: return showsRecordings
+        }
+    }
+    func includes(_ session: CodingSession) -> Bool {
+        switch self {
+        case .codex: return session.source == CodingProvider.codex.rawValue
+        case .claudeCode: return session.source == CodingProvider.claudeCode.rawValue
+        default: return showsCoding
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .activity: return "No activity"
+        case .coding: return "No coding sessions"
+        case .codex, .claudeCode: return "No \(rawValue) sessions"
+        case .recordings: return "No recordings"
+        case .transcribed: return "No recordings with transcripts"
+        case .untranscribed: return "No recordings need transcription"
+        }
     }
 }
 

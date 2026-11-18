@@ -14,6 +14,7 @@ let package = Package(
         .target(name: "RecorderCore", dependencies: ["CaptureBridge", .product(name: "Lookback", package: "lookback")],
                 linkerSettings: [.linkedFramework("AVFoundation"), .linkedFramework("CoreAudio"), .linkedLibrary("sqlite3")]),
         .executableTarget(name: "Afterword", dependencies: ["RecorderCore", "KeyboardShortcuts"],
+                          resources: [.process("Resources")],
                           linkerSettings: [.linkedFramework("SwiftUI"), .linkedFramework("IOKit"), .linkedFramework("EventKit")]),
         .executableTarget(name: "AfterwordMCP", dependencies: ["RecorderCore"]),
         .testTarget(name: "RecorderCoreTests", dependencies: ["RecorderCore", "CaptureBridge"])

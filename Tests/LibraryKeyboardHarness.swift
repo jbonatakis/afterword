@@ -85,9 +85,12 @@ import RecorderCore
         }
         require(NSApp.keyWindow === window, "Library did not become key (active: \(NSApp.isActive), visible: \(window.isVisible), can become key: \(window.canBecomeKey))")
         await pump()
-        let tables = views(window.contentView!).compactMap { $0 as? NSTableView }
-        guard let list = tables.first(where: { $0.numberOfRows == 1 }) else {
-            print("Table rows:", tables.map(\.numberOfRows)); fatalError("Call list not found")
+        var tables: [NSTableView] { views(window.contentView!).compactMap { $0 as? NSTableView } }
+        var list: NSTableView {
+            guard let table = tables.first(where: { $0.numberOfRows == 1 }) else {
+                fatalError("Call list not found among tables with row counts \(tables.map(\.numberOfRows))")
+            }
+            return table
         }
         func focusList() async { await focusWindow(window); window.makeFirstResponder(list); await pump(0.1) }
         await focusList()
@@ -162,7 +165,9 @@ import RecorderCore
         require(library.search == "r e", "Search did not accept shortcut letters")
         await key("\u{7f}", code: 51, window: window); await pump()
         require(library.search == "r " && window.attachedSheet == nil, "Backspace in search opened Trash or failed to edit")
-        library.search = ""; await pump(); await focusList()
+        library.search = ""; await pump()
+        await key("\u{1b}", code: 53, window: window); await pump()
+        await focusList()
         await key(" ", code: 49, window: window); await pump()
         require(playback.playing, "Space did not start silent playback")
         await key(" ", code: 49, window: window); await pump()
