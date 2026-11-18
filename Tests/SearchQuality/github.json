@@ -1,0 +1,5 @@
+[
+  {"repository":"sample/dispatch","number":42,"item":"dispatch42","reference":"review42","title":"Keep dispatch atomic on rollback","text":"The schedule row and job must share one transaction. A retry after rollback must never dispatch a cancelled delivery.","date":"2026-01-13T12:00:00Z"},
+  {"repository":"sample/display","number":42,"item":"display42","reference":"display-review","title":"Keep dispatch indicators consistent","text":"Use a single color for the status indicator on both dispatch screens.","date":"2025-09-04T12:00:00Z"},
+  {"repository":"sample/clock","number":7,"item":"clock7","reference":"clock-review","title":"Clock continuity on the lobby terminal","text":"Compare the battery clock with server time before accepting appointments after an outage.","date":"2026-01-10T12:00:00Z"}
+]

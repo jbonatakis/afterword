@@ -80,6 +80,7 @@ def sample(root):
             path.write_text("".join(json.dumps(r) + "\n" for r in rows))
         subprocess.run(["bash", str(FIXTURES / "import.sh"), str(project.parent), str(work)], check=True)
         sqlite_backup(work / "History.sqlite", root / "History.sqlite")
+        sqlite_backup(work / "GitHub/History.sqlite", root / "GitHub.sqlite")
 
 
 def regular(path):

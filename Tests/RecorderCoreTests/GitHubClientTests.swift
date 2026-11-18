@@ -173,7 +173,9 @@ final class GitHubClientTests: XCTestCase {
             var data: Object = [:]
             if query.contains("search(type:") {
                 let reviewed = (vars["q"] as! String).contains("reviewed-by")
-                var results = connection(reviewed ? [metadata("P", "them")] : [metadata("authored"), metadata("mention", "them")])
+                var oldPR = metadata("P", "them")
+                oldPR["createdAt"] = old
+                var results = connection(reviewed ? [oldPR] : [metadata("authored"), metadata("mention", "them")])
                 results["issueCount"] = 2
                 data["search"] = results
             } else if query.contains("viewer { id issueComments") {

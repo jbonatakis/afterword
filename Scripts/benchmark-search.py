@@ -84,6 +84,10 @@ def configure(snapshot, mode, weights):
         directory = state / "CodingSessions"
         directory.mkdir(exist_ok=True)
         sqlite_backup(history, directory / history.name)
+    github = corpus / "GitHub.sqlite"
+    if github.exists():
+        (state / "GitHub").mkdir(exist_ok=True)
+        sqlite_backup(github, state / "GitHub/History.sqlite")
     write_json(state / "Access.json", dict(version=1, enabled=True, folders=roots, allowCodingSessions=history.exists()))
     embedding = state / "Embeddings"
     embedding.mkdir(exist_ok=True)
@@ -113,6 +117,7 @@ class Sources:
             key = (item["kind"], item["title"])
             self.by_title.setdefault(key, []).append(item)
         self.calls = {}
+        self.contributions = {}
         self.history = snapshot / "corpus/History.sqlite"
         self.messages = {}
 
@@ -133,6 +138,21 @@ class Sources:
                     args.update(offset=res["next_offset"], expected_revision=res["call"]["revision"])
                 self.calls[key] = text
             return self.calls[key]
+        if item["kind"] == "github":
+            item_id = item["item_id"]
+            if item_id not in self.contributions:
+                texts = {}
+                for passage in pages(self.call, "get_github_item", {"item_id": item_id}, "revision"):
+                    anchor = passage["passage_id"]
+                    parts = [passage["text"]]
+                    while "next_text_offset" in passage:
+                        result = self.call("get_github_item", {"item_id": item_id, "passage_id": anchor,
+                                           "limit": 1, "text_offset": passage["next_text_offset"]})
+                        passage = result["items"][0]
+                        parts.append(passage["text"])
+                    texts[anchor] = "".join(parts)
+                self.contributions[item_id] = texts
+            return self.contributions[item_id]
         sid = item["session_id"]
         if sid not in self.messages:
             db = sqlite3.connect(self.history.as_uri() + "?mode=ro&immutable=1", uri=True)
@@ -144,10 +164,10 @@ class Sources:
         return self.messages[sid]
 
     def resolve(self, case, label):
-        kind = label.get("kind", {"calls": "call", "coding": "coding"}.get(case["source"]))
+        kind = label.get("kind", {"calls": "call", "coding": "coding", "github": "github"}.get(case["source"]))
         items = self.by_title.get((kind, label["title"]), [])
         if "id" in label:
-            items = [i for i in items if label["id"] in (i.get("call_id"), i.get("session_id"))]
+            items = [i for i in items if label["id"] in (i.get("call_id"), i.get("session_id"), i.get("item_id"))]
         if len(items) != 1:
             raise ValueError(f"{case['id']}: missing or ambiguous source {label['title']}")
         return items[0]
@@ -163,7 +183,7 @@ class Sources:
                 texts = [norm(t) for t in self.texts(item).values()]
                 if not anchors or any(not a or not any(a in t for t in texts) for a in anchors):
                     raise ValueError(f"{case['id']}: evidence label missing from frozen source")
-            labels[item.get("call_id") or item["session_id"]] = anchors
+            labels[item.get("call_id") or item.get("item_id") or item["session_id"]] = anchors
         return labels
 
 
@@ -171,17 +191,17 @@ def score(case, items, labels, sources):
     row = {"id": case["id"], "kind": case["kind"], "returned": bool(items)}
     if case.get("distractors"):
         traps = [sources.resolve(case, d) for d in case["distractors"]]
-        trap_ids = {i.get("call_id") or i["session_id"] for i in traps}
+        trap_ids = {i.get("call_id") or i.get("item_id") or i["session_id"] for i in traps}
         if trap_ids.intersection(labels):
             raise ValueError(f"{case['id']}: a source cannot be both relevant and a distractor")
-        row["distractor"] = any((i.get("call_id") or i.get("session_id")) in trap_ids for i in items)
+        row["distractor"] = any((i.get("call_id") or i.get("item_id") or i.get("session_id")) in trap_ids for i in items)
     if not labels:
         return row
     row["rank"] = None
     if case["kind"] == "supported":
         row.update(preview=False, evidence=False)
     for rank, item in enumerate(items, 1):
-        anchors = labels.get(item.get("call_id") or item.get("session_id"))
+        anchors = labels.get(item.get("call_id") or item.get("item_id") or item.get("session_id"))
         if anchors is None:
             continue
         if row["rank"] is None:
@@ -192,6 +212,8 @@ def score(case, items, labels, sources):
             row["preview"] = any(a in norm(item["text"]) for a in anchors)
         if item["kind"] == "coding":
             ids = [p["message_id"] for p in [item, *item.get("more_passages", [])] if "message_id" in p]
+        elif item["kind"] == "github":
+            ids = [p["passage_id"] for p in item.get("citations", [])]
         else:
             ids = item.get("paragraph_ids", [])
         texts = sources.texts(item)
@@ -226,13 +248,13 @@ def run(args):
         raise ValueError("Duplicate case IDs.")
     for c in cases:
         if (c["kind"] not in ("supported", "near_miss", "off_topic") or c["split"] not in ("dev", "holdout")
-                or c["source"] not in ("coding", "calls", "all") or not c["query"].strip()
+                or c["source"] not in ("coding", "calls", "github", "all") or not (c["query"].strip() or c.get("filters"))
                 or bool(c.get("gold")) != (c["kind"] != "off_topic")):
             raise ValueError(f"Invalid case: {c['id']}")
     source_splits = {}
     for c in cases:
         for g in c.get("gold", []):
-            source = (g.get("kind", {"calls": "call", "coding": "coding"}.get(c["source"])), g.get("id", g["title"]))
+            source = (g.get("kind", {"calls": "call", "coding": "coding", "github": "github"}.get(c["source"])), g.get("id", g["title"]))
             if source_splits.setdefault(source, c["split"]) != c["split"]:
                 raise ValueError(f"{source}: related questions must stay in the same split.")
     cases = [c for c in cases if c["split"] == args.split]
@@ -244,7 +266,7 @@ def run(args):
         with mcp(args.executable, state) as call:
             deadline = time.monotonic() + args.index_timeout
             while model:
-                status = call("list_calls", {"limit": 1})["search_status"]
+                status = call("search_activity", {"limit": 1})["search_status"]
                 if status["coverage_complete"]:
                     break
                 if status["state"] != "indexing" or time.monotonic() >= deadline:
@@ -254,9 +276,10 @@ def run(args):
             rows = []
             for c in cases:
                 labels = sources.gold(c)
-                result = call("search_activity", dict(query=c["query"], source=c["source"], mode=args.mode, limit=TOP_K))
+                result = call("search_activity", dict(query=c["query"], source=c["source"], mode=args.mode, limit=TOP_K, **c.get("filters", {})))
                 status = result["search_status"]
-                if status["mode"] != args.mode or (model and not status["coverage_complete"]):
+                expected_mode = c.get("search_mode", args.mode)
+                if status["mode"] != expected_mode or (model and not status["coverage_complete"]):
                     raise RuntimeError(f"{c['id']}: unexpected search mode or coverage: {status}")
                 rows.append(score(c, result["items"], labels, sources))
     report = {"format": 1, "snapshot": fingerprint, "cases": digest(args.cases), "split": args.split,

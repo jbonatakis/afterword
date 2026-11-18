@@ -1,6 +1,6 @@
 # Search quality benchmark
 
-The runner calls `search_activity` on a local AfterwordMCP executable over stdio. It tests the same keyword and hybrid retrieval paths used by clients. The versioned sample contains eight synthetic calls, four synthetic coding sessions, and 24 questions. Lookback imports the sample sessions through the production archive indexer. Each split has ten answerable questions, one related question with an unsupported premise, and one off-topic question.
+The runner calls `search_activity` on a local AfterwordMCP executable over stdio. It tests the same keyword and hybrid retrieval paths used by clients. The versioned sample contains nine synthetic calls, four synthetic coding sessions, three synthetic reviewed pull requests, and 28 questions. Lookback imports the sample sessions through the production archive indexer. Each split has twelve answerable questions, one related question with an unsupported premise, and one off-topic question.
 
 ## Run it
 
@@ -27,15 +27,15 @@ Use `--mode keyword` for a literal-search control. Hybrid defaults to the locall
 
 | Measure | What counts |
 |---|---|
-| Source @1 and @3 | At least one accepted call or session appears within that rank on an answerable question. |
+| Source @1 and @3 | At least one accepted call, session, or GitHub item appears within that rank on an answerable question. |
 | Preview @1 | The first result is an accepted source and its displayed excerpt contains a labeled evidence phrase. |
-| Evidence @3 | One of the first three results cites a paragraph or coding message from an accepted source containing a labeled phrase. Additional citations on a coding hit count. The scorer checks the original frozen text. |
+| Evidence @3 | One of the first three results cites a paragraph, coding message, or GitHub contribution from an accepted source containing a labeled phrase. Additional citations on a coding hit count. The scorer checks the original frozen text. |
 | Near-miss topic @3 | A question with an unsupported premise retrieves an expected source that actually discusses the topic. |
 | Near-miss with results | Any result is returned for that question. A useful passage can correct its premise. |
 | Known distractor @3 | An explicitly labeled misleading source appears in the first three. Lower is better. Only cases with distractor labels contribute. |
 | Off-topic empty | A question labeled unrelated to this snapshot produces zero hits. |
 
-Every score is a numerator and denominator. Evidence anchors are human-selected alternatives, matched case-insensitively with whitespace normalized. Use a short phrase specific enough to establish the relevant fact. This measures delivery of labeled evidence. Judging whether an agent drew the correct conclusion from it requires a separate answer evaluation. The current labels cover transcript paragraphs and coding messages.
+Every score is a numerator and denominator. Evidence anchors are human-selected alternatives, matched case-insensitively with whitespace normalized. Use a short phrase specific enough to establish the relevant fact. This measures delivery of labeled evidence. Judging whether an agent drew the correct conclusion from it requires a separate answer evaluation. The current labels cover transcript paragraphs, coding messages and individual GitHub contributions.
 
 ## Use a private library
 
@@ -45,13 +45,13 @@ python3 Scripts/benchmark-search.py run .search-benchmarks/my-snapshot \
   --cases .search-benchmarks/my-cases.json --executable "$helper" --split dev
 ```
 
-Freeze while saved recordings are idle. The snapshot copies transcript versions and call metadata from the recording folders shared in Agent Access. It substitutes silent audio and takes a consistent SQLite backup of the coding archive when coding access is enabled. The separate people directory and voice samples are outside the snapshot. The private runtime cache can reuse vectors from this Mac. Snapshot data persists independently of later edits, deletions, or changes to sharing, so keep private snapshots and their labels in the Git-ignored `.search-benchmarks/` directory. Removing a snapshot removes that benchmark's copy.
+Freeze while saved recordings are idle. The snapshot copies transcript versions and call metadata from the recording folders shared in Agent Access. It substitutes silent audio and takes a consistent SQLite backup of the coding archive when coding access is enabled. The private-library freezer covers calls and coding sessions. GitHub evaluations use the versioned synthetic repository fixture. The separate people directory and voice samples are outside the snapshot. The private runtime cache can reuse vectors from this Mac. Snapshot data persists independently of later edits, deletions, or changes to sharing, so keep private snapshots and their labels in the Git-ignored `.search-benchmarks/` directory. Removing a snapshot removes that benchmark's copy.
 
 The snapshot fingerprint covers the frozen files. Search settings, writable indexes, and the runner lock are separate. Reports identify the corpus, exact case file, executable, mode, model, split, and individual case outcomes. Comparison rejects a change to the corpus, labels, or split. Use the *same* snapshot directory for a paired experiment. Fresh imports have their own archive identities. The frozen coding archive includes its text index, so this workflow measures retrieval over already-imported sessions.
 
 ## Add cases without training to the test
 
-Add questions to the case file before comparing builds. A case can accept multiple genuinely relevant sources. An explicit source ID can disambiguate duplicate titles. Use `source: "all"` and give each label its `kind` when testing across calls and code. For example:
+Add questions to the case file before comparing builds. A case can accept multiple genuinely relevant sources. An explicit source ID can disambiguate duplicate titles. Use `source: "all"` and give each label its `kind` when testing across calls, code and GitHub. GitHub cases can pass a `filters` object and set `search_mode` to `reference` or `browse` for deterministic lookups. For example:
 
 ```json
 {
@@ -82,3 +82,16 @@ On November 17, 2026, the baseline was `cbbc830`. The candidate used the stronge
 Both builds returned an accepted source in the first three for every answerable case. In the real held-out set the cited paragraphs or messages contained labeled evidence on 7/10 questions. The two held-out off-topic controls both returned results. On the sample development set, a separate BGE run improved preview hits from 2/10 to 6/10. The runs provide limited evidence about excerpt selection and leave the choice of model and similarity threshold open.
 
 Source review expanded the accepted evidence on the development split. Both builds were rescored with the same labels before the held-out comparison. The signed candidate reproduced the held-out scores.
+
+## GitHub contribution cases
+
+The synthetic corpus includes two repositories with a PR numbered 42, a review on an older PR, a similarly titled distractor, and one decision recorded in a call, coding session, and PR. Four questions cover exact references, a review date window, keyword evidence in a review, and mixed-source retrieval. All four returned an accepted item first and cited the labeled passage in both modes. The reference and date-window cases explicitly exercise deterministic lookup and browsing.
+
+The November 18, 2026 signed helper produced the following results over the entire versioned corpus. Each split has twelve answerable questions.
+
+| Mode | Dev source @1 | Held-out source @1 | Dev evidence @3 | Held-out evidence @3 |
+|---|---:|---:|---:|---:|
+| Keyword | 4/12 | 4/12 | 4/12 | 4/12 |
+| Local hybrid, Qwen3-Embedding-0.6B | 10/12 | 10/12 | 12/12 | 12/12 |
+
+The hybrid search also returned a result for the held-out off-topic question. These figures establish a regression baseline for this synthetic corpus. Live repository coverage and import throughput require a connected installation.

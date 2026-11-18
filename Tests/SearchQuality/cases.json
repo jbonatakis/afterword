@@ -361,5 +361,96 @@
         ]
       }
     ]
+  },
+  {
+    "id": "dispatch-ref",
+    "split": "dev",
+    "source": "github",
+    "query": "sample/dispatch#42",
+    "kind": "supported",
+    "gold": [
+      {
+        "kind": "github",
+        "title": "Keep dispatch atomic on rollback",
+        "anchors": [
+          "one transaction"
+        ]
+      }
+    ],
+    "search_mode": "reference",
+    "distractors": [
+      {
+        "kind": "github",
+        "title": "Keep dispatch indicators consistent"
+      }
+    ]
+  },
+  {
+    "id": "dispatch-review-window",
+    "split": "dev",
+    "source": "github",
+    "query": "",
+    "kind": "supported",
+    "gold": [
+      {
+        "kind": "github",
+        "title": "Keep dispatch atomic on rollback",
+        "anchors": [
+          "never dispatch a cancelled delivery"
+        ]
+      }
+    ],
+    "search_mode": "browse",
+    "filters": {
+      "action": "review",
+      "from": "2026-01-12T00:00:00Z",
+      "to": "2026-01-15T00:00:00Z"
+    }
+  },
+  {
+    "id": "clock-review",
+    "split": "holdout",
+    "source": "github",
+    "query": "battery clock",
+    "kind": "supported",
+    "gold": [
+      {
+        "kind": "github",
+        "title": "Clock continuity on the lobby terminal",
+        "anchors": [
+          "before accepting appointments"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "clock-cross-source",
+    "split": "holdout",
+    "source": "all",
+    "query": "battery",
+    "kind": "supported",
+    "gold": [
+      {
+        "kind": "github",
+        "title": "Clock continuity on the lobby terminal",
+        "anchors": [
+          "battery clock"
+        ]
+      },
+      {
+        "kind": "coding",
+        "title": "Kiosk timekeeping",
+        "anchors": [
+          "battery-backed clock"
+        ]
+      },
+      {
+        "kind": "call",
+        "title": "Terminal outage drill",
+        "anchors": [
+          "battery clock"
+        ]
+      }
+    ]
   }
 ]
