@@ -165,7 +165,10 @@ public final class GitHubArchive {
     public func deferRequests(until date: Date) throws {
         try db.execute("INSERT OR REPLACE INTO throttle(account,until) VALUES(1,?)", [String(date.timeIntervalSince1970)])
     }
-    public func connect(_ identity: GitHubIdentity, verified: [GitHubRepository]? = nil, now: Date = Date()) throws {
+    public func connect(
+        _ identity: GitHubIdentity, verified: [GitHubRepository]? = nil, now: Date = Date(),
+        saveCredential: () throws -> Void = {}
+    ) throws {
         try db.transaction {
             if let current = try account, current.id != identity.id {
                 throw AgentFailure("Reconnect the original GitHub account or disconnect and remove its history first.")
@@ -174,6 +177,7 @@ public final class GitHubArchive {
                 "INSERT INTO account(slot,id,login) VALUES(1,?,?) ON CONFLICT(slot) DO UPDATE SET login=excluded.login,locked=0",
                 [identity.id, identity.login])
             if let verified { try applyAccess(verified, now: now) }
+            try saveCredential()
         }
     }
     public func lock() throws {
@@ -182,10 +186,11 @@ public final class GitHubArchive {
             try db.execute("UPDATE repos SET shared=0, revision=lower(hex(randomblob(16))), epoch=lower(hex(randomblob(16)))")
         }
     }
-    public func disconnect() throws {
+    public func disconnect(clearCredential: () throws -> Void = {}) throws {
         try db.transaction {
             try db.execute("DELETE FROM repos")
             try db.execute("DELETE FROM account")
+            try clearCredential()
         }
     }
     public func selections() throws -> [GitHubSelection] {
