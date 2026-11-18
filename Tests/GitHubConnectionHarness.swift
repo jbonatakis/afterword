@@ -28,7 +28,7 @@ private final class FixtureGitHub: URLProtocol {
     override func startLoading() {
         let authorization = request.value(forHTTPHeaderField: "Authorization")
         let url = request.url!
-        let json: [String: Any]
+        let json: Any
         var status = 200
         switch (url.path, authorization) {
         case ("/user", "Bearer github_pat_wrong"):
@@ -45,12 +45,19 @@ private final class FixtureGitHub: URLProtocol {
             json = ["total_count": 1, "installations": [["id": 1, "permissions": ["issues": "read", "pull_requests": "read"]]]]
         case ("/user/installations/1/repositories", "Bearer old-app"):
             json = ["total_count": 2, "repositories": ["A", "B"].map { ["node_id": $0, "full_name": "fixture/" + $0] }]
+        case ("/user/repos", "Bearer github_pat_fixture"):
+            json = Self.ids.map { ["node_id": $0] }
         case ("/graphql", "Bearer github_pat_fixture"):
-            let nodes: [[String: Any]] = Self.ids.map {
-                ["id": $0, "nameWithOwner": "fixture/" + $0, "issues": ["totalCount": 0], "pullRequests": ["totalCount": 0]]
+            let body = requestBody()
+            guard let ids = (body?["variables"] as? [String: Any])?["ids"] as? [String] else {
+                client?.urlProtocol(self, didFailWithError: FixtureError.unexpectedEndpoint)
+                return
             }
-            let repos: [String: Any] = ["nodes": nodes, "totalCount": nodes.count, "pageInfo": ["hasNextPage": false]]
-            json = ["data": ["viewer": ["id": "U", "repositories": repos]]]
+            let nodes: [Any] = ids.map { id in
+                guard Self.ids.contains(id) else { return NSNull() }
+                return ["id": id, "nameWithOwner": "fixture/" + id, "issues": ["totalCount": 0], "pullRequests": ["totalCount": 0]]
+            }
+            json = ["data": ["viewer": ["id": "U"], "nodes": nodes]]
         default:
             client?.urlProtocol(self, didFailWithError: FixtureError.unexpectedEndpoint)
             return
@@ -59,6 +66,13 @@ private final class FixtureGitHub: URLProtocol {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: json))
         client?.urlProtocolDidFinishLoading(self)
+    }
+    private func requestBody() -> [String: Any]? {
+        if let data = request.httpBody { return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        return (try? JSONSerialization.jsonObject(with: stream)) as? [String: Any]
     }
     override func stopLoading() {}
 }

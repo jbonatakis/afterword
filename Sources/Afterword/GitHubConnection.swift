@@ -157,10 +157,14 @@ actor GitHubWorker {
             throw RecorderError.message("GitHub rejected this token. Check that it is current and paste it again.")
         }
     }
-    private func repositories(for credential: GitHubCredential, viewer: GitHubIdentity) async throws -> [GitHubRepository] {
+    private func repositories(for credential: GitHubCredential, viewer: GitHubIdentity, archive: GitHubArchive) async throws
+        -> [GitHubRepository]
+    {
         switch credential.authorization {
         case .app: return try await client.repositories(token: credential.access)
-        case .personalToken: return try await client.personalRepositories(token: credential.access, viewer: viewer)
+        case .personalToken:
+            return try await client.personalRepositories(
+                token: credential.access, viewer: viewer, selectedIDs: archive.selections().map(\.id))
         }
     }
     private func connect(_ authorization: GitHubCredential.Authorization, approvedRemovals: Set<String> = []) async throws
@@ -173,7 +177,7 @@ actor GitHubWorker {
         if let prior = try db.account, prior.id != viewer.id {
             throw RecorderError.message("This history belongs to another account. Reconnect that account or remove its history first.")
         }
-        let repos = try await repositories(for: credential, viewer: viewer)
+        let repos = try await repositories(for: credential, viewer: viewer, archive: db)
         try check(current)
         let accessible = Set(repos.map(\.id))
         let removed = try db.selections().map(\.repo).filter { !accessible.contains($0.id) }
@@ -265,7 +269,9 @@ actor GitHubWorker {
             guard identity.id == viewer.id else { throw GitHubServiceError.credentials }
             var lastVerification = Date.distantPast
             func verifyRepositories() async throws {
-                let repos = try await withAccess(&auth, current: current) { try await repositories(for: $0, viewer: identity) }
+                let repos = try await withAccess(&auth, current: current) {
+                    try await repositories(for: $0, viewer: identity, archive: db)
+                }
                 try check(current)
                 try db.verifyAccess(repos, identity: identity, now: Date())
                 available = repos

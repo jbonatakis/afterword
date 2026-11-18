@@ -36,6 +36,13 @@ public struct GitHubClient: Sendable {
     }
     private func request(_ url: URL, token: String? = nil, body: Data? = nil, acceptsOAuthErrors: Bool = false) async throws -> Object
     {
+        let (json, _) = try await response(url, token: token, body: body, acceptsOAuthErrors: acceptsOAuthErrors)
+        guard let object = json as? Object else { throw Self.invalid }
+        return object
+    }
+    private func response(_ url: URL, token: String?, body: Data? = nil, acceptsOAuthErrors: Bool = false) async throws -> (
+        Any, HTTPURLResponse
+    ) {
         try Task.checkCancellation()
         var request = URLRequest(url: url)
         request.setValue("Afterword", forHTTPHeaderField: "User-Agent")
@@ -49,7 +56,8 @@ public struct GitHubClient: Sendable {
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw GitHubServiceError.response("Invalid GitHub response.") }
-        let json = (try? JSONSerialization.jsonObject(with: data)) as? Object
+        let payload = try? JSONSerialization.jsonObject(with: data)
+        let json = payload as? Object
         let message = json?["message"] as? String ?? ""
         let limited = (json?["errors"] as? [Object])?.contains { $0["type"] as? String == "RATE_LIMITED" } == true
         if limited || http.statusCode == 429
@@ -63,12 +71,13 @@ public struct GitHubClient: Sendable {
             throw GitHubServiceError.retry(delay ?? reset ?? Date().addingTimeInterval(limited ? 900 : 60))
         }
         // GitHub reports OAuth protocol errors on both successful and 4xx HTTP responses.
-        if acceptsOAuthErrors, (400..<500).contains(http.statusCode), let json, json["error"] is String { return json }
+        if acceptsOAuthErrors, (400..<500).contains(http.statusCode), let json, json["error"] is String { return (json, http) }
         if http.statusCode == 401 { throw GitHubServiceError.credentials }
-        guard (200..<300).contains(http.statusCode), let json else {
+        guard (200..<300).contains(http.statusCode) else {
             throw GitHubServiceError.response("GitHub returned HTTP \(http.statusCode). Check repository access and retry.")
         }
-        return json
+        guard let payload else { throw Self.invalid }
+        return (payload, http)
     }
     private func oauth(_ path: String, _ values: [String: String]) async throws -> Object {
         let response = try await request(
@@ -181,67 +190,76 @@ public struct GitHubClient: Sendable {
         }
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
-    // Read only repository identifiers and permission-gated counts. A token may
-    // see repository metadata even after its Issues or Pull requests grant is removed.
-    static let personalRepositoriesQuery = """
-        query PersonalRepositories($cursor:String) {
-          viewer { id repositories(first:50, after:$cursor, ownerAffiliations:[OWNER,COLLABORATOR,ORGANIZATION_MEMBER],
-                                   orderBy:{field:NAME,direction:ASC}) {
-            totalCount pageInfo { hasNextPage endCursor }
-            nodes { id nameWithOwner issues(first:1) { totalCount } pullRequests(first:1) { totalCount } }
-          } }
+    // viewer.repositories can omit private organization repositories that the token can read.
+    private func personalRepositoryIDs(token: String) async throws -> [String] {
+        var ids: [String] = []
+        var seen = Set<String>()
+        var page = 1
+        while true {
+            let url = URL(
+                string:
+                    "https://api.github.com/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=full_name&direction=asc&per_page=100&page=\(page)"
+            )!
+            let (json, http) = try await response(url, token: token)
+            guard http.statusCode == 200, let rows = json as? [Object] else { throw Self.invalid }
+            if http.value(forHTTPHeaderField: "X-GitHub-SSO")?.localizedCaseInsensitiveContains("partial-results") == true {
+                throw GitHubServiceError.response("GitHub returned a partial list. Check organization single sign-on and refresh.")
+            }
+            for row in rows {
+                guard let id = row["node_id"] as? String, !id.isEmpty, seen.insert(id).inserted else { throw Self.invalid }
+                ids.append(id)
+            }
+            guard http.value(forHTTPHeaderField: "Link")?.contains(#"rel="next""#) == true else { return ids }
+            guard !rows.isEmpty else { throw Self.invalid }
+            page += 1
+        }
+    }
+
+    static let personalRepositoryAccessQuery = """
+        query PersonalRepositoryAccess($ids:[ID!]!) {
+          viewer { id }
+          nodes(ids:$ids) { ... on Repository { id nameWithOwner issues(first:1) { totalCount } pullRequests(first:1) { totalCount } } }
         }
         """
-    public func personalRepositories(token: String, viewer: GitHubIdentity) async throws -> [GitHubRepository] {
+    public func personalRepositories(token: String, viewer: GitHubIdentity, selectedIDs: [String] = []) async throws
+        -> [GitHubRepository]
+    {
+        var ids = try await personalRepositoryIDs(token: token)
+        let listed = Set(ids)
+        // Check saved repositories by their stable ID even if discovery omits them or they moved.
+        ids.append(contentsOf: Set(selectedIDs).subtracting(listed).sorted())
         var result: [GitHubRepository] = []
-        var cursors = Set<String>()
-        var ids = Set<String>()
-        var cursor: String?
-        var count = 0
-        var expected: Int?
-        repeat {
-            let json = try await graphResponse(Self.personalRepositoriesQuery, ["cursor": cursor as Any], token: token)
-            guard json["errors"] == nil || json["errors"] is [Object] else { throw Self.invalid }
-            let errors = json["errors"] as? [Object] ?? []
-            guard let user = (json["data"] as? Object)?["viewer"] as? Object, user["id"] as? String == viewer.id,
-                let page = user["repositories"] as? Object, let nodes = page["nodes"] as? [Any],
-                let total = page["totalCount"] as? Int, expected == nil || expected == total,
-                let info = page["pageInfo"] as? Object, let more = info["hasNextPage"] as? Bool
+        for start in stride(from: 0, to: ids.count, by: 50) {
+            let batch = Array(ids[start..<min(start + 50, ids.count)])
+            let json = try await graphResponse(Self.personalRepositoryAccessQuery, ["ids": batch], token: token)
+            guard let data = json["data"] as? Object, (data["viewer"] as? Object)?["id"] as? String == viewer.id,
+                let nodes = data["nodes"] as? [Any], nodes.count == batch.count,
+                json["errors"] == nil || json["errors"] is [Object]
             else { throw Self.invalid }
-            expected = total
-            // Only explicit denials for these two fields can exclude an individual repository.
-            // A partial response or a transient query error must never prune the archive.
             var denied = Set<Int>()
-            for error in errors {
-                guard error["type"] as? String == "FORBIDDEN", let path = error["path"] as? [Any],
-                    path.count == 5 || (path.count == 6 && path.last as? String == "totalCount"),
-                    path[0] as? String == "viewer", path[1] as? String == "repositories", path[2] as? String == "nodes",
-                    let index = path[3] as? Int, nodes.indices.contains(index), let field = path[4] as? String,
-                    ["issues", "pullRequests"].contains(field)
+            for error in json["errors"] as? [Object] ?? [] {
+                guard let path = error["path"] as? [Any], path.count >= 2, path[0] as? String == "nodes",
+                    let index = path[1] as? Int, nodes.indices.contains(index)
                 else { throw Self.invalid }
+                switch (error["type"] as? String, path.count) {
+                case ("NOT_FOUND", 2), ("FORBIDDEN", 2):
+                    guard !listed.contains(batch[index]), nodes[index] is NSNull else { throw Self.invalid }
+                case ("FORBIDDEN", 3), ("FORBIDDEN", 4):
+                    guard let field = path[2] as? String, ["issues", "pullRequests"].contains(field),
+                        path.count == 3 || path[3] as? String == "totalCount"
+                    else { throw Self.invalid }
+                default: throw Self.invalid
+                }
                 denied.insert(index)
             }
             for (index, node) in nodes.enumerated() where !denied.contains(index) {
-                guard let repo = node as? Object, let id = repo["id"] as? String, let name = repo["nameWithOwner"] as? String,
-                    (repo["issues"] as? Object)?["totalCount"] is Int, (repo["pullRequests"] as? Object)?["totalCount"] is Int,
-                    ids.insert(id).inserted
+                if node is NSNull && !listed.contains(batch[index]) { continue }
+                guard let repo = node as? Object, repo["id"] as? String == batch[index], let name = repo["nameWithOwner"] as? String,
+                    (repo["issues"] as? Object)?["totalCount"] is Int, (repo["pullRequests"] as? Object)?["totalCount"] is Int
                 else { throw Self.invalid }
-                result.append(.init(id: id, name: name))
+                result.append(.init(id: batch[index], name: name))
             }
-            count += nodes.count
-            guard count <= total else { throw Self.invalid }
-            if more {
-                guard count < total, let next = info["endCursor"] as? String, !next.isEmpty, cursors.insert(next).inserted,
-                    !nodes.isEmpty
-                else {
-                    throw Self.invalid
-                }
-                cursor = next
-            } else {
-                guard count == total else { throw Self.invalid }
-                cursor = nil
-            }
-        } while cursor != nil
+        }
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     static var invalid: GitHubServiceError { .response("GitHub returned an incomplete page. Afterword kept the previous checkpoint.") }

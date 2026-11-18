@@ -8,7 +8,7 @@ import Foundation
 
 private final class GitHubStub: URLProtocol {
     typealias Payload = [String: Any]
-    static var respond: ((URLRequest, Payload) throws -> (Int, [String: String], Payload))?
+    static var respond: ((URLRequest, Payload) throws -> (Int, [String: String], Any))?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -98,50 +98,63 @@ final class GitHubClientTests: XCTestCase {
             } catch GitHubServiceError.retry(let until) { XCTAssertGreaterThan(until.timeIntervalSinceNow, 175) }
         }
     }
-    private static func personalPage(_ nodes: [Any], total: Int, next: String? = nil) -> Object {
-        let page: Object = ["nodes": nodes, "totalCount": total, "pageInfo": ["hasNextPage": next != nil, "endCursor": next as Any]]
-        return ["data": ["viewer": ["id": "U", "repositories": page]]]
+    private static func repositoryAccess(_ id: String) -> Object {
+        ["id": id, "nameWithOwner": "team/" + id, "issues": ["totalCount": 0], "pullRequests": ["totalCount": 0]]
     }
-    private static func personalRepo(_ id: String) -> Object {
-        ["id": id, "nameWithOwner": "owner/" + id, "issues": ["totalCount": 0], "pullRequests": ["totalCount": 0]]
-    }
-    func testPersonalTokenDiscoversAuthorizedRepositoriesAcrossPages() throws {
+    func testPersonalTokenFindsPrivateOrganizationRepositoriesAndChecksSavedIDs() throws {
         var pages = 0
         GitHubStub.respond = { request, body in
-            XCTAssertEqual(request.url?.path, "/graphql")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
-            let query = try XCTUnwrap(body["query"] as? String)
-            XCTAssertTrue(query.contains("ORGANIZATION_MEMBER"))
-            let variables = try XCTUnwrap(body["variables"] as? Object)
-            pages += 1
-            if pages == 1 {
-                XCTAssertTrue(variables["cursor"] is NSNull)
-                var result = Self.personalPage([Self.personalRepo("Z"), NSNull()], total: 3, next: "next")
-                result["errors"] = [["type": "FORBIDDEN", "path": ["viewer", "repositories", "nodes", 1, "issues"]]]
-                return (200, [:], result)
+            if request.url?.path == "/user/repos" {
+                let url = try XCTUnwrap(request.url)
+                let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                XCTAssertTrue(query.contains(URLQueryItem(name: "visibility", value: "all")))
+                XCTAssertTrue(query.contains(URLQueryItem(name: "affiliation", value: "owner,collaborator,organization_member")))
+                pages += 1
+                XCTAssertTrue(query.contains(URLQueryItem(name: "page", value: String(pages))))
+                if pages == 1 {
+                    return (200, ["Link": #"<https://api.github.com/user/repos?page=2>; rel="next""#], [["node_id": "public"]])
+                }
+                return (200, [:], [["node_id": "private", "private": true], ["node_id": "denied"]])
             }
-            XCTAssertEqual(variables["cursor"] as? String, "next")
-            return (200, [:], Self.personalPage([Self.personalRepo("A")], total: 3))
+            XCTAssertEqual(request.url?.path, "/graphql")
+            let vars = try XCTUnwrap(body["variables"] as? Object)
+            XCTAssertEqual(vars["ids"] as? [String], ["public", "private", "denied", "moved", "revoked"])
+            let nodes: [Any] = [
+                Self.repositoryAccess("public"), Self.repositoryAccess("private"), NSNull(), Self.repositoryAccess("moved"), NSNull(),
+            ]
+            let denied: Object = ["type": "FORBIDDEN", "path": ["nodes", 2, "pullRequests"]]
+            let revoked: Object = ["type": "NOT_FOUND", "path": ["nodes", 4]]
+            return (200, [:], ["data": ["viewer": ["id": "U"], "nodes": nodes], "errors": [denied, revoked]])
         }
         try exercise { api in
-            let repos = try await api.personalRepositories(token: "fixture", viewer: .init(id: "U", login: "fixture"))
-            XCTAssertEqual(repos.map(\.name), ["owner/A", "owner/Z"])
+            let repos = try await api.personalRepositories(
+                token: "fixture", viewer: .init(id: "U", login: "fixture"),
+                selectedIDs: ["private", "revoked", "moved"])
+            XCTAssertEqual(repos.map(\.name), ["team/moved", "team/private", "team/public"])
             XCTAssertEqual(pages, 2)
         }
     }
     func testIncompletePersonalTokenDiscoveryCannotAuthorizeRemovals() throws {
-        let repo = Self.personalRepo("R")
-        let page = Self.personalPage([repo], total: 1)
-        let fixtures = [
-            Self.personalPage([repo], total: 2), Self.personalPage([repo, repo], total: 2),
-            Self.personalPage([NSNull()], total: 1), Self.personalPage([], total: 2, next: "next"),
-            Self.personalPage([repo], total: 1, next: "more"),
-            page.merging(["errors": [["type": "INTERNAL", "path": ["viewer"]]]]) { _, new in new },
-            page.merging(["errors": [["type": "FORBIDDEN", "path": ["viewer", "repositories"]]]]) { _, new in new },
-            page.merging(["errors": "malformed"]) { _, new in new },
+        let normal: Object = ["data": ["viewer": ["id": "U"], "nodes": [Self.repositoryAccess("R")]]]
+        let list = [["node_id": "R"]]
+        let fixtures: [(Any, [String: String], Object)] = [
+            ([["name": "missing id"]], [:], normal), (list + list, [:], normal),
+            (list, ["X-GitHub-SSO": "partial-results; organizations=123"], normal),
+            ([], ["Link": #"<https://api.github.com/user/repos?page=2>; rel="next""#], normal),
+            (list, [:], ["data": ["viewer": ["id": "U"], "nodes": []]]),
+            (list, [:], ["data": ["viewer": ["id": "U"], "nodes": [NSNull()]]]),
+            (list, [:], ["data": ["viewer": ["id": "U"], "nodes": [Self.repositoryAccess("wrong-id")]]]),
+            (list, [:], ["data": ["viewer": ["id": "other"], "nodes": [Self.repositoryAccess("R")]]]),
+            (list, [:], normal.merging(["errors": [["type": "INTERNAL", "path": ["nodes", 0]]]]) { _, new in new }),
+            (list, [:], normal.merging(["errors": [["type": "FORBIDDEN", "path": ["viewer"]]]]) { _, new in new }),
+            (list, [:], normal.merging(["errors": "malformed"]) { _, new in new }),
         ]
-        for fixture in fixtures {
-            GitHubStub.respond = { _, _ in (200, [:], fixture) }
+        for (rows, headers, graph) in fixtures {
+            GitHubStub.respond = { request, _ in
+                if request.url?.path == "/user/repos" { return (200, headers, rows) }
+                return (200, [:], graph)
+            }
             try exercise { api in
                 do {
                     _ = try await api.personalRepositories(token: "fixture", viewer: .init(id: "U", login: "fixture"))
