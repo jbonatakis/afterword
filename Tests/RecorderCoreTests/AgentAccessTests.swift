@@ -202,7 +202,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertNil(try server.handle(AgentJSON.data(["jsonrpc": "2.0", "method": "notifications/initialized"])))
         let tools = try request("tools/list")["result"] as? [String: Any]
         XCTAssertEqual(Set((tools?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }),
-                       Set(["list_calls", "get_call", "get_transcript", "search_transcripts", "save_call_summary", "get_changes", "search_activity", "get_coding_session"]))
+                       Set(["list_calls", "get_call", "get_transcript", "search_transcripts", "save_call_summary", "get_changes", "search_activity", "get_coding_session", "get_github_item"]))
         XCTAssertTrue(try request("tools/call", params: ["name": "delete_call"])["error"] != nil)
         try AgentAccessStore.save(.init(), directory: state)
         let failure = try request("tools/call", params: ["name": "list_calls"])["result"] as? [String: Any]
@@ -236,7 +236,7 @@ final class AgentAccessTests: XCTestCase {
         }
         let tools = try request("tools/list")["result"] as? [String: Any]
         XCTAssertEqual(Set((tools?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }),
-                       Set(["list_calls", "get_call", "get_transcript", "search_transcripts", "save_call_summary", "get_changes", "search_activity", "get_coding_session"]))
+                       Set(["list_calls", "get_call", "get_transcript", "search_transcripts", "save_call_summary", "get_changes", "search_activity", "get_coding_session", "get_github_item"]))
 
         // Invalid retries must not destroy a working connection or bypass validation.
         let invalid = try request("initialize", params: ["protocolVersion": "2025-11-25"])
@@ -315,6 +315,38 @@ final class AgentAccessTests: XCTestCase {
         let permissions = try FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent("Summary.json").path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
     }
+    func testSummaryGitHubLinksFollowRepositoryGrantsOnEveryRead() throws {
+        let folder = try fixture()
+        let recording = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [folder]).recordings.first)
+        _ = try CallSummaryStore.save("See samples/fern#5 and https://github.com/samples/fern/pull/5. Also #12.",
+                                      for: recording, source: recording.latestTranscript)
+        let archive = try GitHubArchive(directory: state.appendingPathComponent("GitHub"))
+        let repo = GitHubRepository(id: "repo", name: "samples/fern")
+        try archive.connect(.init(id: "user", login: "fixture"))
+        try archive.select(repo)
+        let selected = try archive.selections()[0]
+        let now = Date()
+        try archive.begin(selected, now: now)
+        let url = "https://github.com/samples/fern/pull/5"
+        let header = GitHubItem(id: "pr", repositoryID: repo.id, type: "pr", title: "Garden plan", author: "fixture",
+                                state: "OPEN", url: url, number: 5)
+        var page = GitHubPage()
+        page.entries = [(header, .init(id: "pr", actorID: "user", text: "My plan", url: url, kind: .opened, date: now,
+                                       edited: nil, verdict: nil, path: nil, line: nil))]
+        try archive.commit(page, work: XCTUnwrap(archive.next(selected)), repo: selected)
+        let callID = try XCTUnwrap(items(service.call("list_calls", arguments: [:])).first?["call_id"] as? String)
+        func links() throws -> [String] {
+            let result = try service.call("get_call", arguments: ["call_id": callID])
+            let summary = try XCTUnwrap(result["summary"] as? [String: Any])
+            return (summary["related_github_items"] as? [[String: Any]] ?? []).compactMap { $0["item_id"] as? String }
+        }
+        XCTAssertEqual(try links(), [])
+        try archive.share(repo.id, enabled: true)
+        XCTAssertEqual(try links(), ["pr"])
+        try archive.share(repo.id, enabled: false)
+        XCTAssertEqual(try links(), [])
+    }
+
     func testSummaryRejectsStaleAgentAndNativeEdits() throws {
         let folder = try fixture(); try enableSummaryWrites()
         let agentDraft = try summaryArguments()

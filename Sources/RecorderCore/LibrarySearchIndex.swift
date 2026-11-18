@@ -57,6 +57,9 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     private let roots: [URL]
     private let confined: Bool
     private let db: SearchDatabase
+    private var githubArchive: GitHubArchive?
+    private var githubShared = false
+    private var githubDirectory: URL?
     private var codingArchive: CodingArchive?
     var semantic: SemanticSearchEngine
     private let lock = NSRecursiveLock()
@@ -120,7 +123,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             for id in byID.keys where next[id] == nil { try remove(id) }
             try db.execute("COMMIT")
             cached = next
-            semantic.refresh(calls, codingArchive: codingArchive)
+            semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: githubShared)
             return calls.map(\.recording)
         } catch { try? db.execute("ROLLBACK"); throw error }
     }
@@ -134,7 +137,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     public func useCodingArchive(in directory: URL?) throws {
         lock.lock(); defer { lock.unlock() }
         codingArchive = try directory.flatMap { CodingArchive.exists(in: $0) ? try CodingArchive(directory: $0) : nil }
-        semantic.refresh(calls, codingArchive: codingArchive)
+        semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: githubShared)
     }
     public func codingSearch(_ query: String, keywordOnly: Bool = false, from: Date? = nil,
                              to: Date? = nil, project: String? = nil, branch: String? = nil) throws -> (hits: [CodingHit], status: SemanticSearchStatus) {
@@ -143,9 +146,37 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         let (candidates, status, _) = keywordOnly ? ([], semanticStatus(), "") : semantic.search(query, allVersions: false)
         return (try codingArchive.matches(query: query, semantic: candidates, from: from, to: to, project: project, branch: branch), status)
     }
+    public func useGitHubArchive(in directory: URL?, shared: Bool) throws {
+        lock.lock(); defer { lock.unlock() }
+        let current = directory.flatMap { GitHubArchive.exists(in: $0) ? $0 : nil }
+        if current != githubDirectory {
+            githubArchive = try current.map { try GitHubArchive(directory: $0) }
+            githubDirectory = current
+        }
+        githubShared = shared
+        semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: shared)
+    }
+    public func githubSearch(
+        _ query: String, keywordOnly: Bool = false, repository: String? = nil, type: String? = nil,
+        action: String? = nil, from: Date? = nil, to: Date? = nil
+    ) throws -> (hits: [GitHubHit], status: SemanticSearchStatus) {
+        lock.lock(); defer { lock.unlock() }
+        guard let archive = githubArchive else { return ([], semanticStatus()) }
+        let keywords = try archive.search(
+            query, shared: githubShared, repository: repository, type: type, action: action, from: from, to: to)
+        var status = semanticStatus()
+        guard !keywordOnly, !LibrarySearchQuery(query).isEmpty, GitHubReference(query) == nil else { return (keywords, status) }
+        let (chunks, actual, _) = semantic.search(query, allVersions: false)
+        status = actual
+        return (
+            try archive.merge(
+                query, keywords: keywords, chunks: chunks, shared: githubShared,
+                repository: repository, type: type, action: action, from: from, to: to), status
+        )
+    }
     public func refreshSemanticSearch() {
         lock.lock(); defer { lock.unlock() }
-        semantic.refresh(calls, codingArchive: codingArchive)
+        semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: githubShared)
     }
     public func retrySemanticSearch() { semantic.retry(); refreshSemanticSearch() }
     public func semanticStatus(allVersions: Bool = false) -> SemanticSearchStatus { semantic.progress(allVersions: allVersions) }

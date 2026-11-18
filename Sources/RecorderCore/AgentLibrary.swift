@@ -91,17 +91,50 @@ public final class AgentLibrary {
             try index.useCodingArchive(in: codingAllowed ? codingDirectory : nil)
             codingAttached = codingAllowed
         }
+        let githubDirectory =
+            directory == AgentAccessStore.directory ? GitHubArchive.directory : directory.appendingPathComponent("GitHub")
+        let usesGitHub = ["search_activity", "get_github_item", "get_coding_session", "get_call"].contains(name)
+        let github = usesGitHub && GitHubArchive.exists(in: githubDirectory) ? try GitHubArchive(directory: githubDirectory) : nil
+        let grantsRevision = try github?.revision(shared: true)
+        if name == "get_github_item" {
+            let args = AgentArguments(arguments)
+            guard let github, let id = args.string("item_id"), let hit = try github.search(shared: true, itemID: id).first else {
+                throw AgentFailure("GitHub item unavailable in shared repositories.")
+            }
+            let actions = try github.timeline(id, shared: true)
+            let revision = AgentJSON.hash(
+                (grantsRevision ?? "") + (try GitHubArchive.encode(hit.item)) + (try GitHubArchive.encode(actions)))
+            try args.checkRevision(revision)
+            var start = 0
+            if let anchor = args.string("passage_id") {
+                guard let position = actions.firstIndex(where: { $0.id == anchor }) else {
+                    throw AgentFailure("GitHub passage unavailable in this item.")
+                }
+                start = position
+            }
+            let textOffset = args.integer("text_offset", default: 0)
+            var result = try page(Array(actions.dropFirst(start)), args: args) { Self.githubPassage($0, offset: textOffset) }
+            result["item"] = Self.githubHeader(hit); result["revision"] = revision
+            guard try github.revision(shared: true) == grantsRevision, try AgentAccessStore.load(directory: directory) == configuration
+            else { throw AgentFailure("GitHub access or content changed. Retry.") }
+            guard try AgentJSON.data(result).count <= 1_048_576 else { throw AgentFailure("Result exceeds 1 MiB. Reduce limit.") }
+            return result
+        }
         if name == "get_coding_session" {
             guard codingAllowed else { throw AgentFailure("Coding session access is unavailable. Check Agent Access and imported projects.") }
             let archive = try CodingArchive(directory: codingDirectory)
             let revision = try archive.revision
-            let response = try codingSession(archive, args: AgentArguments(arguments))
+            var response = try codingSession(archive, args: AgentArguments(arguments), grantsRevision: grantsRevision)
+            try linkGitHubPassages(in: &response, archive: github)
+            guard try github?.revision(shared: true) == grantsRevision else { throw AgentFailure("GitHub access changed. Retry.") }
             guard try archive.revision == revision, try AgentAccessStore.load(directory: directory) == configuration else {
                 throw AgentFailure("Coding session access or history changed. Retry.")
             }
+            guard try AgentJSON.data(response).count <= 1_048_576 else { throw AgentFailure("Result exceeds 1 MiB. Reduce limit.") }
             return response
         }
         let activityArchive = name == "search_activity" && codingAllowed ? try CodingArchive(directory: codingDirectory) : nil
+        if name == "search_activity" { try index.useGitHubArchive(in: github == nil ? nil : githubDirectory, shared: true) }
         let codingRevision = try activityArchive?.revision
         do { try index.synchronize() }
         catch { throw AgentFailure("An allowed folder could not be indexed completely. Check folder availability and file permissions, then retry. No change checkpoint was advanced.") }
@@ -112,7 +145,10 @@ public final class AgentLibrary {
         var result: [String: Any]
         switch name {
         case "search_activity":
-            result = try searchActivity(index: index, calls: calls, args: args, revision: libraryRevision + (codingRevision ?? ""), archive: activityArchive)
+            result = try searchActivity(
+                index: index, calls: calls, args: args, revision: libraryRevision + (codingRevision ?? "") + (grantsRevision ?? ""),
+                archive: activityArchive)
+            try linkGitHubPassages(in: &result, archive: github)
             guard try activityArchive?.revision == codingRevision else { throw AgentFailure("Coding history changed. Retry.") }
         case "list_calls":
             var searchRevision = libraryRevision
@@ -146,7 +182,14 @@ public final class AgentLibrary {
             let summaryVersions = call.recording.summary?.versions ?? []
             let selectedSummary = args.string("summary_revision_id").flatMap { id in summaryVersions.first { $0.id == id } } ?? (args.string("summary_revision_id") == nil ? summaryVersions.first : nil)
             if args.string("summary_revision_id") != nil && selectedSummary == nil { throw AgentFailure("Summary version not found. Read get_call for available summary_versions.") }
-            result["summary"] = selectedSummary.map { call.summaryInfo($0, includeText: true) } ?? NSNull() as Any
+            if let selectedSummary {
+                var info = call.summaryInfo(selectedSummary, includeText: true)
+                let links = try githubLinks(selectedSummary.markdown, archive: github)
+                if !links.isEmpty { info["related_github_items"] = links }
+                result["summary"] = info
+            } else {
+                result["summary"] = NSNull()
+            }
             let summaryPage = try page(summaryVersions, args: AgentArguments(["offset": args.integer("summary_offset", default: 0), "limit": args.integer("summary_limit", default: 40)])) { call.summaryInfo($0) }
             result["summary_versions"] = summaryPage["items"]
             result["summary_version_count"] = summaryPage["total"]
@@ -228,14 +271,17 @@ public final class AgentLibrary {
         guard try AgentJSON.data(result).count <= 1_048_576 else {
             throw AgentFailure("Result exceeds 1 MiB. Request a smaller limit or a narrower search.")
         }
+        guard try github?.revision(shared: true) == grantsRevision else {
+            throw AgentFailure("GitHub access or content changed. Retry.")
+        }
         return result
     }
-    private func codingSession(_ archive: CodingArchive, args: AgentArguments) throws -> [String: Any] {
+    private func codingSession(_ archive: CodingArchive, args: AgentArguments, grantsRevision: String?) throws -> [String: Any] {
         let history = try archive.history(id: args.string("session_id")!)
         let session = history.session
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let revision = AgentJSON.hash(try encoder.encode(session))
+        let revision = AgentJSON.hash((try encoder.encode(session)) + Data((grantsRevision ?? "").utf8))
         try args.checkRevision(revision)
         let messages = args.string("view") == "recorded" ? history.messages : history.conversation
         var start = 0
@@ -264,14 +310,20 @@ public final class AgentLibrary {
         guard browse || LibrarySearchQuery(query).expression != nil else { throw AgentFailure("Enter a search term.") }
         let from = try args.date("from"), to = try args.date("to")
         if let from, let to, from > to { throw AgentFailure("from must not be after to.") }
-        let codingOnly = args.string("source") == "coding" || args.string("project") != nil || args.string("branch") != nil
-        if codingOnly && args.string("source") == "calls" { throw AgentFailure("Project and branch filters apply to coding sessions.") }
+        let source = args.string("source") ?? "all"
+        let githubFilters = ["repository", "item_type", "action"].contains { args.string($0) != nil }
+        let codingFilters = args.string("project") != nil || args.string("branch") != nil
+        guard !(githubFilters && codingFilters), !githubFilters || ["all", "github"].contains(source),
+            !codingFilters || ["all", "coding"].contains(source)
+        else { throw AgentFailure("These filters apply to different activity sources.") }
+        let githubOnly = source == "github" || githubFilters
+        let codingOnly = source == "coding" || codingFilters
         if codingOnly && archive == nil { throw AgentFailure("Coding session access is unavailable.") }
         let keyword = args.string("mode") == "keyword"
         var callItems: [[String: Any]] = [], codeItems: [[String: Any]] = []
         var searchRevision = revision
         var status = index.semanticStatus()
-        if !codingOnly {
+        if !codingOnly && !githubOnly {
             let filteredCalls = try filtered(calls, args: args)
             if browse {
                 callItems = filteredCalls.map { call in
@@ -292,7 +344,7 @@ public final class AgentLibrary {
                 }
             }
         }
-        if let archive, args.string("source") != "calls" {
+        if let archive, source != "calls", !githubOnly {
             let hits: [CodingHit]
             if browse {
                 hits = try archive.browse(from: from, to: to, project: args.string("project"), branch: args.string("branch"))
@@ -320,19 +372,47 @@ public final class AgentLibrary {
                 return item
             }
         }
-        var items: [[String: Any]] = []
-        for i in 0..<max(callItems.count, codeItems.count) {
-            if i < callItems.count { items.append(callItems[i]) }
-            if i < codeItems.count { items.append(codeItems[i]) }
+        var ghItems: [[String: Any]] = []
+        if !codingOnly && source != "calls" {
+            let found = try index.githubSearch(
+                query, keywordOnly: keyword, repository: args.string("repository"), type: args.string("item_type"),
+                action: args.string("action"), from: from, to: to)
+            if githubOnly { status = found.status }
+            ghItems = found.hits.map { hit in
+                var value = Self.githubHeader(hit)
+                value["date"] = AgentJSON.date(hit.date)
+                value["citations"] = hit.citations.map { Self.githubPassage($0) }
+                value["text"] = hit.citations.first?.text
+                return value
+            }
         }
+        let reference = GitHubReference(query)
+        let groups: [(ActivityMatch.Source, String, [[String: Any]])] = [
+            (.call, "call_id", callItems), (.coding, "session_id", codeItems), (.github, "item_id", ghItems),
+        ]
+        var payload: [String: [String: Any]] = [:]
+        let dates = ISO8601DateFormatter()
+        let ranked = groups.map { kind, key, group in
+            group.compactMap { item -> ActivityMatch? in
+                guard let id = item[key] as? String else { return nil }
+                let unique = key + ":" + id
+                payload[unique] = item
+                let timestamp = item["last_activity_at"] as? String ?? item["date"] as? String
+                return ActivityMatch(
+                    id: unique, source: kind, title: item["title"] as? String ?? "", evidence: item["text"] as? String ?? "",
+                    date: timestamp.flatMap(dates.date(from:)), qualified: kind == .github && reference != nil)
+            }
+        }
+        let items = ActivityMatch.ordered(ranked, query: query).compactMap { payload[$0.id] }
         if browse {
             status.mode = "browse"
-            func activityDate(_ item: [String: Any]) -> String {
-                item["last_activity_at"] as? String ?? item["date"] as? String ?? ""
-            }
-            items.sort { activityDate($0) > activityDate($1) }
+        } else if githubOnly && reference != nil {
+            status.mode = "reference"
+        } else if keyword {
+            status.mode = "keyword"
         }
-        searchRevision = AgentJSON.hash(searchRevision + (try AgentJSON.hash(AgentJSON.data(items))))
+        let coverage = [status.mode, status.model, status.state, String(status.indexed), String(status.total)].joined(separator: "|")
+        searchRevision = AgentJSON.hash(searchRevision + coverage + (try AgentJSON.hash(AgentJSON.data(items))))
         try args.checkRevision(searchRevision)
         var result = try page(items, args: args) { $0 }
         result["library_revision"] = searchRevision
@@ -340,6 +420,41 @@ public final class AgentLibrary {
         return result
     }
 
+    private func githubLinks(_ text: String, archive: GitHubArchive?) throws -> [[String: Any]] {
+        guard let archive else { return [] }
+        return try GitHubReference.qualified(in: text).compactMap { ref in
+            try archive.search(ref, shared: true).first.map(Self.githubHeader)
+        }
+    }
+    private func linkGitHubPassages(in response: inout [String: Any], archive: GitHubArchive?) throws {
+        guard archive != nil, var items = response["items"] as? [[String: Any]] else { return }
+        for i in items.indices where items[i]["kind"] as? String != "github" {
+            var texts = [items[i]["text"] as? String ?? ""]
+            if let extra = items[i]["more_passages"] as? [[String: Any]] { texts += extra.compactMap { $0["text"] as? String } }
+            let links = try githubLinks(texts.joined(separator: "\n"), archive: archive)
+            if !links.isEmpty { items[i]["related_github_items"] = links }
+        }
+        response["items"] = items
+    }
+    private static func githubHeader(_ hit: GitHubHit) -> [String: Any] {
+        var info: [String: Any] = [
+            "kind": "github", "item_id": hit.id, "repository": hit.repository, "item_type": hit.item.type, "number": hit.item.number,
+            "title": hit.item.title, "author": hit.item.author, "state": hit.item.state, "url": hit.item.url,
+        ]
+        info["access_checked_at"] = hit.verified.map(AgentJSON.date)
+        return info
+    }
+    private static func githubPassage(_ passage: GitHubPassage, offset: Int = 0) -> [String: Any] {
+        let text = passage.text.dropFirst(offset), excerpt = text.prefix(4096)
+        var value: [String: Any] = [
+            "passage_id": passage.id, "action": passage.kind.rawValue, "date": AgentJSON.date(passage.date), "text": String(excerpt),
+            "url": passage.url,
+        ]
+        value["edited_at"] = passage.edited.map(AgentJSON.date); value["verdict"] = passage.verdict
+        value["path"] = passage.path; value["original_line"] = passage.line
+        if excerpt.endIndex < text.endIndex { value["next_text_offset"] = offset + excerpt.count }
+        return value
+    }
     private func find(_ calls: [AgentCall], args: AgentArguments) throws -> AgentCall {
         guard let call = calls.first(where: { $0.id == args.string("call_id") }) else { throw AgentFailure("Call not found in the allowed folders.") }
         return call

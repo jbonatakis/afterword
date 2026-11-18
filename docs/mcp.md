@@ -6,7 +6,7 @@ The server advertises `afterword` as its implementation name and **Afterword** a
 
 The **Copy Server Path** button copies the bundled `Contents/Helpers/AfterwordMCP` executable. Configure your MCP client to launch that command with no arguments, using **stdio**. Supply the executable path as a command value, not an unquoted shell string. No network listener, account connection, runtime installation, or running app window is required. Clients that require a remote HTTP endpoint cannot connect directly to this local executable.
 
-The server implements the [MCP 2025-11-25 stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), including initialization, ping, tool discovery, tool calls, and structured results with a text fallback. It also negotiates the compatible 2025-06-18 protocol. Unsupported versions are offered 2025-11-25 during initialization. It advertises no prompts, resources, or subscriptions. Five tools are read-only; `save_call_summary` is a separately enabled write tool. Tool discovery is stable regardless of settings, and write access is checked at execution time.
+The server implements the [MCP 2025-11-25 stdio protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), including initialization, ping, tool discovery, tool calls, and structured results with a text fallback. It also negotiates the compatible 2025-06-18 protocol. Unsupported versions are offered 2025-11-25 during initialization. It advertises no prompts, resources, or subscriptions. Eight tools are read-only; `save_call_summary` is a separately enabled write tool. Tool discovery is stable regardless of settings, and write access is checked at execution time.
 
 Bridges can reuse one helper process across discovery attempts and clients. A repeated valid `initialize` starts a new handshake and requires another `notifications/initialized` before tool requests. Invalid initialization attempts leave the existing connection intact. Unknown methods, including newer discovery probes, return `Method not found` so clients can fall back to supported discovery.
 
@@ -26,6 +26,9 @@ Keep that process running while the remote client connects; Ctrl+C stops it. The
 
 | Tool | Inputs | Result |
 |---|---|---|
+| `search_activity` | Optional query, source, mode, date bounds, source filters, paging | Ranked calls, coding sessions and GitHub items with source-specific citations |
+| `get_coding_session` | Required `session_id`; optional message anchor, view, revision, paging | Imported coding conversation and message citations |
+| `get_github_item` | Required `item_id`; optional passage anchor, revision, paging | Shared issue or PR and the user’s own contributions |
 | `list_calls` | Optional `query`, `mode`, `speaker`, `all_versions`, `participant`, `tag`, `from`, `to`, paging | Saved call metadata, summary availability, latest transcript version, and `library_revision` |
 | `search_transcripts` | Required `query`; optional `mode`, `speaker`, participant/tag/date filters, `all_versions`, paging | Ranked passage windows with merged context, source references, and `library_revision` |
 | `get_call` | Required `call_id`; optional `expected_revision`, `summary_revision_id`, `summary_offset`, `summary_limit` | Call information, saved transcript versions, current or selected summary, and summary history |
@@ -102,8 +105,27 @@ The bundled helper is signed with the persistent app signing certificate under i
 
 ## Coding activity
 
-`search_activity` returns one result per allowed call or shared coding session. Supply a `query` to search titles and passages. Coding results identify their provider in `source` (`claude-code` or `codex`) and include the best matching excerpt when available, with up to two additional citations in `more_passages`. Each citation has its own `message_id` and `view` for opening the source. A title-only match opens the session. Set `source` to `all`, `calls`, or `coding`, and `mode` to `hybrid` or `keyword`. An exact `project` or `branch` filter selects coding sessions.
+`search_activity` returns one result per allowed call, coding session, or GitHub item. Supply a `query` to search titles and passages. Coding results identify their provider in `source` (`claude-code` or `codex`) and include the best matching excerpt when available, with up to two additional citations in `more_passages`. Each citation has its own `message_id` and `view` for opening the source. A title-only match opens the session. Set `source` to `all`, `calls`, `coding`, or `github`, and `mode` to `hybrid` or `keyword`. An exact `project` or `branch` filter selects coding sessions.
 
-Omit `query` to browse recent calls and sessions. With ISO time bounds (`from` inclusive, `to` exclusive), each active coding session shows conversation excerpts from that period and a `tool_only_message_count`. A session with only tool activity in the period still appears. Results sort by the most recent in-range activity (`last_activity_at` for coding sessions). An excerpt’s `date` is its message timestamp. For topic searches, date filters apply to each passage or to the session update date for a title match.
+Omit `query` to browse recent activity. With ISO time bounds (`from` inclusive, `to` exclusive), each active coding session shows conversation excerpts from that period and a `tool_only_message_count`. A session with only tool activity in the period still appears. Results sort by the most recent in-range activity (`last_activity_at` for coding sessions). An excerpt’s `date` is its message timestamp. For topic searches, date filters apply to each passage or to the session update date for a title match.
 
 `get_coding_session` requires coding access on each request. Pass a coding result’s `session_id`, `message_id`, and `view` to start at the cited passage, or omit the last two for the active conversation. Use `view: "recorded"` for earlier context and inactive branches. Pagination uses `next_offset` relative to the same anchor and an optional `expected_revision`. Long messages return `next_text_offset`; use the message ID and `limit: 1` to read the next part. Tool names are included. The archive excludes tool inputs and tool result payloads. The existing `get_changes` feed continues to track calls.
+
+
+## GitHub activity
+
+Enable Agent Access and share each imported repository in Afterword. Both tools work from the last verified local snapshot. The native app handles authorization and sync.
+
+To find a review on an older PR, filter by the date of the contribution:
+
+```json
+{"source":"github","repository":"sample/garden","action":"review","from":"2026-01-05T00:00:00Z","to":"2026-01-12T00:00:00Z"}
+```
+
+Pass this object to `search_activity`. Other action values are `opened`, `comment`, and `inline`. Use `item_type` with `issue` or `pr`. A GitHub filter scopes a search to GitHub. To resolve an exact number, pass `{"query":"sample/garden#42","source":"github"}`; a bare `#42` also requires `repository`. An empty query reports `browse` mode, and a GitHub-only exact lookup reports `reference` mode.
+
+Each result includes `kind: "github"`, `item_id`, repository, number, item type, title, author, state, URL and up to three citations. Each citation includes an action, date, permalink and stable `passage_id`. Submitted reviews carry a verdict, including approvals with empty text. File citations can include `path` and `original_line`.
+
+Pass the returned `item_id` to `get_github_item` for a chronological timeline. Include a `passage_id` to begin at that contribution. Page forward with the same anchor, `next_offset`, and the returned `revision` as `expected_revision`. For long text, use the cited passage, `limit: 1`, and `text_offset` equal to its `next_text_offset`.
+
+A call summary or coding message containing an explicit qualified reference may include `related_github_items`. Only currently shared repositories can appear in those links or be opened by ID. The existing `get_changes` feed covers calls. [Connection and archive behavior](github-history.md)
