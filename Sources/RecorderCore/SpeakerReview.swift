@@ -22,6 +22,15 @@ extension CallDetails {
             return name
         }
     }
+
+    /// Match against current attendance so renames follow the person and a
+    /// new attendee with a recycled name never inherits the old suggestion.
+    public func pendingSpeakerNames(_ suggestions: [String: SpeakerSuggestion], for version: LibraryTranscript) -> [String: String] {
+        guard automaticParticipant(for: version) == nil else { return [:] }
+        let reviewed = savedSpeakerNames(for: version)
+        let attendees = callAttendees
+        return suggestions.filter { reviewed[$0.key] == nil }.compactMapValues { $0.resolving(in: attendees)?.name }
+    }
 }
 
 public struct SpeakerReview: Sendable {
@@ -40,6 +49,32 @@ public struct SpeakerReview: Sendable {
         }
         let segments = groupedSegments(transcript.segments) { details.participantName($0, for: version) }
         let reviewed = details.savedSpeakerNames(for: version).merging(names) { _, chosen in chosen }
+        return Transcript(original: transcript, segments: segments, parentVersion: version.runName,
+                          automaticParticipant: details.automaticParticipant(for: version), reviewedGroupNames: reviewed)
+    }
+
+    /// The reader already has diarized segments. A single group edit should
+    /// keep their boundaries and preserve any explicit per-passage override.
+    static func assigning(group: String, to attendeeID: String, version: LibraryTranscript, details: CallDetails) throws -> Transcript {
+        guard let transcript = version.document,
+              transcript.segments.contains(where: { $0.source == .system && $0.speakerGroup == group }),
+              let person = details.callAttendees.first(where: { $0.id == attendeeID && $0.active }) else {
+            throw RecorderError.message("The speaker or attendance changed. Reopen the transcript and try again.")
+        }
+        let segments = transcript.segments.map { segment in
+            guard segment.source == .system else { return segment }
+            var name = details.participantName(segment.participant, for: version)
+            var bulk = segment.groupAssignment
+            if segment.speakerGroup == group, name == nil || bulk == true {
+                name = person.name
+                bulk = true
+            }
+            return TranscriptSegment(source: segment.source, start: segment.start, end: segment.end, text: segment.text,
+                                     timing: segment.timing, participant: name, speakerGroup: segment.speakerGroup,
+                                     words: segment.words, groupAssignment: bulk)
+        }
+        var reviewed = details.savedSpeakerNames(for: version)
+        reviewed[group] = person.name
         return Transcript(original: transcript, segments: segments, parentVersion: version.runName,
                           automaticParticipant: details.automaticParticipant(for: version), reviewedGroupNames: reviewed)
     }

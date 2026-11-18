@@ -67,8 +67,11 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
         self.source = source; self.start = start; self.end = end; self.text = text; self.timing = timing
         self.participant = participant; self.speakerGroup = speakerGroup; self.words = words; self.groupAssignment = groupAssignment
     }
-    public func speakerLabel(automaticParticipant: String? = nil, participantNames: [String: String] = [:]) -> String {
+    public func speakerLabel(automaticParticipant: String? = nil, participantNames: [String: String] = [:], suggestion: String? = nil) -> String {
         guard source == .system else { return source.label }
+        if participant == nil, automaticParticipant?.isEmpty != false, speakerGroup != nil, let suggestion {
+            return suggestion + " (suggested)"
+        }
         let name = (participant.map { participantNames[$0] ?? $0 } ?? automaticParticipant)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return name?.isEmpty == false ? name! : speakerGroup.map { "Speaker " + String($0.dropFirst()) } ?? source.label
     }
@@ -97,10 +100,11 @@ public struct Transcript: Codable, Sendable {
     public let automaticParticipant: String?
     /// Names explicitly chosen for a diarized voice in this version, including voices with no assignable words.
     let reviewedGroupNames: [String: String]?
+    public private(set) var speakerSuggestions: [String: SpeakerSuggestion]?
 
     public init(input: TranscriptionInput, model: SpeechModel, engine: String, language: String, segments: [TranscriptSegment],
                 speakerBleedReduction: SpeakerBleedReduction? = nil, echoCancellation: EchoCancellationDetails? = nil,
-                automaticParticipant: String? = nil) throws {
+                automaticParticipant: String? = nil, speakerSuggestions: [String: SpeakerSuggestion] = [:]) throws {
         let allowed = Set(input.tracks.map(\.source))
         guard segments.allSatisfy({ allowed.contains($0.source) && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && ["word", "segment", "chunk"].contains($0.timing) }) else {
             throw RecorderError.message("The transcription worker returned invalid timestamps or track labels.")
@@ -110,6 +114,7 @@ public struct Transcript: Codable, Sendable {
         createdAt = Date(); recording = input.name
         self.speakerBleedReduction = speakerBleedReduction; self.echoCancellation = echoCancellation
         editing = nil; reviewedGroupNames = nil
+        self.speakerSuggestions = speakerSuggestions.isEmpty ? nil : speakerSuggestions
         modelID = model.id; modelName = model.name; modelSHA256 = model.sha256
         self.engine = engine; self.language = language
         sources = Dictionary(uniqueKeysWithValues: input.tracks.map { ($0.source.rawValue, URL(fileURLWithPath: $0.path).lastPathComponent) })
@@ -129,7 +134,11 @@ public struct Transcript: Codable, Sendable {
         }
         let header = "\(recording)\nModel: \(modelName)\n\(cleanup)\(edits)\(labels)\n\n"
         if segments.isEmpty { return header + (editing == nil ? "No speech was detected.\n" : "This edited transcript has no text.\n") }
-        return header + segments.map { "[\(Self.timestamp($0.start))] \($0.speakerLabel(automaticParticipant: automaticParticipant)): \($0.text)" }.joined(separator: "\n") + "\n"
+        return header + segments.map { segment in
+            let suggestion = segment.speakerGroup.flatMap { speakerSuggestions?[$0]?.name }
+            let speaker = segment.speakerLabel(automaticParticipant: automaticParticipant, suggestion: suggestion)
+            return "[\(Self.timestamp(segment.start))] \(speaker): \(segment.text)"
+        }.joined(separator: "\n") + "\n"
     }
     public static func timestamp(_ seconds: Double) -> String {
         let value = Int(seconds.rounded(.down))
@@ -137,6 +146,12 @@ public struct Transcript: Codable, Sendable {
     }
     public func save(beside input: TranscriptionInput) throws -> URL {
         try save(in: input.outputDirectory)
+    }
+
+    mutating func updateSuggestions(_ suggestions: [String: SpeakerSuggestion], attendees: [CallAttendee]) {
+        let reviewed = savedSpeakerNames
+        let pending = suggestions.filter { reviewed[$0.key] == nil }.compactMapValues { $0.resolving(in: attendees) }
+        speakerSuggestions = pending.isEmpty ? nil : pending
     }
     public func save(in directory: URL) throws -> URL {
         let root = directory.appendingPathComponent("Transcripts", isDirectory: true)
@@ -178,6 +193,8 @@ public struct Transcript: Codable, Sendable {
     }
     init(original: Transcript, segments: [TranscriptSegment], parentVersion: String, automaticParticipant: String?, reviewedGroupNames: [String: String]) {
         self.reviewedGroupNames = reviewedGroupNames.isEmpty ? nil : reviewedGroupNames
+        let remaining = original.speakerSuggestions?.filter { reviewedGroupNames[$0.key] == nil }
+        self.speakerSuggestions = remaining?.isEmpty == false ? remaining : nil
         let automaticParticipant = automaticParticipant?.isEmpty == true ? nil : automaticParticipant
         version = automaticParticipant != nil || !reviewedGroupNames.isEmpty || segments.contains(where: { $0.participant != nil }) ? 3 : 2
         createdAt = Date(); recording = original.recording

@@ -243,9 +243,27 @@ public enum CallFileOperations {
     public static func saveSpeakerReview(_ review: SpeakerReview, version: LibraryTranscript, recording: LibraryRecording) throws -> URL {
         let (_, details) = try transcriptForEditing(version, recording)
         let updated = try review.applying(to: version, details: details)
+        return try saveSpeakerChanges(updated, version: version, recording: recording, details: details)
+    }
+
+    public static func assignSpeakerGroup(_ group: String, to attendeeID: String, version: LibraryTranscript, recording: LibraryRecording) throws -> URL {
+        let (_, details) = try transcriptForEditing(version, recording)
+        let updated = try SpeakerReview.assigning(group: group, to: attendeeID, version: version, details: details)
+        return try saveSpeakerChanges(updated, version: version, recording: recording, details: details)
+    }
+
+    private static func saveSpeakerChanges(_ updated: Transcript, version: LibraryTranscript, recording: LibraryRecording, details: CallDetails) throws -> URL {
         if updated.segments == version.document?.segments, updated.automaticParticipant == version.document?.automaticParticipant,
            updated.savedSpeakerNames == details.savedSpeakerNames(for: version) { return version.url }
-        return try updated.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
+        return try saveEditedVersion(updated, source: version, recording: recording, details: details)
+    }
+
+    private static func saveEditedVersion(_ updated: Transcript, source: LibraryTranscript, recording: LibraryRecording, details: CallDetails) throws -> URL {
+        var edited = updated
+        let directory = (try? PeopleDirectory.load(from: PeopleDirectory.fileURL)) ?? .init()
+        let suggestions = source.currentSpeakerSuggestions(for: recording, directory: directory, details: details)
+        edited.updateSuggestions(suggestions, attendees: details.callAttendees)
+        return try edited.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
     }
 
     private static func transcriptForEditing(_ version: LibraryTranscript, _ recording: LibraryRecording) throws -> (Transcript, CallDetails) {
@@ -254,7 +272,7 @@ public enum CallFileOperations {
         guard let original = version.document else { throw RecorderError.message("This transcript cannot be edited because it could not be read.") }
         let current = try Transcript.read(from: version.url)
         guard current.segments == original.segments, current.createdAt == original.createdAt, current.automaticParticipant == original.automaticParticipant,
-              current.reviewedGroupNames == original.reviewedGroupNames else {
+              current.reviewedGroupNames == original.reviewedGroupNames, current.speakerSuggestions == original.speakerSuggestions else {
             throw RecorderError.message("This transcript changed while you were editing it. Reopen the editor to review the latest version.")
         }
         let details = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
@@ -269,6 +287,6 @@ public enum CallFileOperations {
         }
         let edited = try original.editingParagraphs(text, parentVersion: version.runName, participants: names,
                                                   automaticParticipant: details.automaticParticipant(for: version) ?? "", reviewedGroupNames: details.savedSpeakerNames(for: version))
-        return try edited.save(in: recording.isDirectory ? recording.url : recording.url.deletingLastPathComponent())
+        return try saveEditedVersion(edited, source: version, recording: recording, details: details)
     }
 }

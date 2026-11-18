@@ -492,6 +492,24 @@ private struct RecordingDetail: View {
     @State private var reviewingSpeakers = false
     @State private var showingAttendance = false
     @State private var showingSummary = false
+    private struct SuggestionRequest: Equatable {
+        let versionID: String?
+        let attendees: [CallAttendee]
+        let automaticParticipant: String?
+        let revision: Int
+    }
+    @State private var voiceRevision = 0
+    @State private var loadedSuggestions: (request: SuggestionRequest, matches: [String: SpeakerSuggestion])?
+    private var suggestionRequest: SuggestionRequest {
+        .init(versionID: version?.id, attendees: recording.details.callAttendees,
+              automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) }, revision: voiceRevision)
+    }
+    private var pendingSpeakerNames: [String: String] {
+        guard let version else { return [:] }
+        let matches = loadedSuggestions?.request == suggestionRequest ? loadedSuggestions?.matches : version.document?.speakerSuggestions
+        guard let matches, !matches.isEmpty else { return [:] }
+        return recording.details.pendingSpeakerNames(matches, for: version)
+    }
     private var draft: TranscriptDraft? { library.transcriptDrafts[recording.id] }
 
     private var version: LibraryTranscript? {
@@ -603,6 +621,9 @@ private struct RecordingDetail: View {
                                    draft: draft, canEdit: !library.managing, editParagraph: { beginEditing(paragraph: $0) },
                                    participants: recording.details.participants, automaticParticipant: version.flatMap { recording.automaticParticipant(for: $0) },
                                    participantNames: version.map { recording.details.participantNames(for: $0) } ?? [:], displayNames: recording.directoryLabels ?? [:],
+                                   speakerSuggestions: pendingSpeakerNames, assignGroup: { group, name, paragraph in
+                                       if let version { Task { await library.assignSpeakerGroup(group, to: name, from: paragraph, recording: recording, version: version) } }
+                                   },
                                    assignment: library.participantAssignments[recording.id].flatMap { $0.versionID == version?.id ? $0 : nil },
                                    assignParticipant: { name, paragraph in
                                        if let version { Task { await library.assignParticipant(name, to: paragraph, recording: recording, version: version) } }
@@ -638,6 +659,9 @@ private struct RecordingDetail: View {
             .forward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position + 10) })
         ]).frame(width: 0, height: 0))
         .onAppear { playback.select(recording); showingSummary = library.summaryDrafts[recording.id] != nil || (draft == nil && recording.summary?.current != nil); selectMatchingVersion() }
+        .task(id: suggestionRequest) { await loadSpeakerSuggestions() }
+        .onReceive(NotificationCenter.default.publisher(for: VoiceProfiles.changed)) { _ in voiceRevision += 1 }
+        .onReceive(recorder.calendar.$directory.removeDuplicates().dropFirst()) { _ in voiceRevision += 1 }
         .sheet(isPresented: $reviewingSpeakers) {
             if let version, let audio = recording.tracks.first(where: { $0.source == .system }) {
                 SpeakerReviewSheet(recording: recording, version: version, audio: audio.url, library: library, calendar: recorder.calendar)
@@ -656,9 +680,18 @@ private struct RecordingDetail: View {
         if let version { library.beginTranscriptEditing(recording, version: version, paragraph: paragraph) }
     }
     private func copyTranscript() {
-        guard let version, let text = recording.readableText(for: version) else { return }
+        guard let version, let text = recording.readableText(for: version, suggestions: pendingSpeakerNames) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+    private func loadSpeakerSuggestions() async {
+        guard let version else { return }
+        let request = suggestionRequest, directory = recorder.calendar.directory
+        let matches = await Task.detached(priority: .utility) { [recording] in
+            version.currentSpeakerSuggestions(for: recording, directory: directory)
+        }.value
+        guard !Task.isCancelled, suggestionRequest == request else { return }
+        loadedSuggestions = (request, matches)
     }
     private func selectMatchingVersion() {
         guard draft == nil, library.summaryDrafts[recording.id] == nil else { return }
@@ -684,6 +717,8 @@ struct ReadableTranscript: View {
     let automaticParticipant: String?
     var participantNames: [String: String] = [:]
     var displayNames: [String: String] = [:]
+    var speakerSuggestions: [String: String] = [:]
+    var assignGroup: ((String, String, Int) -> Void)? = nil
     var assignment: ParticipantAssignmentStatus? = nil
     let assignParticipant: (String?, Int) -> Void
     let editParticipants: () -> Void
@@ -714,7 +749,10 @@ struct ReadableTranscript: View {
                                                                    assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
                                                 .disabled(!canEdit)
                                         } else {
-                                            ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames, speakerGroup: paragraph.segments.first?.speakerGroup, start: paragraph.start,
+                                            let group = paragraph.segments.first?.speakerGroup
+                                            ParticipantPicker(participant: paragraph.participant.map { participantNames[$0] ?? $0 }, participants: participants, automaticParticipant: automaticParticipant, displayNames: displayNames, speakerGroup: group,
+                                                              suggestedParticipant: group.flatMap { speakerSuggestions[$0] },
+                                                              assignGroup: assignGroup.map { action in { group, name in action(group, name, paragraph.id) } }, start: paragraph.start,
                                                               assign: { assignParticipant($0, paragraph.id) }, editParticipants: editParticipants)
                                                 .disabled(!canEdit)
                                         }

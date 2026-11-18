@@ -30,6 +30,8 @@ final class SpeakerAnalysisStoreTests: XCTestCase {
     }
     func testConcurrentRequestsAndLaterReviewReuseEvenAnEmptyAnalysis() throws {
         let store = store, audio = audio
+        XCTAssertNil(store.cachedAnalysis(for: audio))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runs").path))
         let errors = NSLock()
         var failures = [String]()
         DispatchQueue.concurrentPerform(iterations: 3) { _ in
@@ -38,6 +40,7 @@ final class SpeakerAnalysisStoreTests: XCTestCase {
         }
         XCTAssertTrue(failures.isEmpty)
         try FileManager.default.removeItem(at: worker)
+        XCTAssertEqual(store.cachedAnalysis(for: audio)?.intervals, [])
         XCTAssertTrue(try self.store.analysis(for: audio, operation: LocalWorkerOperation()).intervals.isEmpty)
         XCTAssertEqual(try runs(), 1)
         let entry = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil).first { $0.pathExtension == "json" })

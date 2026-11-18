@@ -177,38 +177,59 @@ struct ParticipantPicker: View {
     let automaticParticipant: String?
     var displayNames: [String: String] = [:]
     var speakerGroup: String? = nil
+    var suggestedParticipant: String? = nil
+    var assignGroup: ((String, String) -> Void)? = nil
     let start: Double
     let assign: (String?) -> Void
     let editParticipants: () -> Void
     private var displayName: String {
+        if let suggestedName { return suggestedName + " · Suggested" }
         let name = participant ?? automaticParticipant
         return name?.isEmpty == false ? (displayNames[name!] ?? name!) : speakerGroup.map { "Speaker " + String($0.dropFirst()) } ?? TranscriptSource.system.label
     }
+    private var suggestedName: String? {
+        guard participant == nil, automaticParticipant == nil, let suggestedParticipant else { return nil }
+        return displayNames[suggestedParticipant] ?? suggestedParticipant
+    }
     var body: some View {
         Menu {
-            if let name = participant, !name.isEmpty, !participants.contains(name) { Text("Assigned: \(name)") }
-            ForEach(participants, id: \.self) { name in
-                Button { assign(name) } label: {
-                    if participant == name { Label(displayNames[name] ?? name, systemImage: "checkmark") } else { Text(displayNames[name] ?? name) }
+            if let speakerGroup, let assignGroup, !participants.isEmpty {
+                let group = "Speaker " + String(speakerGroup.dropFirst())
+                if let suggestedName, let suggestedParticipant {
+                    Button("Confirm \(suggestedName) for \(group)") { assignGroup(speakerGroup, suggestedParticipant) }
                 }
-            }
-            if !participants.isEmpty { Divider() }
-            if let automaticParticipant {
-                Button { assign(nil) } label: {
-                    if participant == nil { Label("Automatic · \(displayNames[automaticParticipant] ?? automaticParticipant)", systemImage: "checkmark") }
-                    else { Text("Automatic · \(displayNames[automaticParticipant] ?? automaticParticipant)") }
+                Menu("Assign \(group) to…") {
+                    ForEach(participants, id: \.self) { name in
+                        Button(displayNames[name] ?? name) { assignGroup(speakerGroup, name) }
+                    }
                 }
-            }
-            Button { assign(automaticParticipant == nil && speakerGroup == nil ? nil : "") } label: {
-                if participant == "" || (participant == nil && automaticParticipant == nil) { Label("Other participants", systemImage: "checkmark") }
-                else { Text("Other participants") }
-            }
+                Section("This passage only") { passageActions }
+            } else { passageActions }
             Divider()
             Button("Edit participants…", action: editParticipants)
         } label: { Text(displayName).font(.callout.weight(.semibold)).lineLimit(1) }
             .menuStyle(.borderlessButton).fixedSize()
-            .help("Assign this passage to a participant")
+            .help(suggestedName == nil ? "Assign a speaker" : "Review the suggested speaker for this voice")
             .accessibilityLabel("Speaker at \(Transcript.timestamp(start))").accessibilityValue(displayName)
+    }
+    @ViewBuilder private var passageActions: some View {
+        if let name = participant, !name.isEmpty, !participants.contains(name) { Text("Assigned: \(name)") }
+        ForEach(participants, id: \.self) { name in
+            Button { assign(name) } label: {
+                if participant == name { Label(displayNames[name] ?? name, systemImage: "checkmark") } else { Text(displayNames[name] ?? name) }
+            }
+        }
+        if !participants.isEmpty { Divider() }
+        if let automaticParticipant {
+            Button { assign(nil) } label: {
+                if participant == nil { Label("Automatic · \(displayNames[automaticParticipant] ?? automaticParticipant)", systemImage: "checkmark") }
+                else { Text("Automatic · \(displayNames[automaticParticipant] ?? automaticParticipant)") }
+            }
+        }
+        Button { assign(automaticParticipant == nil && speakerGroup == nil ? nil : "") } label: {
+            if participant == "" || (participant == nil && automaticParticipant == nil) { Label("Other participants", systemImage: "checkmark") }
+            else { Text("Other participants") }
+        }
     }
 }
 

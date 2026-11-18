@@ -359,6 +359,20 @@ enum GitHubPeriod: String, CaseIterable {
         }
     }
 
+    func assignSpeakerGroup(_ group: String, to name: String, from paragraph: Int, recording: LibraryRecording, version: LibraryTranscript) async {
+        guard !managing, transcriptDrafts[recording.id] == nil,
+              let person = recording.details.callAttendees.first(where: { $0.active && $0.name == name }) else { return }
+        participantAssignments[recording.id] = .init(versionID: version.id, paragraph: paragraph)
+        do {
+            try await saveTranscriptVersion(recording, clearSearch: false) {
+                try CallFileOperations.assignSpeakerGroup(group, to: person.id, version: version, recording: recording)
+            }
+            participantAssignments[recording.id] = nil
+        } catch {
+            participantAssignments[recording.id] = .init(versionID: version.id, paragraph: paragraph, error: error.localizedDescription)
+        }
+    }
+
     private func saveTranscriptVersion(_ recording: LibraryRecording, clearSearch: Bool, write: @escaping @Sendable () throws -> URL) async throws {
         try beginManagement()
         do {

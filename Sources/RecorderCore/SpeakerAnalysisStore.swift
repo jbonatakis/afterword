@@ -40,18 +40,25 @@ public struct SpeakerAnalysisStore: Sendable {
         let analysis: SpeakerAnalysis
     }
 
+    /// Reading a transcript can reuse diarization without starting a worker.
+    public func cachedAnalysis(for audio: URL) -> SpeakerAnalysis? {
+        guard let source = try? Source(audio) else { return nil }
+        return cachedAnalysis(for: audio, source: source)
+    }
+
+    private func cachedAnalysis(for audio: URL, source: Source) -> SpeakerAnalysis? {
+        let file = directory.appendingPathComponent(source.key + ".json")
+        guard PrivateFiles.isRegular(file), let data = try? Data(contentsOf: file),
+              let entry = try? JSONDecoder().decode(Entry.self, from: data),
+              entry.revision == source.revision, entry.analysis.model == SpeakerAnalysis.modelID,
+              (try? Source(audio)) == source else { return nil }
+        return entry.analysis
+    }
+
     func analysis(for audio: URL, operation: LocalWorkerOperation) throws -> SpeakerAnalysis {
         try operation.checkCancellation()
         let source = try Source(audio)
-        let file = directory.appendingPathComponent(source.key + ".json")
-        func cached() -> SpeakerAnalysis? {
-            guard PrivateFiles.isRegular(file), let data = try? Data(contentsOf: file),
-                  let entry = try? JSONDecoder().decode(Entry.self, from: data),
-                  entry.revision == source.revision, entry.analysis.model == SpeakerAnalysis.modelID,
-                  (try? Source(audio)) == source else { return nil }
-            return entry.analysis
-        }
-        if let hit = cached() { return hit }
+        if let hit = cachedAnalysis(for: audio, source: source) { return hit }
         try PrivateFiles.directory(directory)
         // A review sheet and a transcription (or another app instance) can request the same audio.
         let fd = open(directory.appendingPathComponent(source.key + ".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
@@ -63,11 +70,11 @@ public struct SpeakerAnalysisStore: Sendable {
             Thread.sleep(forTimeInterval: 0.1)
         }
         try operation.checkCancellation()
-        if let hit = cached() { return hit }
+        if let hit = cachedAnalysis(for: audio, source: source) { return hit }
         let result = try runWorker(audio: audio, operation: operation)
         guard try Source(audio) == source else { throw RecorderError.message("System audio changed while speakers were being analyzed. Try again.") }
         let data = try JSONEncoder().encode(Entry(revision: source.revision, analysis: result))
-        try operation.publish { try PrivateFiles.atomicWrite(data, to: file) }
+        try operation.publish { try PrivateFiles.atomicWrite(data, to: directory.appendingPathComponent(source.key + ".json")) }
         return result
     }
 

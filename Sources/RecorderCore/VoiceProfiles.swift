@@ -1,6 +1,42 @@
 import Darwin
 import Foundation
 
+/// A voice match recorded separately from human-reviewed assignments. The ID
+/// follows attendance edits; the name is the label at transcription time.
+public struct SpeakerSuggestion: Codable, Equatable, Sendable {
+    public let attendeeID: String
+    public let name: String
+
+    func resolving(in attendees: [CallAttendee]) -> Self? {
+        guard let person = attendees.first(where: { $0.id == attendeeID && $0.active }) else { return nil }
+        return Self(attendeeID: person.id, name: person.name)
+    }
+}
+
+public extension LibraryTranscript {
+    /// Reuse the cached analysis for legacy transcripts and to reflect new or
+    /// forgotten examples. Reading never starts diarization or writes a version.
+    func currentSpeakerSuggestions(for recording: LibraryRecording, directory: PeopleDirectory, details: CallDetails? = nil,
+                                   store: SpeakerAnalysisStore = .bundled) -> [String: SpeakerSuggestion] {
+        let details = details ?? recording.details
+        let attendees = details.callAttendees
+        guard recording.detailsError == nil, details.automaticParticipant(for: self) == nil,
+              attendees.contains(where: \.active),
+              document?.segments.contains(where: { $0.speakerGroup != nil && $0.participant == nil }) == true,
+              let profiles = try? VoiceProfiles.load(), !profiles.references.isEmpty,
+              let call = try? VoiceProfiles.callID(for: recording) else { return [:] }
+        if let audio = recording.tracks.first(where: { $0.source == .system }),
+           let analysis = store.cachedAnalysis(for: audio.url) {
+            return profiles.suggestions(for: analysis, among: attendees, excludingCall: call, in: directory)
+        }
+        // A saved transcript can outlive the system's disposable analysis cache.
+        return (document?.speakerSuggestions ?? [:]).filter { _, match in
+            guard let person = attendees.first(where: { $0.id == match.attendeeID && $0.active }) else { return false }
+            return profiles.previousExamples(for: person, excludingCall: call, in: directory).clips > 0
+        }
+    }
+}
+
 public struct VoiceReference: Codable, Identifiable, Sendable {
     public let person: String
     public let displayName: String
@@ -140,6 +176,16 @@ public struct VoiceProfiles: Codable, Sendable {
         // Conflicting strong votes suggest a merged cluster. Abstain on the whole group.
         guard votes.count == 1, let winner = votes.first, !mismatches.contains(winner.key), winner.value >= max(2, (2 * clips.count + 2) / 3) else { return nil }
         return available.first { $0.id == winner.key }
+    }
+
+    public func suggestions(for analysis: SpeakerAnalysis, among attendees: [CallAttendee], excludingCall call: String,
+                            in directory: PeopleDirectory) -> [String: SpeakerSuggestion] {
+        guard analysis.model == SpeakerAnalysis.modelID, !references.isEmpty else { return [:] }
+        return Dictionary(grouping: analysis.clips, by: { $0.interval.speaker }).compactMapValues { clips in
+            suggestion(for: clips, among: attendees, excludingCall: call, in: directory).map {
+                SpeakerSuggestion(attendeeID: $0.id, name: $0.name)
+            }
+        }
     }
 
     public static let directory = ModelStore.defaultRoot.deletingLastPathComponent().appendingPathComponent("Voices", isDirectory: true)

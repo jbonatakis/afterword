@@ -50,6 +50,50 @@ final class VoiceProfilesTests: XCTestCase {
         XCTAssertTrue(try VoiceProfiles.load(in: directory).people.isEmpty)
     }
 
+    func testSuggestionsAreProvisionalFollowAttendanceAndProtectPassageOverrides() throws {
+        var profiles = VoiceProfiles()
+        try profiles.remember(clip(0), as: pat, call: "prior-call")
+        let analysis = SpeakerAnalysis(model: SpeakerAnalysis.modelID, intervals: [], clips: [
+            clip(0), clip(0, start: 15), VoiceClip(interval: .init(speaker: "S2", start: 30, end: 35), vector: clip(1).vector)
+        ])
+        let suggestions = profiles.suggestions(for: analysis, among: [pat, sam], excludingCall: "current-call", in: .init())
+        XCTAssertEqual(suggestions.mapValues(\.attendeeID), ["S1": pat.id])
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try PrivateFiles.directory(folder)
+        let input = TranscriptionInput(tracks: [.init(source: .system, url: folder.appendingPathComponent("System.m4a"))], outputDirectory: folder, name: "fixture")
+        func segment(_ start: Double, _ who: String?, group: String = "S1") -> TranscriptSegment {
+            .init(source: .system, start: start, end: start + 2, text: "A passage", timing: "segment", participant: who, speakerGroup: group)
+        }
+        let initial = try Transcript(input: input, model: SpeechModel.catalog[0], engine: "test", language: "en",
+                                     segments: [segment(0, nil), segment(8, pat.name), segment(16, ""), segment(22, nil, group: "S2")], speakerSuggestions: suggestions)
+        let text = try initial.save(beside: input)
+        let url = text.deletingLastPathComponent().appendingPathComponent("Transcript.json")
+        let doc = try Transcript.read(from: url)
+        let version = LibraryTranscript(url: url, document: doc, error: nil, date: Date(), fileModificationDate: Date())
+        XCTAssertEqual(doc.speakerSuggestions, suggestions)
+        XCTAssertNil(doc.segments.first?.participant)
+        XCTAssertTrue(try String(contentsOf: text).contains("Pat (suggested)"))
+        XCTAssertFalse(doc.readableText.contains("(suggested)"))
+
+        var renamed = pat
+        renamed.name = "Pat Lee"
+        let details = CallDetails(participants: [renamed.name, sam.name], participantOverrides: [version.runName: [pat.name: renamed.name]], attendees: [renamed, sam])
+        XCTAssertEqual(details.pendingSpeakerNames(suggestions, for: version), ["S1": renamed.name])
+        var absent = renamed
+        absent.attendance = .absent
+        let replacement = CallAttendee(name: renamed.name)
+        let changed = try details.updatingAttendance([absent, sam, replacement])
+        XCTAssertTrue(changed.pendingSpeakerNames(suggestions, for: version).isEmpty)
+        XCTAssertThrowsError(try SpeakerReview.assigning(group: "S1", to: pat.id, version: version, details: changed))
+        let confirmed = try SpeakerReview.assigning(group: "S1", to: sam.id, version: version, details: details)
+        XCTAssertEqual(confirmed.savedSpeakerNames, ["S1": sam.name])
+        XCTAssertNil(confirmed.speakerSuggestions)
+        XCTAssertEqual(confirmed.segments.map(\.participant), [sam.name, renamed.name, "", nil])
+        XCTAssertEqual(confirmed.segments.map(\.groupAssignment), [true, nil, nil, nil])
+        XCTAssertEqual(confirmed.segments.map(\.start), doc.segments.map(\.start))
+    }
+
     func testNoOverlappingSpeakersInSampleClips() throws {
         let turns = [SpeakerInterval(speaker: "S1", start: 0, end: 12), .init(speaker: "S2", start: 3, end: 10), .init(speaker: "S1", start: 18, end: 27)]
         let samples = SpeakerAnalysis.sampleIntervals(turns)

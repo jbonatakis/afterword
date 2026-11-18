@@ -107,12 +107,20 @@ public final class TranscriptionJob: @unchecked Sendable {
         guard child.terminationStatus == 0, let completion, buffer.isEmpty, durations.count == input.tracks.count else {
             throw RecorderError.message("The local transcription worker stopped before completing. Try again or choose another model. Your recording is saved.")
         }
+        var suggestions: [String: SpeakerSuggestion] = [:]
         if let system = input.tracks.first(where: { $0.source == .system }),
            segments.contains(where: { $0.source == .system }) {
             progress(.init("Finding speakers in system audio…"))
             do {
                 let analysis = try speakerStore.analysis(for: URL(fileURLWithPath: system.path), operation: operation)
                 segments = SpeakerReview(analysis: analysis, names: [:]).groupedSegments(segments)
+                if let details = try? CallDetailsStore.load(for: input.outputDirectory, isDirectory: true),
+                   details.inferredParticipant == nil, !details.participants.isEmpty,
+                   let profiles = try? VoiceProfiles.load(), !profiles.references.isEmpty,
+                   let directory = try? PeopleDirectory.load(from: PeopleDirectory.fileURL),
+                   let call = try? AgentJSON.identity(input.outputDirectory) {
+                    suggestions = profiles.suggestions(for: analysis, among: details.callAttendees, excludingCall: call, in: directory)
+                }
             } catch {
                 try operation.checkCancellation()
                 // Keep the recognized words when diarization fails. Review can retry the same audio.
@@ -120,7 +128,8 @@ public final class TranscriptionJob: @unchecked Sendable {
             }
         }
         let transcript = try Transcript(input: input, model: model, engine: "transcribe.cpp " + completion.engine, language: language,
-                                        segments: segments, speakerBleedReduction: bleedReduction, echoCancellation: completion.echoCancellation)
+                                        segments: segments, speakerBleedReduction: bleedReduction, echoCancellation: completion.echoCancellation,
+                                        speakerSuggestions: suggestions)
         progress(.init("Saving transcript…", fraction: 1))
         // Serialize publication with cancellation: a cancelled job cannot publish later.
         return try operation.publish { try transcript.save(beside: input) }

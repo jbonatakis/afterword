@@ -40,8 +40,13 @@ public extension Transcript {
     var readableText: String {
         readableText(recordingName: recording)
     }
-    func readableText(recordingName: String, automaticParticipant: String? = nil, participantNames: [String: String] = [:]) -> String {
-        let body = paragraphs.map { "\($0.speakerLabel(automaticParticipant: automaticParticipant ?? self.automaticParticipant, participantNames: participantNames)) · \(Self.timestamp($0.start))\n\($0.text)" }.joined(separator: "\n\n")
+    func readableText(recordingName: String, automaticParticipant: String? = nil, participantNames: [String: String] = [:], suggestions: [String: String] = [:]) -> String {
+        let body = paragraphs.map { paragraph in
+            let first = paragraph.segments[0]
+            let name = first.speakerLabel(automaticParticipant: automaticParticipant ?? self.automaticParticipant, participantNames: participantNames,
+                                          suggestion: first.speakerGroup.flatMap { suggestions[$0] })
+            return "\(name) · \(Self.timestamp(paragraph.start))\n\(paragraph.text)"
+        }.joined(separator: "\n\n")
         let empty = editing == nil ? "No speech was detected." : "This edited transcript has no text."
         return "\(recordingName)\nModel: \(modelName)\n" + (editing == nil ? "\n" : "Manually edited transcript\n\n") + (body.isEmpty ? empty : body) + "\n"
     }
@@ -108,8 +113,9 @@ public struct LibraryRecording: Identifiable, Codable, Sendable {
         let names = paragraph.participant.map { [$0: details.participantName($0, for: version).map(displayName) ?? ""] } ?? [:]
         return paragraph.speakerLabel(automaticParticipant: automaticParticipant(for: version).map(displayName), participantNames: names)
     }
-    public func readableText(for version: LibraryTranscript) -> String? {
-        version.document?.readableText(recordingName: name, automaticParticipant: automaticParticipant(for: version).map(displayName) ?? "", participantNames: details.participantNames(for: version).mapValues(displayName))
+    public func readableText(for version: LibraryTranscript, suggestions: [String: String] = [:]) -> String? {
+        version.document?.readableText(recordingName: name, automaticParticipant: automaticParticipant(for: version).map(displayName) ?? "",
+                                       participantNames: details.participantNames(for: version).mapValues(displayName), suggestions: suggestions.mapValues(displayName))
     }
     public func matches(_ query: String, allVersions: Bool = false) -> Bool {
         let query = LibrarySearchQuery(query)
