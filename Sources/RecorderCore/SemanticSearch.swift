@@ -21,6 +21,7 @@ public struct SemanticSearchStatus: Encodable, Sendable, Equatable {
 struct SemanticChunk: Sendable {
     enum Origin: Sendable {
         case call(id: String, version: String, paragraphs: [Int])
+        case github(item: String, passage: String, revision: String)
         case coding(session: String, message: String, timestamp: Date?, archived: Bool)
     }
     let origin: Origin
@@ -38,6 +39,7 @@ struct SemanticChunk: Sendable {
     var key: String {
         switch origin {
         case let .call(id, version, ids): return id + ":" + version + ":" + ids.map(String.init).joined(separator: ",") + ":" + hash
+        case let .github(item, passage, _): return "github:" + item + ":" + passage + ":" + hash
         case let .coding(session, message, _, _): return "coding:" + session + ":" + message + ":" + hash
         }
     }
@@ -103,6 +105,18 @@ final class SemanticSearchEngine: @unchecked Sendable {
     private let queue = DispatchQueue(label: "io.local.afterword.embeddings", qos: .utility)
     private let provider: Provider
     private var chunks: [SemanticChunk] = []
+    private struct SourceChunks {
+        private var revision: String?
+        private(set) var chunks: [SemanticChunk] = []
+        mutating func update(_ next: String?, makeChunks: () throws -> [SemanticChunk]) rethrows {
+            guard revision != next else { return }
+            chunks = next == nil ? [] : try makeChunks()
+            revision = next
+        }
+    }
+    private var recordingChunks = SourceChunks()
+    private var codingChunks = SourceChunks()
+    private var githubChunks = SourceChunks()
     private var settings = EmbeddingSettings()
     private var signature = ""
     private var generation = UUID()
@@ -119,17 +133,27 @@ final class SemanticSearchEngine: @unchecked Sendable {
         let runtime = EmbeddingRuntime()
         self.provider = provider ?? { try runtime.embed($0, model: $1, directory: $2, cancelled: $3) }
     }
-    func refresh(_ calls: [AgentCall], codingArchive: CodingArchive? = nil) {
+    func refresh(_ calls: [AgentCall], codingArchive: CodingArchive? = nil, github: GitHubArchive? = nil, shared: Bool = false) {
         lock.lock(); defer { lock.unlock() }
         do {
             let next = try EmbeddingSettings.load(directory: directory)
             let codingRevision = next.enabled ? try codingArchive?.revision : nil
-            let nextSignature = (codingRevision ?? "") + next.model.cacheKey + ":\(next.enabled):" + calls.map { $0.id + $0.revision }.joined()
+            let githubRevision = next.enabled ? try github?.revision(shared: shared) : nil
+            let callRevision = next.enabled ? calls.map { $0.id + $0.revision }.joined() : nil
+            let nextSignature = [
+                githubRevision ?? "", codingRevision ?? "", callRevision ?? "", next.model.cacheKey, String(next.enabled),
+            ]
+            .joined(separator: "|")
             if signature != nextSignature {
                 generation = UUID(); error = nil
                 if settings.modelID != next.modelID || !next.enabled { vectors = [:]; queries = [:]; database = nil }
                 settings = next
-                chunks = next.enabled ? calls.flatMap(SemanticChunker.chunks) + (try codingArchive?.embeddingChunks() ?? []) : []
+                // Imported GitHub pages change frequently during a backfill. Keep the
+                // other sources' prepared passages until their own revisions change.
+                recordingChunks.update(callRevision) { calls.flatMap(SemanticChunker.chunks) }
+                try codingChunks.update(codingRevision) { try codingArchive?.embeddingChunks() ?? [] }
+                try githubChunks.update(githubRevision) { try github?.embeddingChunks(shared: shared) ?? [] }
+                chunks = recordingChunks.chunks + codingChunks.chunks + githubChunks.chunks
                 var needed = Set<String>()
                 pending = (chunks.filter(\.latest) + chunks.filter { !$0.latest }).filter { needed.insert($0.hash).inserted }
                 nextPending = 0
@@ -202,6 +226,7 @@ final class SemanticSearchEngine: @unchecked Sendable {
     func stop() {
         lock.lock(); defer { lock.unlock() }
         generation = UUID(); signature = ""; settings.enabled = false
+        recordingChunks = SourceChunks(); codingChunks = SourceChunks(); githubChunks = SourceChunks()
         chunks = []; pending = []; nextPending = 0; cacheVersion = nil; vectors = [:]; queries = [:]; database = nil
     }
     private static func describe(_ error: Error) -> String {
