@@ -17,6 +17,9 @@ stage_app="$stage_root/Afterword.app"
 mkdir -p "$stage_app/Contents/MacOS" "$stage_app/Contents/Resources"
 cp "$binary_dir/Afterword" "$stage_app/Contents/MacOS/Afterword"
 cp Configuration/Info.plist "$stage_app/Contents/Info.plist"
+if [[ -n "${AFTERWORD_GITHUB_CLIENT_ID:-}" ]]; then
+    plutil -replace AfterwordGitHubClientID -string "$AFTERWORD_GITHUB_CLIENT_ID" "$stage_app/Contents/Info.plist"
+fi
 cp -R "$binary_dir/KeyboardShortcuts_KeyboardShortcuts.bundle" "$binary_dir/Afterword_Afterword.bundle" "$stage_app/Contents/Resources/"
 ./Scripts/embed-transcription.sh "$stage_app"
 ./Scripts/embed-embedding.sh "$stage_app"

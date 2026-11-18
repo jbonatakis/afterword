@@ -29,6 +29,7 @@ struct AgentAccessSettings: View {
                 Text("Agents can create and update summaries in allowed folders. Previous versions are kept, and newer edits are protected from being overwritten.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            GitHubGrantSettings(github: library.github, enabled: configuration.enabled)
             Section("Allowed recording folders") {
                 if folders.isEmpty { Text("Add a recording folder to the library first.").foregroundStyle(.secondary) }
                 ForEach(folders, id: \.self) { path in

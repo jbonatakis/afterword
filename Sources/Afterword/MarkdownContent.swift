@@ -1,8 +1,22 @@
 import SwiftUI
+import RecorderCore
+
+struct GitHubLibraryLinks {
+    var items: [String: String] = [:]
+    var open: (String) -> Void = { _ in }
+}
+private struct GitHubLinksKey: EnvironmentKey { static let defaultValue = GitHubLibraryLinks() }
+extension EnvironmentValues {
+    var githubLibraryLinks: GitHubLibraryLinks {
+        get { self[GitHubLinksKey.self] }
+        set { self[GitHubLinksKey.self] = newValue }
+    }
+}
 
 /// Native, selectable Markdown with block spacing. No HTML or remote resources are loaded.
 struct MarkdownContent: View {
     let markdown: String
+    @Environment(\.githubLibraryLinks) private var githubLinks
     private struct Block: Identifiable {
         let id: Int
         let kind: String
@@ -88,6 +102,18 @@ struct MarkdownContent: View {
                         }
                     }.background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
                 default: inline(block.text).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if !githubLinks.items.isEmpty {
+                ForEach(GitHubReference.qualified(in: markdown), id: \.self) { reference in
+                    if let id = githubLinks.items[reference] {
+                        Button {
+                            githubLinks.open(id)
+                        } label: {
+                            Label(reference, systemImage: "arrow.triangle.branch")
+                        }
+                        .buttonStyle(.link).help("Open in Afterword")
+                    }
                 }
             }
         }.font(.body).lineSpacing(4).textSelection(.enabled)

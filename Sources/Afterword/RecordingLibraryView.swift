@@ -62,6 +62,7 @@ private extension LibraryFilter {
         case .codex: CodingProvider.codex.icon
         case .claudeCode: CodingProvider.claudeCode.icon
         case .activity: Image(systemName: "rectangle.stack")
+        case .github: Image(systemName: "arrow.triangle.branch")
         case .coding: Image(systemName: "terminal")
         case .recordings: Image(systemName: "waveform")
         case .transcribed: Image(systemName: "text.bubble")
@@ -119,36 +120,30 @@ struct RecordingLibraryView: View {
     @State private var discardSummaryEdits: LibraryRecording?
     @FocusState private var focus: LibraryFocus?
 
-    private var recordingRows: some View {
-        ForEach(library.visibleRecordings) { recording in
-            RecordingRow(recording: recording, library: library, focus: $focus).tag(recording.id)
-                .contextMenu {
-                    Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
-                    Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
-                    Button("Show in Finder") { recorder.reveal(recording.url) }
-                    Divider()
-                    Button("Move to Trash…", role: .destructive) { trashTarget = .init(recording: recording) }
-                        .disabled(library.managing || recorder.locked || recorder.transcription.busy || library.transcriptDrafts[recording.id] != nil || library.summaryDrafts[recording.id] != nil || library.renamingID == recording.id)
-                }
-        }
+    private func recordingRow(_ recording: LibraryRecording) -> some View {
+        RecordingRow(recording: recording, library: library, focus: $focus).tag(recording.id)
+            .contextMenu {
+                Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
+                Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
+                Button("Show in Finder") { recorder.reveal(recording.url) }
+                Divider()
+                Button("Move to Trash…", role: .destructive) { trashTarget = .init(recording: recording) }
+                    .disabled(library.managing || recorder.locked || recorder.transcription.busy || library.transcriptDrafts[recording.id] != nil || library.summaryDrafts[recording.id] != nil || library.renamingID == recording.id)
+            }
     }
 
-    private var codingRows: some View {
-        Section("Coding sessions") {
-            ForEach(library.visibleCoding) { session in
-                VStack(alignment: .leading, spacing: 5) {
-                    Label { Text(session.title) } icon: {
-                        if let provider = CodingProvider(rawValue: session.source) { provider.icon }
-                        else { Image(systemName: "terminal") }
-                    }.font(.headline).lineLimit(2)
-                    Text([session.providerName, URL(fileURLWithPath: session.project).lastPathComponent, session.updated.formatted()].joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary)
-                    if let hit = library.codingHits[session.id] {
-                        Text(hit.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                }.tag(session.id)
+    private func codingRow(_ session: CodingSession) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label { Text(session.title) } icon: {
+                if let provider = CodingProvider(rawValue: session.source) { provider.icon }
+                else { Image(systemName: "terminal") }
+            }.font(.headline).lineLimit(2)
+            Text([session.providerName, URL(fileURLWithPath: session.project).lastPathComponent, session.updated.formatted()].joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary)
+            if let hit = library.codingHits[session.id] {
+                Text(hit.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
-        }
+        }.tag(session.id)
     }
 
     private var libraryContent: some View {
@@ -177,7 +172,7 @@ struct RecordingLibraryView: View {
             }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
         } content: {
             VStack(spacing: 0) {
-                if library.visibleRecordings.isEmpty && library.visibleCoding.isEmpty {
+                if library.activity.isEmpty {
                     ContentUnavailableView {
                         if library.search.isEmpty {
                             Label { Text(library.filter.emptyTitle) } icon: { library.filter.icon }
@@ -187,6 +182,8 @@ struct RecordingLibraryView: View {
                     } description: {
                         if !library.search.isEmpty {
                             Text("Try another phrase or a different library filter.")
+                        } else if library.filter == .github {
+                            Text("Choose repositories in Settings → GitHub, or change the search filters.")
                         } else if !library.filter.showsRecordings {
                             Text("Choose projects in Settings → Coding to import sessions.")
                         } else if library.filter == .recordings {
@@ -194,13 +191,22 @@ struct RecordingLibraryView: View {
                         }
                     }
                 } else {
-                    Group {
-                        if library.visibleCoding.isEmpty {
-                            List(selection: $library.selection) { recordingRows }
-                        } else {
-                            List(selection: $library.selection) {
-                                recordingRows
-                                codingRows
+                    List(selection: $library.selection) {
+                        ForEach(library.activity) { row in
+                            switch row {
+                            case .call(let recording): recordingRow(recording)
+                            case .coding(let session): codingRow(session)
+                            case .github(let hit):
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Label(hit.item.title, systemImage: "arrow.triangle.branch").font(.headline).lineLimit(2)
+                                    Text("\(hit.repository)#\(hit.item.number) · \(hit.date.formatted())").font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if let passage = hit.citations.first {
+                                        Text([passage.kind.label, passage.text].filter { !$0.isEmpty }.joined(separator: " · ")).font(
+                                            .caption
+                                        ).lineLimit(2)
+                                    }
+                                }.tag(row.id)
                             }
                         }
                     }.listStyle(.inset).focused($focus, equals: .callList)
@@ -212,8 +218,11 @@ struct RecordingLibraryView: View {
                     if library.filter.showsRecordings {
                         Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
                     }
-                    if !library.visibleCoding.isEmpty || !library.filter.showsRecordings {
+                    if !library.visibleCoding.isEmpty || (library.filter.showsCoding && !library.filter.showsRecordings) {
                         Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")")
+                    }
+                    if library.filter == .github || !library.visibleGitHub.isEmpty {
+                        Text("\(library.visibleGitHub.count) GitHub items")
                     }
                     Spacer()
                     if library.refreshing || library.searching { ProgressView().controlSize(.mini) }
@@ -222,12 +231,16 @@ struct RecordingLibraryView: View {
             .navigationTitle(library.filter.rawValue)
             .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 380)
         } detail: {
-            if let session = library.selectedCoding {
+            if let item = library.selectedGitHub {
+                GitHubItemView(hit: item, directory: library.github.directory, revision: library.github.snapshot.revision).id(item.id)
+            } else if let session = library.selectedCoding {
                 CodingSessionDetail(session: session, directory: library.coding.directory, hit: library.codingHits[session.id]).id(session.id)
+                .environment(\.githubLibraryLinks, .init(items: library.githubReferences, open: library.openGitHub))
             } else if let recording = library.selectedRecording {
                 RecordingDetail(recording: recording, query: library.resultQuery, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
                                 editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) }, cancelEditing: cancelInlineEditing)
                     .id(recording.id)
+                .environment(\.githubLibraryLinks, .init(items: library.githubReferences, open: library.openGitHub))
             } else {
                 ContentUnavailableView("Select an item", systemImage: "rectangle.stack")
             }
@@ -237,6 +250,22 @@ struct RecordingLibraryView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
+                    if library.filter == .github {
+                        Picker("Repository", selection: $library.githubRepository) {
+                            Text("Any repository").tag("")
+                            ForEach(library.github.snapshot.selections) { Text($0.repo.name).tag($0.repo.name) }
+                        }
+                        Picker("Item type", selection: $library.githubType) {
+                            Text("Issues and pull requests").tag(""); Text("Issues").tag("issue"); Text("Pull requests").tag("pr")
+                        }
+                        Picker("Activity date", selection: $library.githubPeriod) {
+                            ForEach(GitHubPeriod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        Picker("Contribution", selection: $library.githubAction) {
+                            Text("Any contribution").tag("")
+                            ForEach(GitHubActionKind.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                        }
+                    }
                     Toggle("Search previous transcript versions", isOn: $library.searchHistory)
                     Picker("Speaker", selection: $library.searchSpeaker) {
                         Text("Any speaker").tag("")
@@ -256,7 +285,11 @@ struct RecordingLibraryView: View {
                     Text("Matches word beginnings · \"exact words or phrases\"")
                 } label: { Label("Search options", systemImage: library.searchHistory || !library.searchSpeaker.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
                     .help(library.searchHistory ? "Searching all saved transcript versions" : "Searching the latest saved transcript")
-                Button { library.coding.refresh(); library.refresh() } label: { Label("Refresh library", systemImage: "arrow.clockwise") }
+                Button {
+                    library.github.refresh(); library.coding.refresh(); library.refresh()
+                } label: {
+                    Label("Refresh library", systemImage: "arrow.clockwise")
+                }
                     .help("Refresh recordings and transcripts")
                 Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
                     .help("Microphone, audio levels, and recording controls")
@@ -337,7 +370,6 @@ struct RecordingLibraryView: View {
             if let recording = library.selectedRecording { playback.select(recording) }
             else { playback.clear() }
         }
-        .onChange(of: library.filter) { _, _ in reconcileSelection() }
         .onChange(of: library.renamingID) { previous, current in
             if previous != nil && current == nil { focus = .callList }
         }
@@ -347,10 +379,6 @@ struct RecordingLibraryView: View {
         .onChange(of: library.selectedRecording.flatMap { library.transcriptDrafts[$0.id]?.version.id }) { previous, current in
             if previous != nil && current == nil { focus = .callList }
         }
-    }
-
-    private func reconcileSelection() {
-        if library.selectedRecording == nil && library.selectedCoding == nil { library.selection = library.visibleRecordings.first?.id ?? library.visibleCoding.first?.id }
     }
 
     private func cancelInlineEditing() {

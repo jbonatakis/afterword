@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import AVFoundation
 import Combine
-import RecorderCore
+@testable import RecorderCore
 import Lookback
 
 /// Own-window rendering and silent playback fixtures. Never starts capture or
@@ -54,21 +54,24 @@ import Lookback
         let states = CurrentValueSubject<RecordingState, Never>(.idle)
         let playback = RecordingPlayback(states: states.eraseToAnyPublisher())
         defer { playback.shutdown() }
-        playback.select(recording)
-        require(playback.ready && playback.source == .mixed, "Mixed playback did not load")
-        playback.seek(12.5); playback.play(); await pump()
-        require(playback.playing && playback.position >= 12.5, "Silent fixture did not play")
-        playback.changeTrack(.microphone, in: recording)
-        require(playback.source == .microphone && playback.position >= 12.5 && playback.playing, "Track switch lost playback position")
-        for state in [RecordingState.preparing, .recording, .previewing, .finalizing] {
-            states.send(state); playback.play()
-            require(!playback.playing, "Playback allowed during \(state)")
+        let sourcesOnly = CommandLine.arguments.contains("--sources")
+        if !sourcesOnly {
+            playback.select(recording)
+            require(playback.ready && playback.source == .mixed, "Mixed playback did not load")
+            playback.seek(12.5); playback.play(); await pump()
+            require(playback.playing && playback.position >= 12.5, "Silent fixture did not play")
+            playback.changeTrack(.microphone, in: recording)
+            require(playback.source == .microphone && playback.position >= 12.5 && playback.playing, "Track switch lost playback position")
+            for state in [RecordingState.preparing, .recording, .previewing, .finalizing] {
+                states.send(state); playback.play()
+                require(!playback.playing, "Playback allowed during \(state)")
+            }
+            states.send(.idle); playback.seek(500)
+            require(playback.position == playback.duration, "Seeking past the end was not clamped")
+            playback.play(); require(playback.playing && playback.position == 0, "Replay did not restart at zero")
+            playback.pause()
+            print("PASS playback, track switching, seek bounds, replay, and capture priority")
         }
-        states.send(.idle); playback.seek(500)
-        require(playback.position == playback.duration, "Seeking past the end was not clamped")
-        playback.play(); require(playback.playing && playback.position == 0, "Replay did not restart at zero")
-        playback.pause()
-        print("PASS playback, track switching, seek bounds, replay, and capture priority")
 
         UserDefaults.standard.set(root.path, forKey: "destination")
         UserDefaults.standard.set(true, forKey: "noticesAccepted")
@@ -93,6 +96,8 @@ import Lookback
         print("PASS async library refresh, initial selection, transcript search, and filters")
 
         try await checkCodingSidebar(root: root, library: library)
+        try await checkGitHub(library: library)
+        if sourcesOnly { return }
         library.filter = .recordings
         library.search = ""
         await library.refresh()?.value
@@ -400,6 +405,75 @@ import Lookback
         print("PASS call/version deletion, recording destination guard, playback unload, and recent-recording cleanup using fixture Trash")
     }
 
+    @MainActor static func checkGitHub(library: RecordingLibraryModel) async throws {
+        let archive = try GitHubArchive(directory: library.github.directory)
+        let repo = GitHubRepository(id: "repo", name: "samples/library")
+        try archive.connect(.init(id: "user", login: "fixture"))
+        try archive.select(repo)
+        let selection = try archive.selections()[0]
+        let date = Date()
+        try archive.begin(selection, now: date)
+        guard let work = try archive.next(selection) else { throw RecorderError.message("Missing GitHub fixture queue") }
+        let url = "https://github.com/samples/library/pull/42"
+        let item = GitHubItem(id: "pr", repositoryID: repo.id, type: "pr", title: "Garden watering schedule", author: "colleague",
+                              state: "OPEN", url: url, number: 42)
+        let passage = GitHubPassage(id: "line", actorID: "user", text: "## Irrigation schedule", url: url + "#discussion_r42",
+                                    kind: .inline, date: date, edited: nil, verdict: nil, path: "garden.swift", line: 9)
+        var page = GitHubPage()
+        page.entries = [(item, passage)]
+        try archive.commit(page, work: work, repo: selection)
+        library.filter = .activity
+        library.search = ""
+        await library.refresh()?.value
+        require(library.activity.first?.id == "github:pr", "Recent GitHub contribution is missing from the mixed timeline")
+        require(library.githubReferences["samples/library#42"] == "pr", "Qualified GitHub reference failed to resolve")
+        library.openGitHub("pr")
+        require(library.filter == .github && library.selectedGitHub?.id == "pr", "Opening a qualified reference lost the selection")
+        library.githubRepository = repo.name
+        library.githubAction = "review"
+        await library.updateSearch(debounce: false)?.value
+        require(library.activity.isEmpty, "Review filter returned an inline comment")
+        library.githubAction = "inline"
+        library.githubPeriod = .lastWeek
+        await library.updateSearch(debounce: false)?.value
+        require(library.visibleGitHub.isEmpty, "Last week's filter included today's comment")
+        library.githubPeriod = .today
+        library.githubType = "pr"
+        library.search = "#42"
+        await library.updateSearch(debounce: false)?.value
+        guard let hit = library.selectedGitHub else { throw RecorderError.message("Scoped item number did not find the pull request") }
+        let view = NSHostingView(rootView: GitHubItemView(hit: hit, directory: library.github.directory, revision: "fixture"))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 680, height: 650),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        func text(_ node: NSObject) -> [String] {
+            let children = node.accessibilityAttributeValue(.children) as? [NSObject] ?? []
+            return [node.accessibilityAttributeValue(.value) as? String, node.accessibilityAttributeValue(.title) as? String]
+                .compactMap { $0 } + children.flatMap(text)
+        }
+        var displayed = ""
+        for _ in 0..<40 {
+            await pump(0.05)
+            view.layoutSubtreeIfNeeded()
+            displayed = text(view).joined(separator: " ")
+            if displayed.contains("Irrigation schedule") { break }
+        }
+        require(displayed.contains("Garden watering schedule") && displayed.contains("garden.swift:9") &&
+                displayed.contains("Irrigation schedule") && !displayed.contains("## Irrigation schedule"),
+                "GitHub timeline did not render the saved Markdown and file citation")
+        try archive.disconnect()
+        library.githubRepository = ""
+        library.githubAction = ""
+        library.githubType = ""
+        library.githubPeriod = .any
+        library.search = ""
+        await library.refresh()?.value
+        require(library.visibleGitHub.isEmpty && library.githubReferences.isEmpty, "Removed GitHub item remained in the library")
+        print("PASS native GitHub timeline, Markdown, source filters, qualified navigation, and removal")
+    }
+
     @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {
         let pending = root.appendingPathComponent("Call-2026-11-14_10-00-00")
         try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
@@ -451,9 +525,9 @@ import Lookback
         let rows: [(LibraryFilter, Int, [String])] = [
             (.activity, 2, ["Claude Code", "Codex"]), (.coding, 0, ["Claude Code", "Codex"]),
             (.codex, 0, ["Codex"]), (.claudeCode, 0, ["Claude Code"]),
-            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, [])
+            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, []), (.github, 0, [])
         ]
-        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2], "Incorrect sidebar hierarchy")
+        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 1], "Incorrect sidebar hierarchy")
         for (index, (filter, recordings, providers)) in rows.enumerated() {
             tree.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             await pump(0.05)
@@ -461,10 +535,11 @@ import Lookback
                     library.visibleCoding.map(\.providerName).sorted() == providers, "Wrong contents for \(filter.rawValue)")
             if filter == .untranscribed { require(library.selectedRecording?.url.lastPathComponent == pending.lastPathComponent, "Expected the recording awaiting transcription") }
         }
+        tree.selectRowIndexes(IndexSet(integer:6),byExtendingSelection:false); await pump()
         tree.collapseItem(tree.item(atRow: 4)); await pump()
-        require(tree.numberOfRows == 5 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
+        require(tree.numberOfRows == 6 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
         tree.expandItem(tree.item(atRow: 4)); await pump()
-        require(tree.numberOfRows == 7, "Expanding Recordings did not restore its children")
+        require(tree.numberOfRows == 8, "Expanding Recordings did not restore its children")
         library.filter = .claudeCode; library.search = "hexagons"
         await library.updateSearch(debounce: false)?.value
         require(library.visibleCoding.isEmpty, "A Codex search result leaked into Claude Code")
