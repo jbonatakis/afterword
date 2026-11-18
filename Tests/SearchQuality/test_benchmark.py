@@ -9,10 +9,41 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parents[2] / "Scripts"
 sys.path.insert(0, str(SCRIPTS))
 bench = runpy.run_path(str(SCRIPTS / "benchmark-search.py"))
+review = runpy.run_path(str(SCRIPTS / "review-call-excerpts.py"))
 from search_quality_snapshot import copy_recordings, silence
 
 
 class SearchQualityTests(unittest.TestCase):
+    def test_auditor_rejects_a_hidden_neighbor_in_the_citation(self):
+        class Corpus:
+            def texts(self, item):
+                return {0: "Ask finance.", 1: "Pay on Friday."}
+        item = {"kind": "call", "version_id": "v1", "title": "Budget",
+                "paragraph_ids": [0, 1], "text": "Pay on Friday."}
+        with self.assertRaises(ValueError):
+            review["check_citations"](item, Corpus())
+        item["text"] = "finance. Pay on"
+        self.assertEqual(review["check_citations"](item, Corpus()), 1)
+
+    def test_three_visible_excerpts_have_one_budget_across_sources(self):
+        class Corpus:
+            def texts(self, item):
+                return {0: "answer"}
+        case = {"kind": "supported", "id": "budget"}
+        labels = {"right": ["answer"]}
+        wrong = {"kind": "call", "call_id": "wrong", "text": "answer", "paragraph_ids": [0],
+                 "more_passages": [{"text": "irrelevant"}, {"text": "irrelevant"}]}
+        right = {"kind": "call", "call_id": "right", "text": "question", "paragraph_ids": [0],
+                 "more_passages": [{"text": "answer", "paragraph_ids": [0]}]}
+        row = bench["score"](case, [wrong, right], labels, Corpus())
+        self.assertTrue(row["evidence"])
+        self.assertFalse(row["visible_three"])
+        wrong.pop("more_passages")
+        row = bench["score"](case, [wrong, right], labels, Corpus())
+        self.assertTrue(row["visible_three"])
+        self.assertFalse(row["first_source_three"])
+        self.assertFalse(row["preview"])
+
     def test_only_cited_evidence_from_the_accepted_source_counts(self):
         class Corpus:
             def texts(self, item):

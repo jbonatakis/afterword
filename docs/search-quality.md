@@ -29,6 +29,8 @@ Use `--mode keyword` for a literal-search control. Hybrid defaults to the locall
 |---|---|
 | Source @1 and @3 | At least one accepted call or session appears within that rank on an answerable question. |
 | Preview @1 | The first result is an accepted source and its displayed excerpt contains a labeled evidence phrase. |
+| Visible first 3 excerpts | An excerpt from an accepted source contains a label within the first three displayed excerpts across results, in response order. |
+| Visible first source, 3 excerpts | An excerpt from the first result contains a label within its first three displayed excerpts, and that source is accepted. |
 | Evidence @3 | One of the first three results cites a paragraph or coding message from an accepted source containing a labeled phrase. Additional citations on a coding hit count. The scorer checks the original frozen text. |
 | Near-miss topic @3 | A question with an unsupported premise retrieves an expected source that actually discusses the topic. |
 | Near-miss with results | Any result is returned for that question. A useful passage can correct its premise. |

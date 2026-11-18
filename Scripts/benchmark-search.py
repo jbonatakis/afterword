@@ -167,6 +167,14 @@ class Sources:
         return labels
 
 
+def visible_excerpts(items):
+    for item in items:
+        source = item.get("call_id") or item["session_id"]
+        for passage in [item, *item.get("more_passages", [])]:
+            if passage.get("text"):
+                yield source, passage["text"]
+
+
 def score(case, items, labels, sources):
     row = {"id": case["id"], "kind": case["kind"], "returned": bool(items)}
     if case.get("distractors"):
@@ -180,6 +188,10 @@ def score(case, items, labels, sources):
     row["rank"] = None
     if case["kind"] == "supported":
         row.update(preview=False, evidence=False)
+        def contains_anchor(excerpts):
+            return any(a in norm(text) for sid, text in list(excerpts)[:3] for a in labels.get(sid, []))
+        row["visible_three"] = contains_anchor(visible_excerpts(items))
+        row["first_source_three"] = contains_anchor(visible_excerpts(items[:1]))
     for rank, item in enumerate(items, 1):
         anchors = labels.get(item.get("call_id") or item.get("session_id"))
         if anchors is None:
@@ -193,7 +205,7 @@ def score(case, items, labels, sources):
         if item["kind"] == "coding":
             ids = [p["message_id"] for p in [item, *item.get("more_passages", [])] if "message_id" in p]
         else:
-            ids = item.get("paragraph_ids", [])
+            ids = [i for p in [item, *item.get("more_passages", [])] for i in p.get("paragraph_ids", [])]
         texts = sources.texts(item)
         row["evidence"] |= any(a in norm(texts[i]) for i in ids for a in anchors)
     return row
@@ -208,6 +220,8 @@ def metrics(rows):
     return {"source@1": count(supported, lambda r: r["rank"] == 1),
             "source@3": count(supported, lambda r: r["rank"]),
             "preview@1": count(supported, lambda r: r["preview"]),
+            "visible_first_3_excerpts": count(supported, lambda r: r["visible_three"]),
+            "visible_first_source_3_excerpts": count(supported, lambda r: r["first_source_three"]),
             "evidence@3": count(supported, lambda r: r["evidence"]),
             "near_miss_topic@3": count(near, lambda r: r["rank"]),
             "near_miss_with_results": count(near, lambda r: r["returned"]),
@@ -258,7 +272,12 @@ def run(args):
                 status = result["search_status"]
                 if status["mode"] != args.mode or (model and not status["coverage_complete"]):
                     raise RuntimeError(f"{c['id']}: unexpected search mode or coverage: {status}")
-                rows.append(score(c, result["items"], labels, sources))
+                items = result["items"]
+                row = score(c, items, labels, sources)
+                if args.capture_excerpts:
+                    row["items"] = [{k: item[k] for k in ("title", "text", "kind", "call_id", "session_id",
+                                      "version_id", "paragraph_ids", "message_id", "more_passages") if k in item} for item in items]
+                rows.append(row)
     report = {"format": 1, "snapshot": fingerprint, "cases": digest(args.cases), "split": args.split,
               "mode": args.mode, "model": model, "executable": digest(args.executable),
               "metrics": metrics(rows), "results": rows}
@@ -277,9 +296,11 @@ def compare(before, after):
     for name, report in [("before", a), ("after", b)]:
         print(f"{name} {report['mode']} {report['model'] or ''} · MCP {report['executable'][:12]}")
     for k, v in a["metrics"].items():
+        if k not in b["metrics"]:
+            continue
         print(f"{k}: {v[0]}/{v[1]} -> {b['metrics'][k][0]}/{b['metrics'][k][1]}")
     for old, new in zip(a["results"], b["results"]):
-        changes = [f"{k} {v} -> {new[k]}" for k, v in old.items() if new[k] != v]
+        changes = [f"{k} {v} -> {new[k]}" for k, v in old.items() if k != "items" and k in new and new[k] != v]
         if changes:
             print(old["id"], ", ".join(changes))
 
@@ -300,6 +321,8 @@ def main():
     bench.add_argument("--weights", type=Path, default=APP_DATA / "Embeddings/Models/Qwen3-Embedding-0.6B-Q8_0.gguf")
     bench.add_argument("--index-timeout", type=int, default=600)
     bench.add_argument("--report", type=Path)
+    bench.add_argument("--capture-excerpts", action="store_true",
+                       help="Include visible source text and citation IDs in the report for paired review. Keep real-library reports private.")
     diff = sub.add_parser("compare")
     diff.add_argument("before", type=Path)
     diff.add_argument("after", type=Path)
