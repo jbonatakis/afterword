@@ -178,6 +178,9 @@ struct RecorderView: View {
                 LevelMeter(title: "Microphone", level: recorder.snapshot.microphonePeak, off: !recorder.recordMicrophone)
                 LevelMeter(title: "System audio", level: recorder.snapshot.systemPeak, off: false)
             }
+            Toggle("Personal recording", isOn: Binding(get: { recorder.personalRecording }, set: recorder.setPersonalRecording))
+                .help("Keep this call in Recordings → Personal and out of work history. Applies to this recording only.")
+                .disabled(recorder.savingScope || (recorder.locked && recorder.state != .recording))
             Toggle("Record microphone", isOn: $recorder.recordMicrophone)
                 .help("Mutes the microphone track and playback mix. It does not mute the microphone sent to your call.")
                 .disabled(recorder.state == .finalizing)

@@ -67,6 +67,7 @@ private extension LibraryFilter {
         case .recordings: Image(systemName: "waveform")
         case .transcribed: Image(systemName: "text.bubble")
         case .untranscribed: Image(systemName: "text.badge.plus")
+        case .personal: Image(systemName: "person.crop.circle")
         case .needsSummary: Image(systemName: "square.and.pencil")
         }
     }
@@ -187,6 +188,12 @@ struct RecordingLibraryView: View {
             .contextMenu {
                 Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
                 Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
+                Button(recording.details.scope == .work ? "Mark as Personal" : "Move to Work") {
+                    Task {
+                        do { try await library.setScope(recording.details.scope == .work ? .personal : .work, for: recording) }
+                        catch { managementError = error.localizedDescription }
+                    }
+                }.disabled(library.managing || recording.detailsError != nil || library.renamingID != nil)
                 Button("Show in Finder") { recorder.reveal(recording.url) }
                 Divider()
                 Button("Move to Trash…", role: .destructive) { trashTarget = .init(recording: recording) }
@@ -434,7 +441,7 @@ struct RecordingLibraryView: View {
             Button("Discard Edits", role: .destructive) { library.cancelSummaryEditing(recording) }.keyboardShortcut(.defaultAction)
             Button("Keep Editing", role: .cancel) {}.keyboardShortcut(.cancelAction)
         } message: { _ in Text("Your unsaved summary changes will be discarded. Saved versions are kept.") }
-        .alert("Couldn’t move to Trash", isPresented: Binding(get: { managementError != nil }, set: { if !$0 { managementError = nil } })) {
+        .alert("Couldn’t update recording", isPresented: Binding(get: { managementError != nil }, set: { if !$0 { managementError = nil } })) {
             Button("OK", role: .cancel) { managementError = nil }
         } message: { Text(managementError ?? "") }
         .onChange(of: library.selectedRecording?.id) { _, _ in

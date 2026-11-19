@@ -19,6 +19,8 @@ import RecorderCore
     @Published var selectedChannel = -1
     @Published var destination: URL
     @Published var balanceMix = UserDefaults.standard.object(forKey: "balanceMix") as? Bool ?? true { didSet { defaults.set(balanceMix, forKey: "balanceMix") } }
+    @Published private(set) var personalRecording = false
+    @Published private(set) var savingScope = false
     @Published var recordMicrophone = true { didSet { engine?.setMicrophoneEnabled(recordMicrophone) } }
     @Published var resolved: InputDevice?
     @Published var snapshot = PipelineSnapshot()
@@ -139,12 +141,34 @@ import RecorderCore
         panel.prompt = "Use folder"; panel.directoryURL = destination
         if panel.runModal() == .OK, let url = panel.url { destination = url; defaults.set(url.path, forKey: "destination") }
     }
+    func setPersonalRecording(_ personal: Bool) {
+        guard !savingScope, !locked || state == .recording else { return }
+        if personal {
+            do { try AgentAccessStore.prepareForPersonalCalls() }
+            catch { message = error.localizedDescription; return }
+        }
+        guard state == .recording, let engine else { personalRecording = personal; return }
+        savingScope = true
+        engine.setCallScope(personal ? .personal : .work) { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.savingScope = false
+                if let error { self.message = error }
+                else if self.state == .recording { self.personalRecording = personal }
+            }
+        }
+    }
     func start(preview: Bool = false, callDetails: CallDetails? = nil) {
         guard sourceEnabled, !locked else { return }
         message = nil; savedFile = nil; refreshDevices()
         guard let resolved else { return }
         guard let channel = DeviceSelection.channel(for: resolved, preferences: channelPreferences) else {
             message = "Choose one microphone channel, then use Test audio to verify it."; return
+        }
+        var details = callDetails
+        if !preview && personalRecording {
+            details = details ?? .init()
+            details?.scope = .personal
         }
         guard lifecycle.begin() else { return }
         state = lifecycle.state; self.preview = preview; engineStarted = false; snapshot = PipelineSnapshot()
@@ -160,7 +184,7 @@ import RecorderCore
                 }
                 self.resolved = current
                 engineStarted = true
-                engine?.start(input: ResolvedInput(device: current, channel: channel, selection: selection), destination: destination, preview: preview, microphoneEnabled: recordMicrophone, callDetails: callDetails, balanceMix: balanceMix)
+                engine?.start(input: ResolvedInput(device: current, channel: channel, selection: selection), destination: destination, preview: preview, microphoneEnabled: recordMicrophone, callDetails: details, balanceMix: balanceMix)
             } catch {
                 let permission = (error as? RecorderError).map { if case .microphonePermission = $0 { return true }; return false } ?? false
                 message = error.localizedDescription
@@ -198,6 +222,7 @@ import RecorderCore
         case .finished(let file, let reason, let recovery, let needsPermission):
             releaseSleepAssertion(); savedFile = file; message = reason
             snapshot.microphonePeak = 0; snapshot.systemPeak = 0
+            if !preview { personalRecording = false }
             engineStarted = false; preview = false
             lifecycle.finish(needsPermission ? .needsPermission : recovery != nil ? .recoverable : reason != nil && file == nil ? .error : .idle)
             state = lifecycle.state

@@ -90,6 +90,16 @@ enum GitHubPeriod: String, CaseIterable {
     @Published private(set) var visibleRecordings: [LibraryRecording] = []
     @Published var filter: LibraryFilter = .activity {
         didSet {
+            if oldValue.callScope != filter.callScope {
+                searchTask?.cancel(); searchGeneration = UUID()
+                searchIndex?.stopSemanticSearch(); searchIndex = nil
+                searchPresentation.status = nil; polledSemanticStatus = nil
+                recordings = []; matchedRecordings = []; searchHits = [:]; speakerNames = []
+                githubHistory = []; matchedGitHub = []; resultQuery = ""; searchSpeaker = ""
+                applyFilter()
+                refresh()
+                return
+            }
             if !filter.showsRecordings && !searchSpeaker.isEmpty { searchSpeaker = "" }
             applyFilter()
             if (oldValue == .github || filter == .github) && hasGitHubFilters { updateSearch(debounce: false) }
@@ -308,8 +318,9 @@ enum GitHubPeriod: String, CaseIterable {
         previousScan?.cancel()
         let id = UUID(); generation = id; refreshing = true
         let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
-        let codingDirectory = sources.contains(.coding) && !coding.sessions.isEmpty ? coding.directory : nil
-        let githubDirectory = sources.contains(.github) ? github.directory : nil
+        let callScope = filter.callScope
+        let codingDirectory = callScope == .work && sources.contains(.coding) && !coding.sessions.isEmpty ? coding.directory : nil
+        let githubDirectory = callScope == .work && sources.contains(.github) ? github.directory : nil
         let cacheDirectory = embeddingDirectory == EmbeddingSettings.directory ? LibrarySearchIndex.cacheDirectory :
             embeddingDirectory.deletingLastPathComponent().appendingPathComponent("Search")
         let existing = indexRoots == roots ? searchIndex : nil
@@ -320,7 +331,7 @@ enum GitHubPeriod: String, CaseIterable {
             _ = await previousScan?.value
             do {
                 try Task.checkCancellation()
-                let index = try existing ?? LibrarySearchIndex(roots: roots, directory: cacheDirectory, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL)
+                let index = try existing ?? LibrarySearchIndex(roots: roots, directory: cacheDirectory, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL, callScope: callScope)
                 try Task.checkCancellation()
                 try index.useCodingArchive(in: codingDirectory)
                 try index.useGitHubArchive(in: githubDirectory, shared: false)
@@ -431,6 +442,17 @@ enum GitHubPeriod: String, CaseIterable {
         managing = true; scan?.cancel(); generation = UUID(); refreshing = false
     }
     @discardableResult private func finishManagement() -> Task<Void, Never>? { managing = false; return refresh() }
+    func setScope(_ scope: CallScope, for recording: LibraryRecording) async throws {
+        try beginManagement()
+        let directory = sourceDirectory
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                if scope == .personal { try AgentAccessStore.prepareForPersonalCalls(directory: directory) }
+                try CallDetailsStore.setScope(scope, for: recording)
+            }.value
+            await finishManagement()?.value
+        } catch { finishManagement(); throw error }
+    }
     func saveDetails(_ details: CallDetails, for recording: LibraryRecording, reveal: Bool = true, participantRenames: [String: String] = [:]) async throws {
         try beginManagement()
         do {
@@ -675,7 +697,8 @@ enum LibraryFilter: String, Identifiable {
     case activity = "All activity", coding = "Coding sessions", codex = "Codex", claudeCode = "Claude Code"
     case github = "GitHub"
     case recordings = "Recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
-    case needsSummary = "Needs summary"
+    case needsSummary = "Needs summary", personal = "Personal"
+    var callScope: CallScope { self == .personal ? .personal : .work }
     var id: Self { self }
 
     var source: ActivitySource? {
@@ -691,7 +714,7 @@ enum LibraryFilter: String, Identifiable {
         switch self {
         case .activity: return [.coding, .recordings, .github]
         case .coding: return [.codex, .claudeCode]
-        case .recordings: return [.transcribed, .untranscribed, .needsSummary]
+        case .recordings: return [.transcribed, .untranscribed, .needsSummary, .personal]
         default: return []
         }
     }
@@ -705,6 +728,7 @@ enum LibraryFilter: String, Identifiable {
     var showsCoding: Bool { self != .github && (self == .activity || !showsRecordings) }
 
     func includes(_ recording: LibraryRecording) -> Bool {
+        guard recording.details.scope == callScope else { return false }
         switch self {
         case .transcribed: return recording.hasTranscript
         case .untranscribed: return !recording.hasTranscript
@@ -730,6 +754,7 @@ enum LibraryFilter: String, Identifiable {
         case .transcribed: return "No recordings with transcripts"
         case .untranscribed: return "No recordings need transcription"
         case .needsSummary: return "No recordings need a summary"
+        case .personal: return "No personal recordings"
         }
     }
 }

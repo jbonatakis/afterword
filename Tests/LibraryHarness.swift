@@ -695,9 +695,9 @@ import Lookback
         let rows: [(LibraryFilter, Int, [String])] = [
             (.activity, 2, ["Claude Code", "Codex"]), (.coding, 0, ["Claude Code", "Codex"]),
             (.codex, 0, ["Codex"]), (.claudeCode, 0, ["Claude Code"]),
-            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, []), (.needsSummary, 1, []), (.github, 0, [])
+            (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, []), (.needsSummary, 1, []), (.personal, 0, []), (.github, 0, [])
         ]
-        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 2, 1], "Incorrect sidebar hierarchy")
+        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 2, 2, 1], "Incorrect sidebar hierarchy")
         for (index, (filter, recordings, providers)) in rows.enumerated() {
             tree.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             await pump(0.05)
@@ -719,6 +719,18 @@ import Lookback
         try FileManager.default.removeItem(at: summaryFile)
         await library.refresh()?.value
         require(library.selectedRecording?.id == awaitingSummary.id, "A missing summary did not return to the queue")
+        try await library.setScope(.personal, for: awaitingSummary)
+        require(library.activity.isEmpty, "Marking a call Personal left it in Needs summary")
+        library.filter = .activity
+        require(!library.visibleRecordings.contains { $0.id == awaitingSummary.id }, "A personal call leaked into All activity")
+        library.filter = .personal
+        await library.refresh()?.value
+        require(library.visibleRecordings.map(\.id) == [awaitingSummary.id], "Personal did not show exactly the reclassified call")
+        try await library.setScope(.work, for: awaitingSummary)
+        require(library.activity.isEmpty, "Moving a call to Work left it in Personal")
+        library.filter = .needsSummary
+        await library.refresh()?.value
+        require(library.selectedRecording?.id == awaitingSummary.id, "Moving to Work failed to restore the call to Needs summary")
         tree.collapseItem(tree.item(atRow: 4)); await pump()
         require(tree.numberOfRows == 6 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
         tree.expandItem(tree.item(atRow: 4)); await pump()

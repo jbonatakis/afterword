@@ -19,6 +19,14 @@ struct CallSummaryView: View {
     @ObservedObject var library: RecordingLibraryModel
     let cancelEditing: () -> Void
     @State private var selectedID: String?
+    @State private var requestError: String?
+    private var requestButton: some View {
+        Button("Copy summary request") {
+            do { copy(try recording.agentSummaryRequest()) }
+            catch { requestError = error.localizedDescription }
+        }.disabled(recording.latestTranscript?.document == nil)
+        .help("Copy a request for your connected agent to summarize this recording")
+    }
     private var versions: [CallSummaryVersion] { recording.summary?.versions ?? [] }
     private var selected: CallSummaryVersion? { versions.first { $0.id == selectedID } ?? versions.first }
     var body: some View {
@@ -40,6 +48,7 @@ struct CallSummaryView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    requestButton
                     Button { copy(selected.markdown) } label: { Label("Copy", systemImage: "doc.on.doc") }.help("Copy summary as Markdown")
                     Button { library.beginSummaryEditing(recording) } label: { Image(systemName: "pencil") }
                         .help("Edit current summary").accessibilityLabel("Edit summary")
@@ -61,11 +70,15 @@ struct CallSummaryView: View {
                 } description: {
                     Text("Ask your connected agent to summarize this call and save it here, or write a summary yourself.")
                 } actions: {
+                    requestButton
                     Button("Add summary") { library.beginSummaryEditing(recording) }
                         .disabled(library.managing || library.transcriptDrafts[recording.id] != nil)
                 }
             }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .alert("Couldn’t copy summary request", isPresented: Binding(get: { requestError != nil }, set: { if !$0 { requestError = nil } })) {
+                Button("OK") { requestError = nil }
+            } message: { Text(requestError ?? "") }
             .onChange(of: recording.summary?.current?.id) { _, _ in selectedID = nil }
     }
     private func copy(_ text: String) {

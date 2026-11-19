@@ -40,7 +40,7 @@ final class LibrarySummaryMonitor {
                 let rescan = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagRootChanged)
                 for index in 0..<count {
                     let name = (paths[index] as NSString).lastPathComponent
-                    if flags[index] & rescan != 0 || name == "Summary.json" || name.hasSuffix(".summary.json") {
+                    if flags[index] & rescan != 0 || name == "CallDetails.json" || name.hasSuffix(".call.json") || name == "Summary.json" || name.hasSuffix(".summary.json") {
                         Unmanaged<Context>.fromOpaque(info).takeUnretainedValue().changed()
                         break
                     }

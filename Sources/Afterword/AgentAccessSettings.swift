@@ -26,6 +26,11 @@ struct AgentAccessSettings: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if library.sources.contains(.recordings) {
+                    Toggle("Allow agents to access personal calls", isOn: Binding(get: { configuration.allowPersonalCalls }, set: { allowed in
+                        var next = configuration; next.allowPersonalCalls = allowed; save(next)
+                    })).disabled(!configuration.enabled)
+                    Text("Agents can explicitly request personal calls in allowed folders. Everyday searches still use work activity.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Allow agents to save summaries", isOn: Binding(get: { configuration.allowSummaryWrites }, set: { allowed in
                         var next = configuration; next.allowSummaryWrites = allowed; save(next)
                     })).disabled(!configuration.enabled)
