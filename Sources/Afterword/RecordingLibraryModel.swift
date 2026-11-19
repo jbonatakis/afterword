@@ -61,6 +61,8 @@ enum GitHubPeriod: String, CaseIterable {
         githubRepository = ""; githubType = ""; githubAction = ""; githubPeriod = .any
         filter = .github; search = ""; updateSearch(debounce: false); selection = "github:" + id
     }
+    private var browseOrder: [String]?
+    private var matchedOrder: [String] = []
     private var matchedGitHub: [GitHubHit] = []
     @Published private(set) var visibleGitHub: [GitHubHit] = []
     @Published private(set) var activity: [LibraryActivity] = []
@@ -94,6 +96,7 @@ enum GitHubPeriod: String, CaseIterable {
                 searchTask?.cancel(); searchGeneration = UUID()
                 searchIndex?.stopSemanticSearch(); searchIndex = nil
                 searchPresentation.status = nil; polledSemanticStatus = nil
+                browseOrder = nil; matchedOrder = []
                 recordings = []; matchedRecordings = []; searchHits = [:]; speakerNames = []
                 githubHistory = []; matchedGitHub = []; resultQuery = ""; searchSpeaker = ""
                 applyFilter()
@@ -167,6 +170,7 @@ enum GitHubPeriod: String, CaseIterable {
         }
         coding.changed = { [weak self] in
             guard let self, sources.contains(.coding) else { return }
+            browseOrder = nil
             if !codingProject.isEmpty && !coding.projects.contains(codingProject) { codingProject = "" }
             if !codingBranch.isEmpty && !coding.sessions.contains(where: { $0.branch == self.codingBranch }) { codingBranch = "" }
             refresh()
@@ -214,6 +218,7 @@ enum GitHubPeriod: String, CaseIterable {
     private func applySources(_ next: Set<ActivitySource>) {
         guard let recorder else { return }
         let previous = sources
+        browseOrder = nil
         scan?.cancel(); generation = UUID(); refreshing = false
         searchTask?.cancel(); searchGeneration = UUID(); searching = false
         searchIndex?.stopSemanticSearch(); searchIndex = nil
@@ -319,6 +324,7 @@ enum GitHubPeriod: String, CaseIterable {
         let id = UUID(); generation = id; refreshing = true
         let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
         let callScope = filter.callScope
+        let sessions = sources.contains(.coding) && callScope == .work ? coding.sessions : []
         let codingDirectory = callScope == .work && sources.contains(.coding) && !coding.sessions.isEmpty ? coding.directory : nil
         let githubDirectory = callScope == .work && sources.contains(.github) ? github.directory : nil
         let cacheDirectory = embeddingDirectory == EmbeddingSettings.directory ? LibrarySearchIndex.cacheDirectory :
@@ -336,9 +342,11 @@ enum GitHubPeriod: String, CaseIterable {
                 try index.useCodingArchive(in: codingDirectory)
                 try index.useGitHubArchive(in: githubDirectory, shared: false)
                 let githubItems = try index.githubSearch("", keywordOnly: true).hits
+                let recordings = try index.synchronize()
+                let order = activityOrder(recordings, sessions, githubItems, query: "")
                 return LibraryRefresh(
-                    index: index, recordings: try index.synchronize(), error: nil, issues: index.issues, speakers: index.speakerNames,
-                    github: githubItems)
+                    index: index, recordings: recordings, error: nil, issues: index.issues, speakers: index.speakerNames,
+                    github: githubItems, order: order)
             } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
         }
         scan = task
@@ -349,6 +357,7 @@ enum GitHubPeriod: String, CaseIterable {
             defer { self.refreshIfNeeded() }
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
+            self.browseOrder = result.order
             self.githubHistory = result.github; self.recordings = result.recordings; self.issues = result.issues
             if self.speakerNames != result.speakers { self.speakerNames = result.speakers }
             self.pollSemanticSearch()
@@ -362,11 +371,15 @@ enum GitHubPeriod: String, CaseIterable {
             && !(filter == .github && hasGitHubFilters)
         {
             searchHits = [:]; resultQuery = ""; searching = false
-            matchedGitHub = githubHistory; matchedRecordings = recordings; matchedCoding = sources.contains(.coding) ? coding.sessions : []; codingHits = [:];
+            matchedGitHub = githubHistory; matchedRecordings = recordings; codingHits = [:]
+            matchedCoding = sources.contains(.coding) && filter.callScope == .work ? coding.sessions : []
+            // A coding snapshot can change while its replacement scan is still running.
+            matchedOrder = browseOrder ?? activityOrder(recordings, matchedCoding, githubHistory, query: "")
             applyFilter(); return nil
         }
         guard let index = searchIndex else { return nil }
         if !searching { searching = true }
+        let recordingSnapshot = recordings
         let query = search, history = searchHistory, speaker = searchSpeaker, project = codingProject, branch = codingBranch
         let repo = filter == .github && !githubRepository.isEmpty ? githubRepository : nil
         let itemType = filter == .github && !githubType.isEmpty ? githubType : nil
@@ -380,27 +393,32 @@ enum GitHubPeriod: String, CaseIterable {
                 let calls = try index.hybridSearch(query, allVersions: history, speaker: speaker.isEmpty ? nil : speaker)
                 try Task.checkCancellation()
                 let coding = speaker.isEmpty ? try index.codingSearch(query, project: project.isEmpty ? nil : project, branch: branch.isEmpty ? nil : branch).hits : []
-                    let github =
-                        speaker.isEmpty
-                        ? try index.githubSearch(
-                            query, repository: repo, type: itemType, action: action, from: period?.start, to: period?.end
-                        ).hits : []
-                    return (calls, coding, github)
+                let github = speaker.isEmpty ? try index.githubSearch(
+                    query, repository: repo, type: itemType, action: action, from: period?.start, to: period?.end
+                ).hits : []
+                try Task.checkCancellation()
+                let byID = Dictionary(uniqueKeysWithValues: recordingSnapshot.map { ($0.id, $0) })
+                let records = calls.hits.compactMap { byID[$0.recordingID] }
+                let sessions = coding.map(\.session)
+                let callHits = Dictionary(uniqueKeysWithValues: calls.hits.map { ($0.recordingID, $0) })
+                let codingHits = Dictionary(uniqueKeysWithValues: coding.map { ($0.session.id, $0) })
+                let order = activityOrder(records, sessions, github, query: query, callHits: callHits, codingHits: codingHits)
+                return LibraryQueryResult(recordings: records, sessions: sessions, github: github, callHits: callHits,
+                                          codingHits: codingHits, order: order, status: calls.status)
             } }
             let result = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
             guard let self, !Task.isCancelled, self.searchGeneration == token else { return }
             self.searching = false
             switch result {
-            case .success(let (result, codingResults, githubResults)):
-                self.matchedGitHub = githubResults
-                self.codingHits = Dictionary(uniqueKeysWithValues: codingResults.map { ($0.session.id, $0) })
-                self.matchedCoding = codingResults.map(\.session)
-                let hits = result.hits
-                self.searchPresentation.status = result.status
-                let byID = Dictionary(uniqueKeysWithValues: self.recordings.map { ($0.id, $0) })
-                self.searchHits = Dictionary(uniqueKeysWithValues: hits.map { ($0.recordingID, $0) })
+            case .success(let result):
+                self.matchedRecordings = result.recordings
+                self.matchedCoding = result.sessions
+                self.matchedGitHub = result.github
+                self.matchedOrder = result.order
+                self.searchHits = result.callHits
+                self.codingHits = result.codingHits
                 self.resultQuery = query
-                self.matchedRecordings = hits.compactMap { byID[$0.recordingID] }
+                self.searchPresentation.status = result.status
                 self.applyFilter()
             case .failure(let error): self.issues = [error.localizedDescription]
             }
@@ -418,23 +436,15 @@ enum GitHubPeriod: String, CaseIterable {
             visibleRecordings.map(LibraryActivity.call) + visibleCoding.map(LibraryActivity.coding)
             + visibleGitHub.map(LibraryActivity.github)
         let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
-        let ref = GitHubReference(resultQuery)
-        let groups = [
-            visibleRecordings.map {
-                ActivityMatch(id: $0.id, source: .call, title: $0.name, evidence: searchHits[$0.id]?.snippet ?? "", date: $0.date)
-            },
-            visibleCoding.map {
-                ActivityMatch(
-                    id: $0.id, source: .coding, title: $0.title, evidence: codingHits[$0.id]?.text ?? "",
-                    date: codingHits[$0.id]?.timestamp ?? $0.updated)
-            },
-            visibleGitHub.map {
-                ActivityMatch(
-                    id: "github:" + $0.id, source: .github, title: $0.item.title, evidence: $0.citations.first?.text ?? "",
-                    date: $0.date, qualified: ref != nil)
-            },
-        ]
-        activity = ActivityMatch.ordered(groups, query: resultQuery).compactMap { byID[$0.id] }
+        // Removing part of a source changes its round-robin rank against other sources.
+        // This can happen immediately on repository removal, before a new query finishes.
+        let order: [String]
+        if filter == .activity && !resultQuery.isEmpty && rows.count != matchedOrder.count {
+            order = activityOrder(visibleRecordings, visibleCoding, visibleGitHub, query: resultQuery, callHits: searchHits, codingHits: codingHits)
+        } else {
+            order = matchedOrder
+        }
+        activity = order.compactMap { byID[$0] }
         if selection.flatMap({ byID[$0] }) == nil { selection = activity.first?.id }
     }
     private func beginManagement() throws {
@@ -686,6 +696,37 @@ enum GitHubPeriod: String, CaseIterable {
     }
 }
 
+private func activityOrder(_ calls: [LibraryRecording], _ coding: [CodingSession], _ github: [GitHubHit], query: String,
+                           callHits: [String: LibrarySearchHit] = [:], codingHits: [String: CodingHit] = [:]) -> [String] {
+    let ref = GitHubReference(query)
+    let groups = [
+        calls.map {
+            ActivityMatch(id: $0.id, source: .call, title: $0.name, evidence: callHits[$0.id]?.snippet ?? "", date: $0.date)
+        },
+        coding.map {
+            ActivityMatch(
+                id: $0.id, source: .coding, title: $0.title, evidence: codingHits[$0.id]?.text ?? "",
+                date: codingHits[$0.id]?.timestamp ?? $0.updated)
+        },
+        github.map {
+            ActivityMatch(
+                id: "github:" + $0.id, source: .github, title: $0.item.title, evidence: $0.citations.first?.text ?? "",
+                date: $0.date, qualified: ref != nil)
+        },
+    ]
+    return ActivityMatch.ordered(groups, query: query).map(\.id)
+}
+
+private struct LibraryQueryResult: Sendable {
+    let recordings: [LibraryRecording]
+    let sessions: [CodingSession]
+    let github: [GitHubHit]
+    let callHits: [String: LibrarySearchHit]
+    let codingHits: [String: CodingHit]
+    let order: [String]
+    let status: SemanticSearchStatus
+}
+
 private struct LibraryRefresh: Sendable {
     let index: LibrarySearchIndex?
     let recordings: [LibraryRecording]
@@ -693,6 +734,7 @@ private struct LibraryRefresh: Sendable {
     var issues: [String] = []
     var speakers: [String] = []
     var github: [GitHubHit] = []
+    var order: [String] = []
 }
 
 enum LibraryActivity: Identifiable {
