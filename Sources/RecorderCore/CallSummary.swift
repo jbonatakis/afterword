@@ -74,6 +74,15 @@ public enum CallSummaryStore {
             throw RecorderError.message("Enter a summary of 1–65,536 characters without null characters.")
         }
         try authorize()
+        return try withCallWriteLock(for: recording) { dir, parent in
+            try saveLocked(markdown, for: recording, source: source, author: author, peopleURL: peopleURL,
+                           directory: dir, parent: parent, authorize: authorize)
+        }
+    }
+
+    /// Scope changes and summary publication share a lock so an in-flight agent
+    /// write cannot cross the boundary as a call is being reclassified.
+    static func withCallWriteLock<T>(for recording: LibraryRecording, _ write: (Int32, URL) throws -> T) throws -> T {
         try CallFileOperations.validateRecording(recording)
         let file = url(for: recording.url, isDirectory: recording.isDirectory)
         let parent = file.deletingLastPathComponent().standardizedFileURL
@@ -82,13 +91,20 @@ public enum CallSummaryStore {
         guard dir >= 0 else { throw RecorderError.message("The recording folder could not be opened.") }
         defer { close(dir) }
         let lock = openat(dir, lockURL(for: recording.url, isDirectory: recording.isDirectory).lastPathComponent, O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK, 0o600)
-        guard lock >= 0 else { throw RecorderError.message("The summary could not be locked.") }
+        guard lock >= 0 else { throw RecorderError.message("The call could not be locked.") }
         defer { close(lock) }
         var lockInfo = stat()
         guard fstat(lock, &lockInfo) == 0, lockInfo.st_mode & S_IFMT == S_IFREG, flock(lock, LOCK_EX) == 0 else {
-            throw RecorderError.message("The summary could not be locked.")
+            throw RecorderError.message("The call could not be locked.")
         }
         defer { flock(lock, LOCK_UN) }
+        return try write(dir, parent)
+    }
+
+    private static func saveLocked(_ markdown: String, for recording: LibraryRecording, source: LibraryTranscript?,
+                                   author: String, peopleURL: URL, directory dir: Int32, parent: URL,
+                                   authorize: () throws -> Void) throws -> CallSummary {
+        let file = url(for: recording.url, isDirectory: recording.isDirectory)
         let candidates = RecordingLibraryScanner.discover(roots: [recording.isDirectory ? recording.url : parent], confined: true)
         guard let candidate = candidates.candidates.first(where: { $0.url == recording.url }) else {
             throw RecorderError.message("The call is no longer available. Refresh before saving.")

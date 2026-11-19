@@ -15,7 +15,7 @@ struct LibraryCandidate {
         fingerprint = try Self.fingerprint(nodes)
     }
     func currentFingerprint() throws -> String { try Self.fingerprint(nodes) }
-    private static func fingerprint(_ nodes: [URL]) throws -> String {
+    fileprivate static func fingerprint(_ nodes: [URL]) throws -> String {
         let values = try nodes.map { url -> String in
             var info = stat()
             guard lstat(url.path, &info) == 0 else {
@@ -64,16 +64,19 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     var semantic: SemanticSearchEngine
     private let lock = NSRecursiveLock()
     private var cached: [String: (fingerprint: String, call: AgentCall)] = [:]
+    private var scopeDecisions: [URL: (fingerprint: String, included: Bool)] = [:]
     private var loadedCount = 0
     private var scanIssues: [String] = []
     public var lastLoadedCount: Int { lock.lock(); defer { lock.unlock() }; return loadedCount }
     public var issues: [String] { lock.lock(); defer { lock.unlock() }; return scanIssues }
 
-    public init(roots: [URL], confined: Bool = false, directory: URL = LibrarySearchIndex.cacheDirectory, embeddingDirectory: URL? = nil, peopleURL: URL = PeopleDirectory.fileURL) throws {
+    public let callScope: CallScope?
+    public init(roots: [URL], confined: Bool = false, directory: URL = LibrarySearchIndex.cacheDirectory, embeddingDirectory: URL? = nil, peopleURL: URL = PeopleDirectory.fileURL, callScope: CallScope? = nil) throws {
+        self.callScope = callScope
         self.peopleURL = peopleURL
         semantic = SemanticSearchEngine(directory: embeddingDirectory ?? (directory == Self.cacheDirectory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings")))
         self.roots = roots; self.confined = confined
-        let scope = AgentJSON.hash(roots.map { $0.standardizedFileURL.path }.sorted().joined(separator: "\n") + ":\(confined)")
+        let scope = AgentJSON.hash(roots.map { $0.standardizedFileURL.path }.sorted().joined(separator: "\n") + ":\(confined)" + (callScope.map { ":" + $0.rawValue } ?? ""))
         try PrivateFiles.directory(directory)
         db = try SearchDatabase(url: directory.appendingPathComponent("v2-" + scope + ".sqlite"))
     }
@@ -83,7 +86,24 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     /// Stat every saved delivery, decode/hash only changed calls. No source writes.
     @discardableResult public func synchronize() throws -> [LibraryRecording] {
         lock.lock(); defer { lock.unlock() }
-        let discovery = RecordingLibraryScanner.discover(roots: roots, confined: confined)
+        // Classify before enumerating transcripts so an inaccessible personal
+        // transcript cannot prevent a work search. Decode unchanged details once.
+        var decisions: [URL: (fingerprint: String, included: Bool)] = [:]
+        let discovery = RecordingLibraryScanner.discover(roots: roots, confined: confined) { [self] url, directory in
+            guard let callScope else { return true }
+            let file = CallDetailsStore.url(for: url, isDirectory: directory)
+            let fingerprint = try LibraryCandidate.fingerprint([file])
+            if let known = scopeDecisions[url], known.fingerprint == fingerprint {
+                decisions[url] = known
+                return known.included
+            }
+            let details = try? CallDetailsStore.load(for: url, isDirectory: directory)
+            // Allow unreadable metadata in the local work library for repair.
+            let included = (details?.scope ?? (confined ? nil : .work)) == callScope
+            decisions[url] = (fingerprint, included)
+            return included
+        }
+        scopeDecisions = decisions
         scanIssues = discovery.issues
         guard !confined || discovery.issues.isEmpty else { throw RecorderError.message(discovery.issues.joined(separator: "\n")) }
         try db.execute("BEGIN IMMEDIATE")
@@ -116,6 +136,7 @@ public final class LibrarySearchIndex: @unchecked Sendable {
                 } else {
                     recording = try RecordingLibraryScanner.load(candidate, confined: confined, people: people)
                 }
+                if let callScope, recording.details.scope != callScope || (confined && recording.detailsError != nil) { continue }
                 let call = try AgentCall(recording: recording, id: id)
                 try remove(id)
                 let snapshot = String(decoding: try JSONEncoder().encode(recording), as: UTF8.self)

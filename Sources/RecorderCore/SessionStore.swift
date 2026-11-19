@@ -118,6 +118,14 @@ public final class SessionStore {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         try PrivateFiles.atomicWrite(encoder.encode(manifest), to: directory.appendingPathComponent("manifest.json"))
     }
+    public func setCallScope(_ scope: CallScope) throws {
+        let previous = manifest.callDetails
+        var details = previous ?? .init()
+        details.scope = scope
+        manifest.callDetails = details
+        do { try checkpoint() }
+        catch { manifest.callDetails = previous; throw error }
+    }
     public func setTimeline(sampleTime: Double, hostTime: UInt64) throws {
         if manifest.firstSampleTime == nil {
             manifest.firstSampleTime = sampleTime; manifest.firstHostTime = hostTime; try checkpoint()

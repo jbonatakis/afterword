@@ -13,7 +13,12 @@ enum AgentTools {
         "participant": string("Case-insensitive partial active participant name."),
         "tag": string("Case-insensitive exact tag.")]
     static func definition(_ name: String, _ description: String, _ properties: [String: Any], required: [String] = [], readOnly: Bool = true) -> [String: Any] {
-        ["name": name, "description": description,
+        var properties = properties
+        if !["get_coding_session", "get_github_item"].contains(name) {
+            properties["scope"] = ["type": "string", "enum": ["work", "personal"],
+                "description": "Defaults to work. Use personal only when the user explicitly requests personal calls. Personal requires a separate grant and searches recordings only. Use the same scope to read a result or save its summary."]
+        }
+        return ["name": name, "description": description,
          "inputSchema": ["type": "object", "properties": properties, "required": required, "additionalProperties": false],
          "annotations": ["readOnlyHint": readOnly, "destructiveHint": false, "idempotentHint": readOnly, "openWorldHint": false]]
     }

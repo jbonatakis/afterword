@@ -116,8 +116,11 @@ final class CallManagementTests: XCTestCase {
         XCTAssertThrowsError(try CallFileOperations.transcriptDirectory(b.transcripts[0], for: a))
         // A newer run must be included even when the UI snapshot predates it.
         let newer = try transcript(first)
+        try CallDetailsStore.setScope(.personal, for: a)
+        XCTAssertEqual(try call("Call.wav").details.scope, .work)
         let plan = try CallFileOperations.trashPlan(for: a)
-        XCTAssertEqual(plan.urls.count, 4)
+        XCTAssertEqual(plan.urls.count, 5)
+        XCTAssertTrue(plan.urls.contains(CallSummaryStore.lockURL(for: a.url, isDirectory: false)))
         XCTAssertTrue(plan.urls.map { $0.standardizedFileURL.path }.contains(newer.deletingLastPathComponent().standardizedFileURL.path))
         try CallFileOperations.moveToTrash(plan, trash: fixtureTrash)
         XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))

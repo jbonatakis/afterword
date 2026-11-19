@@ -80,6 +80,10 @@ public struct LibraryTranscript: Identifiable, Codable, Sendable {
 }
 
 public struct LibraryRecording: Identifiable, Codable, Sendable {
+    public func agentSummaryRequest() throws -> String {
+        let callID = try AgentJSON.identity(url)
+        return "Summarize this Afterword call and save the summary back to it. Use call_id \(callID) and scope \(details.scope.rawValue) for each tool call. Read get_call and the full get_transcript first, then use save_call_summary with the source version and current call revision."
+    }
     public let url: URL
     public let sourceName: String
     public let isDirectory: Bool
@@ -161,7 +165,7 @@ public enum RecordingLibraryScanner {
     }
 
     // Discovery reads directory entries and stat information, never transcript bodies or audio.
-    static func discover(roots: [URL], confined: Bool) -> (candidates: [LibraryCandidate], issues: [String]) {
+    static func discover(roots: [URL], confined: Bool, includes: ((URL, Bool) throws -> Bool)? = nil) -> (candidates: [LibraryCandidate], issues: [String]) {
         var candidates: [LibraryCandidate] = [], issues: [String] = [], visited = Set<String>()
         let fm = FileManager.default
         for root in roots {
@@ -186,11 +190,12 @@ public enum RecordingLibraryScanner {
                     } else { continue }
                     guard !tracks.isEmpty else { continue }
                     let transcriptDirectory = directory ? url : url.deletingLastPathComponent()
-                    let files = try transcriptFiles(in: transcriptDirectory, confined: confined)
                     let details = CallDetailsStore.url(for: url, isDirectory: directory)
                     if confined, let size = try? details.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 1_048_576 {
                         throw RecorderError.message("Call information exceeds the agent access size limit.")
                     }
+                    if let includes, try !includes(url, directory) { continue }
+                    let files = try transcriptFiles(in: transcriptDirectory, confined: confined)
                     let summary = CallSummaryStore.url(for: url, isDirectory: directory)
                     let nodes = [url, details, summary, transcriptDirectory.appendingPathComponent("Transcripts")] + tracks.map(\.url) + files.flatMap { [$0.deletingLastPathComponent(), $0] }
                     candidates.append(try LibraryCandidate(url: url, isDirectory: directory, tracks: tracks, transcriptFiles: files, nodes: nodes))

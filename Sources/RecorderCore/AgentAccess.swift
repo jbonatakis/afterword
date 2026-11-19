@@ -3,22 +3,25 @@ import CryptoKit
 import Darwin
 
 public struct AgentAccessConfiguration: Codable, Equatable {
-    public var version = 1
+    public var version = 2
     public var enabled: Bool
     public var folders: [String]
     public var allowCodingSessions: Bool
+    public var allowPersonalCalls: Bool
     public var allowSummaryWrites: Bool
-    public init(enabled: Bool = false, folders: [String] = [], allowSummaryWrites: Bool = false, allowCodingSessions: Bool = false) {
+    public init(enabled: Bool = false, folders: [String] = [], allowSummaryWrites: Bool = false, allowCodingSessions: Bool = false, allowPersonalCalls: Bool = false) {
+        self.allowPersonalCalls = allowPersonalCalls
         self.allowCodingSessions = allowCodingSessions
         self.enabled = enabled; self.folders = folders; self.allowSummaryWrites = allowSummaryWrites
     }
-    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites, allowCodingSessions }
+    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites, allowCodingSessions, allowPersonalCalls }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
         enabled = try values.decode(Bool.self, forKey: .enabled)
         folders = try values.decode([String].self, forKey: .folders)
         allowCodingSessions = try values.decodeIfPresent(Bool.self, forKey: .allowCodingSessions) ?? false
+        allowPersonalCalls = try values.decodeIfPresent(Bool.self, forKey: .allowPersonalCalls) ?? false
         allowSummaryWrites = try values.decodeIfPresent(Bool.self, forKey: .allowSummaryWrites) ?? false
     }
 }
@@ -33,14 +36,21 @@ public enum AgentAccessStore {
         guard FileManager.default.fileExists(atPath: url.path) else { return .init() }
         guard PrivateFiles.isRegular(url) else { throw AgentFailure("Agent access settings are unreadable.") }
         let value = try JSONDecoder().decode(AgentAccessConfiguration.self, from: Data(contentsOf: url))
-        guard value.version == 1, value.folders.allSatisfy({ $0.hasPrefix("/") }) else {
+        guard (1...2).contains(value.version), value.folders.allSatisfy({ $0.hasPrefix("/") }) else {
             throw AgentFailure("Agent access settings have an unsupported format.")
         }
         return value
     }
+    /// Earlier helpers cannot enforce call scope. Retire their grants before the
+    /// first personal recording is saved, including for already running clients.
+    public static func prepareForPersonalCalls(directory: URL = directory) throws {
+        let configuration = try load(directory: directory)
+        if configuration.version == 1 { try save(configuration, directory: directory) }
+    }
     public static func save(_ value: AgentAccessConfiguration, directory: URL = directory) throws {
         try PrivateFiles.directory(directory)
         var value = value
+        value.version = 2
         value.folders = Array(Set(value.folders.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path })).sorted()
         try PrivateFiles.atomicWrite(JSONEncoder().encode(value), to: directory.appendingPathComponent("Access.json"))
     }
@@ -93,7 +103,7 @@ final class AgentCheckpoints {
                 throw AgentFailure("Invalid page_token. Use either cursor or page_token.")
             }
             page = decoded; after = try read(page.after)
-            guard after.scope == scope else { throw AgentFailure("Access settings changed. Start get_changes again.") }
+            guard after.scope == scope, after.calls.keys.allSatisfy({ current[$0] != nil }) else { throw AgentFailure("Access settings changed. Start get_changes again.") }
         } else {
             after = Snapshot(scope: scope, calls: current)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

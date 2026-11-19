@@ -10,6 +10,12 @@ The server implements the [MCP 2025-11-25 stdio protocol](https://modelcontextpr
 
 Bridges can reuse one helper process across discovery attempts and clients. A repeated valid `initialize` starts a new handshake and requires another `notifications/initialized` before tool requests. Invalid initialization attempts leave the existing connection intact. Unknown methods, including newer discovery probes, return `Method not found` so clients can fall back to supported discovery.
 
+### Work and personal calls
+
+Call tools and `search_activity` default to `scope: "work"`. Ordinary searches, recaps, transcript results, and change feeds cover work calls. To act on an explicit request about personal calls, pass `scope: "personal"` on discovery, reads, and summary writes. Personal activity searches cover recordings only. Keep a separate change cursor for each scope. Reclassifying a call removes it from one feed and adds it to the other.
+
+Personal access requires **Settings → Agent Access → Allow agents to access personal calls** and an allowed recording folder. This grants access to personal calls in those folders. Saving a summary also requires **Allow agents to save summaries**. A user can copy a request from the call’s Summary tab to identify it by ID. The copied request contains no transcript text. Reconnect MCP clients after upgrading to discover the scope parameter. Older helpers reject the upgraded access file.
+
 ### Connecting through a tunnel
 
 A stdio-capable tunnel can connect remote clients to the same bundled helper. For OpenAI's `tunnel-client`, configure the helper as the main MCP command and enable `mcp.stdio_send_initialized_notification: true` in the tunnel profile. This supplies the lifecycle notification after each successful initialization when the remote caller omits it. Keep API keys in private files referenced by the profile rather than in command-line arguments.
@@ -80,7 +86,7 @@ Checkpoints contain only call IDs, revision hashes, and an access-scope hash. Th
 
 ## Access and lifecycle
 
-`Access.json` in the MCP support directory stores the enabled flag, selected canonical folder paths, and the separate `allowSummaryWrites` flag (absent means false). The helper reloads it on every tool call and checks it again before returning read data or publishing a summary. Disabling access blocks subsequent calls from already-running clients. Changing folder access invalidates in-progress change pagination. This is application-level access control for a process running as your user, not an OS sandbox against other software already able to read your files.
+`Access.json` in the MCP support directory stores the enabled flag, selected canonical folder paths, and separate `allowSummaryWrites` and `allowPersonalCalls` flags (both default to false). The helper reloads it on every tool call and checks it again before returning read data or publishing a summary. Disabling access blocks subsequent calls from already-running clients. Changing folder access invalidates in-progress change pagination. This is application-level access control for a process running as your user, not an OS sandbox against other software already able to read your files.
 
 The helper scans only published library entries and does not follow symlinked call folders or transcript directories. It accepts opaque call/version IDs, never client-supplied recording paths. Hidden staging directories stay excluded. Folder scans fail on oversized transcript JSON (16 MiB) or call metadata (1 MiB), rather than loading unbounded input. There is no source-file polling, recording control, transcription trigger, automatic source refresh schedule, or write operation beyond explicitly enabled summaries. When enabled, local embedding work can continue in bounded background batches after a request.
 

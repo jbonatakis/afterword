@@ -29,7 +29,7 @@ struct AgentCall {
     }
     var summary: [String: Any] {
         var value: [String: Any] = ["call_id": id, "revision": revision, "title": recording.name,
-            "recorded_at": AgentJSON.date(recording.date), "participants": recording.participantDisplayNames,
+            "scope": recording.details.scope.rawValue, "recorded_at": AgentJSON.date(recording.date), "participants": recording.participantDisplayNames,
             "tags": recording.details.tags, "has_transcript": recording.hasTranscript,
             "has_summary": recording.summary?.current != nil, "summary_readable": recording.summaryError == nil,
             "information_readable": recording.detailsError == nil]
@@ -87,23 +87,34 @@ public final class AgentLibrary {
             index?.stopSemanticSearch(); index = nil; indexedFolders = nil
             throw AgentFailure("Agent access is disabled. Enable it in Afterword Settings → Agent Access.")
         }
+        let callScope = CallScope(rawValue: arguments["scope"] as? String ?? "work") ?? .work
+        if callScope == .personal {
+            guard configuration.sources.contains(.recordings), configuration.grants.allowPersonalCalls else {
+                throw AgentFailure("Personal call access is disabled. Review Afterword Settings → Agent Access.")
+            }
+            if name == "search_activity",
+               !["all", "calls"].contains(arguments["source"] as? String ?? "all") ||
+                ["project", "branch", "repository", "item_type", "action"].contains(where: { arguments[$0] != nil }) {
+                throw AgentFailure("Personal scope is available for calls only.")
+            }
+        }
         let roots = configuration.folders.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
         guard roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }) else {
             throw AgentFailure("An allowed folder was replaced by a symbolic link. Review Agent Access settings.")
         }
         let scope = AgentJSON.hash(try AgentJSON.data(configuration.folders.sorted()))
-        if indexedFolders != configuration.folders || indexedSources != configuration.sources {
+        if indexedFolders != configuration.folders || indexedSources != configuration.sources || index?.callScope != callScope {
             index?.stopSemanticSearch()
             index = try LibrarySearchIndex(roots: roots, confined: true,
                 directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
-                embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"), peopleURL: peopleURL)
+                embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"), peopleURL: peopleURL, callScope: callScope)
             codingAttached = false
             indexedSources = configuration.sources
             indexedFolders = configuration.folders
         }
         guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
         let codingDirectory = directory == AgentAccessStore.directory ? CodingArchive.directory : directory.appendingPathComponent("CodingSessions")
-        let codingAllowed = configuration.allowCodingSessions && CodingArchive.exists(in: codingDirectory)
+        let codingAllowed = callScope == .work && configuration.allowCodingSessions && CodingArchive.exists(in: codingDirectory)
         if codingAttached != codingAllowed {
             try index.useCodingArchive(in: codingAllowed ? codingDirectory : nil)
             codingAttached = codingAllowed
@@ -111,7 +122,7 @@ public final class AgentLibrary {
         let githubDirectory =
             directory == AgentAccessStore.directory ? GitHubArchive.directory : directory.appendingPathComponent("GitHub")
         let usesGitHub = ["search_activity", "get_github_item", "get_coding_session", "get_call"].contains(name)
-        let github = usesGitHub && configuration.sources.contains(.github) && GitHubArchive.exists(in: githubDirectory) ? try GitHubArchive(directory: githubDirectory) : nil
+        let github = callScope == .work && usesGitHub && configuration.sources.contains(.github) && GitHubArchive.exists(in: githubDirectory) ? try GitHubArchive(directory: githubDirectory) : nil
         let grantsRevision = try github?.revision(shared: true)
         if name == "get_github_item" {
             let args = AgentArguments(arguments)
@@ -268,6 +279,7 @@ public final class AgentLibrary {
                 guard try self.access() == configuration,
                       roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }),
                       roots.contains(where: { CallFileOperations.contains($0, call.recording.url) }),
+                      try CallDetailsStore.load(for: call.recording.url, isDirectory: call.recording.isDirectory).scope == callScope,
                       try AgentJSON.identity(call.recording.url) == call.id else {
                     throw AgentFailure("Access or the call changed before saving. Read the call again before retrying.")
                 }
@@ -276,7 +288,7 @@ public final class AgentLibrary {
             let updatedCall = try AgentCall(recording: updated, id: call.id)
             result = ["call": updatedCall.summary, "summary": updatedCall.summaryInfo(saved.current!, includeText: true)]
         case "get_changes":
-            result = try AgentCheckpoints(directory: directory).changes(current: revisions, scope: scope,
+            result = try AgentCheckpoints(directory: callScope == .personal ? directory.appendingPathComponent("Personal") : directory).changes(current: revisions, scope: scope,
                 cursor: args.string("cursor"), pageToken: args.string("page_token"), limit: args.integer("limit", default: 40))
         default: throw AgentFailure("Unknown tool.")
         }
@@ -327,7 +339,7 @@ public final class AgentLibrary {
         guard browse || LibrarySearchQuery(query).expression != nil else { throw AgentFailure("Enter a search term.") }
         let from = try args.date("from"), to = try args.date("to")
         if let from, let to, from > to { throw AgentFailure("from must not be after to.") }
-        let source = args.string("source") ?? "all"
+        let source = args.string("scope") == "personal" ? "calls" : (args.string("source") ?? "all")
         let githubFilters = ["repository", "item_type", "action"].contains { args.string($0) != nil }
         let codingFilters = args.string("project") != nil || args.string("branch") != nil
         guard !(githubFilters && codingFilters), !githubFilters || ["all", "github"].contains(source),
@@ -344,7 +356,7 @@ public final class AgentLibrary {
             let filteredCalls = try filtered(calls, args: args)
             if browse {
                 callItems = filteredCalls.map { call in
-                    ["kind": "call", "call_id": call.id, "title": call.recording.name, "date": AgentJSON.date(call.recording.date),
+                    ["kind": "call", "scope": call.recording.details.scope.rawValue, "call_id": call.id, "title": call.recording.name, "date": AgentJSON.date(call.recording.date),
                      "text": String((call.recording.summary?.current?.markdown ?? call.recording.name).prefix(450))]
                 }
             } else {
@@ -353,7 +365,7 @@ public final class AgentLibrary {
                 status = result.status; searchRevision += result.revision
                 callItems = result.hits.compactMap { hit in
                     guard let call = byID[hit.recordingID] else { return nil }
-                    var item: [String: Any] = ["kind": "call", "call_id": call.id, "title": call.recording.name,
+                    var item: [String: Any] = ["kind": "call", "scope": call.recording.details.scope.rawValue, "call_id": call.id, "title": call.recording.name,
                         "date": AgentJSON.date(call.recording.date), "text": hit.snippet ?? call.recording.name,
                         "paragraph_ids": hit.paragraphIDs, "summary_match": hit.summaryMatch]
                     item["version_id"] = call.recording.transcripts.first(where: { $0.id == hit.versionID }).map(call.versionID)

@@ -39,9 +39,9 @@ async def check(executable):
         }))
         transcript_original = transcript_file.read_bytes()
         access = state / "Access.json"
-        def settings(enabled, writes=False):
+        def settings(enabled, writes=False, personal=False):
             pending = state / "pending.json"
-            pending.write_text(json.dumps({"version": 1, "enabled": enabled, "folders": [str(root)], "allowSummaryWrites": writes}))
+            pending.write_text(json.dumps({"version": 2, "enabled": enabled, "folders": [str(root)], "allowSummaryWrites": writes, "allowPersonalCalls": personal}))
             pending.replace(access)
         settings(True)
         parameters = StdioServerParameters(command=str(executable), args=["--state-directory", str(state)])
@@ -100,6 +100,17 @@ async def check(executable):
                 revoked = await session.call_tool("list_calls", {})
                 assert revoked.isError and "disabled" in revoked.content[0].text
                 settings(True)
+                details = root / "Fixture.wav.call.json"
+                details.write_text(json.dumps({"version": 4, "participants": [], "tags": [], "description": "", "classification": "personal"}))
+                assert (await session.call_tool("search_activity", {})).structuredContent["items"] == []
+                personal_call = {"call_id": call_id, "scope": "personal"}
+                assert (await session.call_tool("get_transcript", personal_call)).isError
+                settings(True, writes=True, personal=True)
+                private_read = await session.call_tool("get_transcript", personal_call)
+                assert private_read.structuredContent["items"][0]["text"] == transcript_text
+                summary_args.update(scope="personal", expected_revision=private_read.structuredContent["call"]["revision"], markdown="Personal summary")
+                assert not (await session.call_tool("save_call_summary", summary_args)).isError
+                assert (await session.call_tool("get_call", {"call_id": call_id})).isError
                 assert hashlib.sha256(audio.read_bytes()).hexdigest() == original
                 assert transcript_file.read_bytes() == transcript_original
                 audio.unlink()

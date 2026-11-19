@@ -52,6 +52,26 @@ final class SplitTrackTests: XCTestCase {
         }
         return 2 * hypot(real, imaginary) / 9_600
     }
+    func testPersonalScopeSurvivesRecoveryExportAndMetadataEdits() throws {
+        let store = try makeStore(callDetails: .init(title: "Appointment"))
+        try fill(store)
+        try store.setCallScope(.personal)
+        let recovered = try Recovery.load(directory: store.directory)
+        XCTAssertEqual(recovered.manifest.callDetails?.scope, .personal)
+        let audio = try Exporter.export(recovered)
+        let folder = audio.deletingLastPathComponent()
+        let recording = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [folder]).recordings.first)
+        XCTAssertEqual(recording.details.title, "Appointment")
+        XCTAssertEqual(recording.details.scope, .personal)
+        XCTAssertTrue(try recording.agentSummaryRequest().contains("scope personal"))
+        let edited = try CallDetailsStore.save(.init(title: "New title"), for: recording)
+        XCTAssertEqual(edited.scope, .personal)
+        try CallDetailsStore.setScope(.work, for: recording)
+        let current = try CallDetailsStore.load(for: folder, isDirectory: true)
+        XCTAssertEqual(current.title, "New title")
+        XCTAssertEqual(current.scope, .work)
+    }
+
     func testExportsIsolatedSourcesStereoMixMuteAndMatchingDurations() throws {
         let store = try makeStore(); try fill(store)
         let mixedURL = try Exporter.export(store)

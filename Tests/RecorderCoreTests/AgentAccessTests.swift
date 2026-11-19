@@ -48,6 +48,83 @@ final class AgentAccessTests: XCTestCase {
     func first() throws -> [String: Any] { try XCTUnwrap(items(service.call("list_calls", arguments: [:])).first) }
     func id() throws -> String { try XCTUnwrap(first()["call_id"] as? String) }
 
+    func testPersonalCallRequiresScopeFolderAndSeparateReadAndWriteGrants() throws {
+        try fixture(text: "Design review")
+        let other = try fixture("Call-2026-11-14_12-00-00", text: "Gardenias bloom")
+        let personal = try XCTUnwrap(RecordingLibraryScanner.scan(roots: [other]).recordings.first)
+        let personalID = try AgentJSON.identity(other)
+        let baseline = try service.call("get_changes", arguments: [:])
+        let page = try service.call("get_changes", arguments: ["limit": 1])
+        try CallDetailsStore.setScope(.personal, for: personal)
+        let delta = try service.call("get_changes", arguments: ["cursor": baseline["cursor"]!])
+        XCTAssertEqual((delta["changes"] as? [[String: Any]])?.first?["change"] as? String, "removed")
+        XCTAssertThrowsError(try service.call("get_changes", arguments: ["page_token": page["next_page_token"]!]))
+        XCTAssertEqual(try items(service.call("list_calls", arguments: [:])).count, 1)
+        XCTAssertThrowsError(try service.call("list_calls", arguments: ["scope": "personal"]))
+        var grants = try AgentAccessStore.load(directory: state)
+        XCTAssertFalse(grants.allowPersonalCalls)
+        grants.allowPersonalCalls = true
+        try AgentAccessStore.save(grants, directory: state)
+        for tool in ["list_calls", "search_transcripts", "search_activity"] {
+            let query = ["query": "gardenias", "mode": "keyword"]
+            XCTAssertTrue(try items(service.call(tool, arguments: query)).isEmpty)
+            XCTAssertEqual(try items(service.call(tool, arguments: query.merging(["scope": "personal"]) { _, b in b })).count, 1)
+        }
+        XCTAssertEqual(try items(service.call("search_activity", arguments: [:])).count, 1)
+        let request = ["call_id": personalID, "scope": "personal"]
+        XCTAssertThrowsError(try service.call("get_call", arguments: ["call_id": personalID]))
+        XCTAssertThrowsError(try service.call("get_transcript", arguments: ["call_id": personalID]))
+        _ = try service.call("get_transcript", arguments: request)
+        let info = try service.call("get_call", arguments: request)
+        XCTAssertEqual(info["scope"] as? String, "personal")
+        let source = try XCTUnwrap((info["versions"] as? [[String: Any]])?.first?["version_id"] as? String)
+        let write: [String: Any] = ["call_id": personalID, "scope": "personal", "source_version_id": source,
+                                    "expected_revision": info["revision"]!, "markdown": "Buy potting soil."]
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: write))
+        grants.allowSummaryWrites = true
+        try AgentAccessStore.save(grants, directory: state)
+        XCTAssertThrowsError(try service.call("save_call_summary", arguments: write.filter { $0.key != "scope" }))
+        _ = try service.call("save_call_summary", arguments: write)
+        XCTAssertTrue(try items(service.call("list_calls", arguments: ["query": "potting"])).isEmpty)
+        let changes = try service.call("get_changes", arguments: ["scope": "personal"])
+        XCTAssertEqual((changes["changes"] as? [[String: Any]])?.first?["call_id"] as? String, personalID)
+        XCTAssertThrowsError(try service.call("get_changes", arguments: ["cursor": changes["cursor"]!]))
+        grants.allowPersonalCalls = false
+        try AgentAccessStore.save(grants, directory: state)
+        XCTAssertThrowsError(try service.call("get_call", arguments: request))
+        grants.allowPersonalCalls = true; grants.folders = []
+        try AgentAccessStore.save(grants, directory: state)
+        XCTAssertThrowsError(try service.call("get_call", arguments: request))
+        grants.folders = [root.path]; try AgentAccessStore.save(grants, directory: state)
+        try ActivitySourceStore.save([.coding], directory: state)
+        XCTAssertThrowsError(try service.call("get_call", arguments: request))
+        try ActivitySourceStore.save([.recordings], directory: state)
+        try CallDetailsStore.setScope(.work, for: personal)
+        XCTAssertThrowsError(try service.call("get_call", arguments: request))
+        XCTAssertEqual(try items(service.call("list_calls", arguments: ["query": "potting"])).count, 1)
+    }
+
+    func testUnreadablePersonalTranscriptDoesNotBlockWorkBrowse() throws {
+        try fixture()
+        let folder = try fixture("Call-2026-11-14_12-00-00")
+        try CallDetailsStore.writeInitial(.init(scope: .personal), to: folder.appendingPathComponent("CallDetails.json"))
+        let run = folder.appendingPathComponent("Transcripts/first")
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: run.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: run.path) }
+        XCTAssertEqual(try items(service.call("list_calls", arguments: [:])).count, 1)
+    }
+
+    func testPersonalScopePreservesLegacyGrantsWhileRetiringUnscopedHelpers() throws {
+        let url = state.appendingPathComponent("Access.json")
+        try PrivateFiles.atomicWrite(AgentJSON.data(["version": 1, "folders": [root.path], "enabled": true, "allowSummaryWrites": true]), to: url)
+        try AgentAccessStore.prepareForPersonalCalls(directory: state)
+        let grants = try AgentAccessStore.load(directory: state)
+        XCTAssertEqual(grants.version, 2)
+        XCTAssertTrue(grants.enabled && grants.allowSummaryWrites)
+        XCTAssertEqual(grants.folders, [root.path])
+        XCTAssertFalse(grants.allowPersonalCalls)
+    }
+
     func testAccessDefaultsOffAndRevokesAlreadyRunningHelper() throws {
         try fixture()
         XCTAssertEqual(try AgentAccessStore.load(directory: temporary.appendingPathComponent("Missing")).enabled, false)

@@ -73,6 +73,13 @@ public final class RecordingEngine {
         desiredMicrophoneEnabled = enabled
         if let controlRing { CRRingSetMicrophoneEnabled(controlRing, enabled) }
     }
+    public func setCallScope(_ scope: CallScope, completion: @escaping (String?) -> Void) {
+        queue.async { [self] in
+            guard let store, active, !preview else { completion("The recording has already ended."); return }
+            do { try store.setCallScope(scope); completion(nil) }
+            catch { completion(error.localizedDescription) }
+        }
+    }
     public func stop(reason: String? = nil) { queue.async { [weak self] in self?.finish(reason: reason) } }
     private func tick() {
         guard active, let ring = capture?.ring, let pipeline else { return }

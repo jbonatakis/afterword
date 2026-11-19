@@ -1,7 +1,16 @@
 import Foundation
 
+public enum CallScope: String, Codable, Sendable {
+    case work, personal
+}
+
 public struct CallDetails: Codable, Equatable, Sendable {
     public var version = 4
+    private var classification: CallScope?
+    public var scope: CallScope {
+        get { classification ?? .work }
+        set { classification = newValue == .work ? nil : newValue }
+    }
     public var title: String?
     public var participants: [String]
     public var tags: [String]
@@ -17,7 +26,8 @@ public struct CallDetails: Codable, Equatable, Sendable {
     public var meeting: MeetingReference?
     public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "", automaticParticipants: [String: String]? = nil,
                 participantOverrides: [String: [String: String]]? = nil, attendees: [CallAttendee]? = nil,
-                allowSingleParticipantInference: Bool? = nil, meeting: MeetingReference? = nil) {
+                allowSingleParticipantInference: Bool? = nil, meeting: MeetingReference? = nil, scope: CallScope = .work) {
+        self.classification = scope == .work ? nil : scope
         self.title = title; self.participants = participants; self.tags = tags; self.description = description
         self.automaticParticipants = automaticParticipants
         self.participantOverrides = participantOverrides
@@ -32,7 +42,7 @@ public struct CallDetails: Codable, Equatable, Sendable {
         let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         return .init(title: title?.isEmpty == false ? title : nil, participants: unique(participants), tags: unique(tags),
                      description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants, participantOverrides: participantOverrides,
-                     attendees: attendees, allowSingleParticipantInference: allowSingleParticipantInference, meeting: meeting)
+                     attendees: attendees, allowSingleParticipantInference: allowSingleParticipantInference, meeting: meeting, scope: scope)
     }
     public var callAttendees: [CallAttendee] { attendees ?? participants.map { .init(id: "legacy:" + $0, name: $0) } }
     public var hasActiveGroups: Bool { callAttendees.contains { $0.kind == .group && $0.attendance != .absent } }
@@ -95,11 +105,23 @@ public enum CallDetailsStore {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
         try PrivateFiles.atomicWrite(encoder.encode(details.normalized), to: url)
     }
+    public static func setScope(_ scope: CallScope, for recording: LibraryRecording) throws {
+        try CallSummaryStore.withCallWriteLock(for: recording) { _, _ in
+            var current = try load(for: recording.url, isDirectory: recording.isDirectory)
+            current.scope = scope
+            try writeInitial(current, to: url(for: recording.url, isDirectory: recording.isDirectory))
+        }
+    }
     @discardableResult public static func save(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String] = [:]) throws -> CallDetails {
-        try CallFileOperations.validateRecording(recording)
+        try CallSummaryStore.withCallWriteLock(for: recording) { _, _ in
+            try saveLocked(details, for: recording, participantRenames: participantRenames)
+        }
+    }
+    private static func saveLocked(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String]) throws -> CallDetails {
         // Do not silently replace an unreadable or newer details file.
         let previous = try load(for: recording.url, isDirectory: recording.isDirectory)
         var saved = details.normalized
+        saved.scope = previous.scope
         if saved.meeting == nil { saved.meeting = previous.meeting }
         if saved.allowSingleParticipantInference == nil { saved.allowSingleParticipantInference = previous.allowSingleParticipantInference }
         // The existing details editor edits names. Keep identity/attendance
