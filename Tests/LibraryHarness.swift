@@ -77,7 +77,10 @@ import Lookback
         let sourcesOnly = CommandLine.arguments.contains("--sources")
         if !sourcesOnly {
             playback.select(recording)
-            playback.seek(8); playback.toggle(); playback.toggle()
+            require(playback.canPlay && playback.duration > 0, "Initial scrubber duration missing")
+            playback.seek(8); playback.toggle()
+            require(playback.wantsPlayback, "Pending play did not expose a pause action")
+            playback.toggle()
             await waitForPreparation(playback)
             require(playback.position == 8 && !playback.playing, "Queued seek or toggle lost")
             require(playback.ready && playback.source == .mixed, "Mixed playback did not load")

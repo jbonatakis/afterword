@@ -850,7 +850,8 @@ private actor PlaybackPreparation {
     var canPlay: Bool { availability != .empty }
     private let loader = PlaybackPreparation()
     private var preparation: Task<Void, Never>?
-    private var playWhenReady = false
+    @Published private var playWhenReady = false
+    var wantsPlayback: Bool { playing || playWhenReady }
     private var audio: AVAudioPlayer?
     private var timer: Timer?
     private var stateSubscription: AnyCancellable?
@@ -866,11 +867,14 @@ private actor PlaybackPreparation {
     func select(_ recording: LibraryRecording) {
         guard recordingID != recording.id else { return }
         clear(); recordingID = recording.id
-        if let track = recording.tracks.first { load(track, at: 0, resume: false) }
+        if let track = recording.tracks.first {
+            duration = recording.duration ?? 0
+            load(track, at: 0, resume: false)
+        }
     }
     func changeTrack(_ source: TranscriptSource, in recording: LibraryRecording) {
         guard let track = recording.tracks.first(where: { $0.source == source }) else { return }
-        load(track, at: position, resume: playing || playWhenReady)
+        load(track, at: position, resume: wantsPlayback)
     }
     private func load(_ track: LibraryAudioTrack, at time: Double, resume: Bool) {
         preparation?.cancel()
@@ -894,7 +898,7 @@ private actor PlaybackPreparation {
             }
         }
     }
-    func toggle() { (playing || playWhenReady) ? pause() : play() }
+    func toggle() { wantsPlayback ? pause() : play() }
     func play() {
         guard !captureActive else { return }
         if availability == .preparing { playWhenReady = true; return }

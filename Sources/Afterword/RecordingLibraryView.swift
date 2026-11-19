@@ -957,13 +957,13 @@ private struct PlaybackBar: View {
             if disabled { Text("Playback is paused while recording or testing audio.").font(.caption).foregroundStyle(.secondary) }
             HStack(spacing: 14) {
                 Button { playback.toggle() } label: {
-                    Image(systemName: playback.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30))
-                }.buttonStyle(.plain).accessibilityLabel(playback.playing ? "Pause playback" : "Play recording")
+                    Image(systemName: playback.wantsPlayback ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30))
+                }.buttonStyle(.plain).accessibilityLabel(playback.wantsPlayback ? "Pause playback" : "Play recording")
                     .help("Play / pause (Space)")
                     .disabled(disabled || !playback.canPlay)
                 Text(Transcript.timestamp(playback.position)).font(.caption.monospacedDigit()).frame(width: 60)
-                Slider(value: Binding(get: { playback.position }, set: playback.seek), in: 0...max(0.01, playback.duration))
-                    .accessibilityLabel("Playback position").disabled(!playback.ready || disabled)
+                Slider(value: Binding(get: { min(playback.position, playback.duration) }, set: playback.seek), in: 0...max(0.01, playback.duration))
+                    .accessibilityLabel("Playback position").disabled(disabled || !playback.canPlay || playback.duration == 0)
                 Text(Transcript.timestamp(playback.duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 60)
             }
             HStack {
