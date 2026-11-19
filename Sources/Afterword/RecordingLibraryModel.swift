@@ -824,6 +824,19 @@ enum LibraryFilter: String, Identifiable {
     }
 }
 
+/// Each player is prepared on this serial executor, then owned exclusively by the main actor.
+private actor PlaybackPreparation {
+    func open(_ url: URL) throws -> AVAudioPlayer {
+        try Task.checkCancellation()
+        let player = try AVAudioPlayer(contentsOf: url)
+        guard player.prepareToPlay(), player.duration.isFinite, player.duration > 0 else {
+            throw RecorderError.message("This audio file could not be opened for playback.")
+        }
+        try Task.checkCancellation()
+        return player
+    }
+}
+
 @MainActor final class RecordingPlayback: ObservableObject {
     @Published private(set) var recordingID: String?
     @Published private(set) var source: TranscriptSource = .mixed
@@ -831,7 +844,13 @@ enum LibraryFilter: String, Identifiable {
     @Published private(set) var position = 0.0
     @Published private(set) var duration = 0.0
     @Published private(set) var error: String?
-    @Published private(set) var ready = false
+    enum Availability { case empty, preparing, ready }
+    @Published private(set) var availability = Availability.empty
+    var ready: Bool { availability == .ready }
+    var canPlay: Bool { availability != .empty }
+    private let loader = PlaybackPreparation()
+    private var preparation: Task<Void, Never>?
+    private var playWhenReady = false
     private var audio: AVAudioPlayer?
     private var timer: Timer?
     private var stateSubscription: AnyCancellable?
@@ -851,23 +870,36 @@ enum LibraryFilter: String, Identifiable {
     }
     func changeTrack(_ source: TranscriptSource, in recording: LibraryRecording) {
         guard let track = recording.tracks.first(where: { $0.source == source }) else { return }
-        load(track, at: position, resume: playing)
+        load(track, at: position, resume: playing || playWhenReady)
     }
     private func load(_ track: LibraryAudioTrack, at time: Double, resume: Bool) {
-        pause(); audio = nil; ready = false; error = nil; source = track.source
-        do {
-            let player = try AVAudioPlayer(contentsOf: track.url)
-            guard player.prepareToPlay(), player.duration.isFinite, player.duration > 0 else {
-                throw RecorderError.message("This audio file could not be opened for playback.")
+        preparation?.cancel()
+        pause()
+        audio = nil; error = nil; source = track.source; position = time
+        availability = .preparing; playWhenReady = resume
+        let loader = loader
+        preparation = Task { [weak self] in
+            do {
+                let player = try await loader.open(track.url)
+                guard let self, !Task.isCancelled else { return }
+                self.audio = player; self.duration = player.duration
+                self.seek(self.position)
+                self.availability = .ready
+                self.preparation = nil
+                if self.playWhenReady { self.play() }
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.duration = 0; self.position = 0; self.playWhenReady = false
+                self.availability = .empty; self.preparation = nil; self.error = error.localizedDescription
             }
-            audio = player; duration = player.duration; ready = true
-            seek(time)
-            if resume { play() }
-        } catch { duration = 0; position = 0; self.error = error.localizedDescription }
+        }
     }
-    func toggle() { playing ? pause() : play() }
+    func toggle() { (playing || playWhenReady) ? pause() : play() }
     func play() {
-        guard let audio, ready, !captureActive else { return }
+        guard !captureActive else { return }
+        if availability == .preparing { playWhenReady = true; return }
+        playWhenReady = false
+        guard let audio, ready else { return }
         if position >= duration - 0.05 { seek(0) }
         playing = audio.play()
         if playing && timer == nil {
@@ -877,9 +909,10 @@ enum LibraryFilter: String, Identifiable {
         }
         if !playing { error = "Playback could not start. Check your audio output and try again." }
     }
-    func pause() { audio?.pause(); playing = false; timer?.invalidate(); timer = nil }
+    func pause() { playWhenReady = false; audio?.pause(); playing = false; timer?.invalidate(); timer = nil }
     func seek(_ seconds: Double) {
         guard seconds.isFinite else { return }
+        if audio == nil && availability == .preparing { position = max(0, seconds); return }
         position = max(0, min(seconds, duration)); audio?.currentTime = position
     }
     private func tick() {
@@ -887,6 +920,9 @@ enum LibraryFilter: String, Identifiable {
         if !audio.isPlaying { pause(); position = duration }
         else { position = audio.currentTime }
     }
-    func clear() { pause(); audio = nil; ready = false; recordingID = nil; position = 0; duration = 0; error = nil }
+    func clear() {
+        preparation?.cancel(); preparation = nil; pause(); audio = nil
+        availability = .empty; recordingID = nil; position = 0; duration = 0; error = nil
+    }
     func shutdown() { clear(); timer?.invalidate(); timer = nil; stateSubscription?.cancel() }
 }

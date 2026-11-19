@@ -28,6 +28,13 @@ import Lookback
         if !condition() { fputs("FAIL: \(message)\n", stderr); exit(1) }
     }
     static func pump(_ seconds: Double = 0.3) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+    @MainActor static func waitForPreparation(_ playback: RecordingPlayback) async {
+        for _ in 0..<4000 {
+            if playback.availability != .preparing { break }
+            await pump(0.001)
+        }
+        require(playback.availability != .preparing, "Timed out preparing playback")
+    }
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-ui-" + UUID().uuidString)
         let name = Bundle.main.bundleIdentifier!
@@ -70,10 +77,15 @@ import Lookback
         let sourcesOnly = CommandLine.arguments.contains("--sources")
         if !sourcesOnly {
             playback.select(recording)
+            playback.seek(8); playback.toggle(); playback.toggle()
+            await waitForPreparation(playback)
+            require(playback.position == 8 && !playback.playing, "Queued seek or toggle lost")
             require(playback.ready && playback.source == .mixed, "Mixed playback did not load")
             playback.seek(12.5); playback.play(); await pump()
             require(playback.playing && playback.position >= 12.5, "Silent fixture did not play")
             playback.changeTrack(.microphone, in: recording)
+            playback.changeTrack(.system, in: recording); playback.changeTrack(.microphone, in: recording)
+            await waitForPreparation(playback)
             require(playback.source == .microphone && playback.position >= 12.5 && playback.playing, "Track switch lost playback position")
             for state in [RecordingState.preparing, .recording, .previewing, .finalizing] {
                 states.send(state); playback.play()
@@ -83,6 +95,20 @@ import Lookback
             require(playback.position == playback.duration, "Seeking past the end was not clamped")
             playback.play(); require(playback.playing && playback.position == 0, "Replay did not restart at zero")
             playback.pause()
+            playback.changeTrack(.system, in: recording); playback.play(); states.send(.recording)
+            await waitForPreparation(playback); states.send(.idle)
+            require(playback.ready && !playback.playing, "Pending play survived capture")
+            playback.changeTrack(.mixed, in: recording); playback.play(); playback.clear()
+            await pump(0.1)
+            require(!playback.canPlay && playback.recordingID == nil && !playback.playing, "Cleared player reappeared")
+            let missing = LibraryRecording(url: root.appendingPathComponent("Unavailable"), sourceName: "Missing", isDirectory: true,
+                details: .init(), detailsError: nil, date: Date(), duration: nil,
+                tracks: [.init(source: .mixed, url: root.appendingPathComponent("missing.m4a"))], transcripts: [])
+            playback.select(missing); await waitForPreparation(playback)
+            require(!playback.canPlay && playback.error != nil, "Failed file reported ready")
+            playback.select(recording); playback.play(); playback.select(missing); playback.select(recording)
+            await waitForPreparation(playback)
+            require(playback.ready && playback.error == nil && !playback.playing && playback.position == 0, "Stale selection won")
             print("PASS playback, track switching, seek bounds, replay, and capture priority")
         }
 

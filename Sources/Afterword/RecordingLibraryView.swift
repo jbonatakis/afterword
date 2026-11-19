@@ -748,9 +748,9 @@ private struct RecordingDetail: View {
         .background(LibraryCommandScope(bindings: [
             .editTranscript: .init(enabled: { draft == nil && library.summaryDrafts[recording.id] == nil && !library.managing && library.renamingID == nil && version?.document?.paragraphs.isEmpty == false }, perform: { beginEditing(paragraph: 0) }),
             .copyTranscript: .init(enabled: { draft == nil && version?.document != nil }, perform: copyTranscript),
-            .playPause: .init(enabled: { !recorder.locked && playback.ready }, perform: playback.toggle),
-            .backward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position - 10) }),
-            .forward: .init(enabled: { !recorder.locked && playback.ready }, perform: { playback.seek(playback.position + 10) })
+            .playPause: .init(enabled: { !recorder.locked && playback.canPlay }, perform: playback.toggle),
+            .backward: .init(enabled: { !recorder.locked && playback.canPlay }, perform: { playback.seek(playback.position - 10) }),
+            .forward: .init(enabled: { !recorder.locked && playback.canPlay }, perform: { playback.seek(playback.position + 10) })
         ]).frame(width: 0, height: 0))
         .onAppear {
             if selectedSummary == nil { selectedSummary = showingSummary }
@@ -861,7 +861,7 @@ struct ReadableTranscript: View {
                         .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain).scrollContentBackground(.hidden)
-                .onReceive(playback.$ready.removeDuplicates()) { playbackReady = $0 }
+                .onReceive(playback.$availability.removeDuplicates()) { playbackReady = $0 != .empty }
                 .onAppear { if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
                 .onChange(of: query) { _, _ in if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
                 .onChange(of: searchMatches) { _, _ in if draft == nil, let firstMatch { proxy.scrollTo(firstMatch, anchor: .top) } }
@@ -960,7 +960,7 @@ private struct PlaybackBar: View {
                     Image(systemName: playback.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 30))
                 }.buttonStyle(.plain).accessibilityLabel(playback.playing ? "Pause playback" : "Play recording")
                     .help("Play / pause (Space)")
-                    .disabled(disabled || !playback.ready)
+                    .disabled(disabled || !playback.canPlay)
                 Text(Transcript.timestamp(playback.position)).font(.caption.monospacedDigit()).frame(width: 60)
                 Slider(value: Binding(get: { playback.position }, set: playback.seek), in: 0...max(0.01, playback.duration))
                     .accessibilityLabel("Playback position").disabled(!playback.ready || disabled)
