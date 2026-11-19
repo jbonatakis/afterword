@@ -105,6 +105,34 @@ import Lookback
         try db.commit(page, work: work, repo: repo)
     }
 
+    // The same OS lock used by summary and call-detail writes. Delay only in the explicit contention case.
+    static func holdCallLock(_ recording: LibraryRecording) throws {
+        let url = CallSummaryStore.lockURL(for: recording.url, isDirectory: recording.isDirectory)
+        let fd = open(url.path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw RecorderError.message("Could not open fixture lock") }
+        guard flock(fd, LOCK_EX) == 0 else { close(fd); throw RecorderError.message("Could not acquire fixture lock") }
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(50)) {
+            flock(fd, LOCK_UN); close(fd)
+        }
+    }
+
+    // The pre-experiment ranking contract, evaluated on the visible source arrays.
+    @MainActor static func checkOrder(_ library: RecordingLibraryModel) throws {
+        let calls = library.visibleRecordings.map {
+            ActivityMatch(id: $0.id, source: .call, title: $0.name, evidence: library.searchHits[$0.id]?.snippet ?? "", date: $0.date)
+        }
+        let coding = library.visibleCoding.map {
+            let hit = library.codingHits[$0.id]
+            return ActivityMatch(id: $0.id, source: .coding, title: $0.title, evidence: hit?.text ?? "", date: hit?.timestamp ?? $0.updated)
+        }
+        let github = library.visibleGitHub.map {
+            ActivityMatch(id: "github:" + $0.id, source: .github, title: $0.item.title, evidence: $0.citations.first?.text ?? "",
+                          date: $0.date, qualified: GitHubReference(library.resultQuery) != nil)
+        }
+        let expected = ActivityMatch.ordered([calls, coding, github], query: library.resultQuery).map(\.id)
+        try require(library.activity.map(\.id) == expected, "Cross-source result ordering changed")
+    }
+
     @MainActor static func run() async throws {
         let args = CommandLine.arguments.dropFirst().compactMap(Int.init)
         let n = args.first ?? 100, trials = args.dropFirst().first ?? 21
@@ -129,14 +157,21 @@ import Lookback
         try fillGitHub(root, count: 4 * n)
         await library.refresh()?.value
         try require(library.activity.count == 7 * n, "Expected \(7*n) rows, found \(library.activity.count)")
+        try checkOrder(library)
+        // Measure the attendance transaction independently: publishing to the library's own calendar
+        // schedules another full scan, which otherwise overlaps the following search sample.
+        let attendanceCalendar = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), hasAccess: { false })
+        defer { attendanceCalendar.shutdown() }
         let reference = library.activity.map(\.id)
         var samples: [String: [Sample]] = [:]
-        let call = library.recordings[0]
+        let call = library.recordings[0], otherCall = library.recordings[1]
         let playback = RecordingPlayback(states: CurrentValueSubject<RecordingState, Never>(.idle).eraseToAnyPublisher())
         defer { playback.shutdown() }
         print("READY \(7*n) rows")
         for trial in -2..<trials {
             func save(_ key: String, _ value: Sample) { if trial >= 0 { samples[key, default: []].append(value) } }
+            save("refresh", await timed { await library.refresh()?.value })
+            try require(library.activity.map(\.id) == reference, "Refresh changed browse order")
             save("with-transcripts", await timed { library.filter = .transcribed })
             try require(library.activity.count == (n+1)/2 && library.visibleRecordings.allSatisfy(\.hasTranscript), "Sidebar filter")
             save("all-activity", await timed { library.filter = .activity })
@@ -146,29 +181,60 @@ import Lookback
             try require(library.resultQuery == "fixture", "Debounced search timed out")
             save("search", await timed { await library.updateSearch(debounce: false)?.value })
             try require(library.visibleGitHub.count == 4*n && !library.visibleRecordings.isEmpty && !library.visibleCoding.isEmpty, "Search membership")
+            try checkOrder(library)
             // A sidebar change with an active query reranks the matching rows on the baseline.
             save("search-sidebar", await timed { library.filter = .github })
             try require(library.activity.count == 4*n && library.visibleRecordings.isEmpty, "Scoped query")
+            try checkOrder(library)
             library.filter = .activity
             save("clear", await timed { library.search = "" })
             try require(library.activity.map(\.id) == reference, "Clear search")
             playback.clear()
-            save("playback", await timed { playback.select(call) })
-            try require(playback.ready && playback.duration >= 59, "Playback readiness")
+            for (label, selected) in [("playback", call), ("playback-switch", otherCall)] {
+                save(label, try await timed {
+                    playback.select(selected)
+                    for _ in 0..<8000 {
+                        if playback.ready || playback.error != nil { break }
+                        try await Task.sleep(nanoseconds: 250_000)
+                    }
+                })
+                try require(playback.ready && playback.duration >= 59 && playback.recordingID == selected.id, "Playback readiness")
+            }
             // Isolate the filesystem transaction from the independent subsequent library scan.
-            let folder = root.appendingPathComponent("Attendance-\(trial)")
-            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-            let fresh = LibraryRecording(url: folder, sourceName: "Attendance", isDirectory: true, details: .init(),
-                detailsError: nil, date: Date(), duration: nil, tracks: [], transcripts: [])
-            var roster = AttendanceRoster([])
-            try roster.add(name: "Late guest \(trial)", email: "", remember: true, in: recorder.calendar.directory)
-            let change = try CallDetailsStore.prepareAttendance(roster, for: fresh, confirmOnly: nil)
-            save("attendance", try await timed {
-                try await recorder.calendar.saveAttendanceWithNewPeople(roster, change: change, for: fresh)
-            })
-            let details = try CallDetailsStore.load(for: folder, isDirectory: true)
-            try require(details.participants.count == 1 && recorder.calendar.directory.identity(for: details.callAttendees[0]) != nil, "Lost contact or link")
+            for contended in [false, true] {
+                let label = contended ? "attendance-contended" : "attendance"
+                let folder = root.appendingPathComponent("Attendance-\(label)-\(trial)")
+                try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+                let fresh = LibraryRecording(url: folder, sourceName: "Attendance", isDirectory: true, details: .init(),
+                    detailsError: nil, date: Date(), duration: nil, tracks: [], transcripts: [])
+                var roster = AttendanceRoster([])
+                try roster.add(name: "Late guest \(label) \(trial)", email: "", remember: true, in: attendanceCalendar.directory)
+                let change = try CallDetailsStore.prepareAttendance(roster, for: fresh, confirmOnly: nil)
+                if contended { try holdCallLock(fresh) }
+                save(label, try await timed {
+                    try await attendanceCalendar.saveAttendanceWithNewPeople(roster, change: change, for: fresh)
+                })
+                let details = try CallDetailsStore.load(for: folder, isDirectory: true)
+                try require(details.participants.count == 1 && attendanceCalendar.directory.identity(for: details.callAttendees[0]) != nil, "Lost contact or link")
+            }
         }
+        library.search = "fixture"; let superseded = library.updateSearch(debounce: false)
+        library.search = "absenttoken"; await library.updateSearch(debounce: false)?.value
+        await superseded?.value
+        for _ in 0..<4000 {
+            if !library.searching && !library.refreshing { break }
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        try require(library.resultQuery == "absenttoken" && library.activity.isEmpty, "Superseded query published stale results: \(library.resultQuery), \(library.activity.count) rows")
+        library.search = ""
+        library.filter = .personal
+        try require(library.activity.isEmpty, "Work rows visible during personal-scope transition")
+        await library.refresh()?.value
+        try require(library.activity.isEmpty, "Work rows in personal scope")
+        library.filter = .activity
+        await library.refresh()?.value
+        try checkOrder(library)
+        try require(library.activity.map(\.id) == reference, "Scope round trip changed work results")
         for key in samples.keys.sorted() { report(key, samples[key]!) }
         try require(!NSApp.isActive && !NSApp.windows.contains(where: \.isVisible), "Foreground fixture")
         print("PASS \(7*n) mixed rows, \(trials) measured trials after 2 warmups")
