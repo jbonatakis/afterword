@@ -427,8 +427,8 @@ enum GitHubPeriod: String, CaseIterable {
         return task
     }
     private func applyFilter() {
-        visibleRecordings = sources.contains(.recordings) ? matchedRecordings.filter { filter.includes($0) } : []
-        visibleCoding = sources.contains(.coding) ? matchedCoding.filter {
+        visibleRecordings = filter.showsRecordings && sources.contains(.recordings) ? matchedRecordings.filter { filter.includes($0) } : []
+        visibleCoding = filter.showsCoding && sources.contains(.coding) ? matchedCoding.filter {
             filter.includes($0) && (codingProject.isEmpty || $0.project == codingProject) && (codingBranch.isEmpty || $0.branch == codingBranch)
         } : []
         visibleGitHub = sources.contains(.github) && (filter == .activity || filter == .github) ? matchedGitHub : []
