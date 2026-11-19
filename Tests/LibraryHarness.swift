@@ -129,9 +129,16 @@ import Lookback
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.count == 1, "Transcript phrase search failed")
+        // A refresh (for example after a contact save) may replace the explicit search task.
+        // Await both public operations and verify the final publication keeps the newest query.
+        let olderSearch = library.updateSearch(debounce: false)
+        let overlappingRefresh = library.refresh()
         library.search = "missing phrase"
         await library.updateSearch(debounce: false)?.value
-        require(library.visibleRecordings.isEmpty, "Search did not filter results")
+        await olderSearch?.value
+        await overlappingRefresh?.value
+        require(!library.searching && library.resultQuery == "missing phrase" && library.visibleRecordings.isEmpty,
+                "A refresh or superseded search replaced the newer result")
         library.search = ""; library.filter = .untranscribed
         await library.updateSearch(debounce: false)?.value
         require(library.visibleRecordings.isEmpty, "Needs transcription filter was wrong")
