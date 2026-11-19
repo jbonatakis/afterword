@@ -1,0 +1,176 @@
+import AppKit
+import AVFoundation
+import Combine
+import Lookback
+@testable import RecorderCore
+
+/// Run with Scripts/check-library.sh Tests/MainThreadBenchmark.swift --release [calls] [trials].
+/// All recordings, sessions, contacts and issues are generated in a private temporary directory.
+@main struct MainThreadBenchmark {
+    @MainActor static func main() {
+        setbuf(stdout, nil)
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        Task { @MainActor in
+            do { try await run(); exit(0) }
+            catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
+        }
+        NSApp.run()
+    }
+    static func require(_ condition: Bool, _ message: String) throws {
+        if !condition { throw RecorderError.message(message) }
+    }
+    static func now() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
+    struct Sample { var time: Double; var gap: Double }
+    /// Longest interval between opportunities to service the main queue during this operation.
+    /// Include both endpoints so a fully synchronous operation is measured too.
+    @MainActor static func timed(_ body: () async throws -> Void) async rethrows -> Sample {
+        var last = now(), gap = 0.0
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        func tick() { let t = now(); gap = max(gap, t - last); last = t }
+        timer.setEventHandler { tick() }
+        timer.schedule(deadline: .now() + .milliseconds(1), repeating: .milliseconds(1), leeway: .nanoseconds(0))
+        timer.resume()
+        let start = now()
+        last = start
+        defer { timer.cancel() }
+        try await body()
+        tick()
+        return Sample(time: last - start, gap: gap)
+    }
+    static func report(_ label: String, _ samples: [Sample]) {
+        func values(_ key: KeyPath<Sample, Double>) -> String {
+            let xs = samples.map { $0[keyPath: key] }.sorted()
+            func p(_ q: Double) -> Double { xs[Int(ceil(q * Double(xs.count))) - 1] }
+            return String(format: "%.3f %.3f", p(0.5), p(0.95))
+        }
+        print("MEASURE \(label) wall_ms_p50_p95 \(values(\.time)) main_gap_ms_p50_p95 \(values(\.gap))")
+    }
+
+    static func seed(_ root: URL, calls: Int) throws {
+        let fm = FileManager.default, callsRoot = root.appendingPathComponent("Calls")
+        let source = root.appendingPathComponent("silence.m4a")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+        do {
+            let audio = try AVAudioFile(forWriting: source, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48000, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: 96000])
+            let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000)!
+            buf.frameLength = buf.frameCapacity
+            for ch in 0..<2 { buf.floatChannelData![ch].initialize(repeating: 0, count: 48000) }
+            for _ in 0..<60 { try audio.write(from: buf) }
+        }
+        for i in 0..<calls {
+            let folder = callsRoot.appendingPathComponent("Call-" + String(format: "%05d", i))
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try fm.linkItem(at: source, to: folder.appendingPathComponent("Mixed.m4a"))
+            try CallDetailsStore.writeInitial(.init(title: "Fixture review \(i)"), to: folder.appendingPathComponent("CallDetails.json"))
+            if i.isMultiple(of: 2) {
+                let input = try TranscriptionInput.resolve(folder)
+                let transcript = try Transcript(input: input, model: SpeechModel.catalog[0], engine: "fixture", language: "en",
+                    segments: [.init(source: .mixed, start: 0, end: 3, text: "Fixture review for iteration \(i)", timing: "word")])
+                _ = try transcript.save(beside: input)
+            }
+        }
+        let projects = root.appendingPathComponent("Projects"), project = projects.appendingPathComponent("example")
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        for i in 0..<(2 * calls) {
+            let file = project.appendingPathComponent(String(format: "00000000-0000-0000-0000-%012d.jsonl", i))
+            let line = #"{"type":"user","uuid":"first","cwd":"/fixture","message":{"content":"Fixture review number \#(i)"}}"#
+            try Data((line + "\n").utf8).write(to: file)
+        }
+        let coding = try CodingArchive(directory: root.appendingPathComponent("CodingSessions"))
+        try coding.setEnabled(true); try coding.addProject("/fixture")
+        try coding.synchronize(reader: ClaudeCodeReader(projectsDirectory: projects))
+        try coding.setEnabled(false)
+        try require(try coding.sessions().count == 2 * calls, "Generated session count")
+        var people = PeopleDirectory()
+        people.people = (0..<(calls * 4)).map { KnownIdentity(name: "Guest \($0)", emails: ["guest\($0)@example.test"]) }
+        try people.save(to: root.appendingPathComponent("People.json"))
+    }
+    static func fillGitHub(_ root: URL, count: Int) throws {
+        let db = try GitHubArchive(directory: root.appendingPathComponent("GitHub"))
+        try db.connect(.init(id: "fixture", login: "fixture"))
+        try db.select(.init(id: "repo", name: "example/demo"))
+        let repo = try db.selections()[0]
+        try db.begin(repo, now: Date())
+        guard let work = try db.next(repo) else { throw RecorderError.message("Missing fixture queue") }
+        var page = GitHubPage()
+        for i in 1...count {
+            let url = "https://example.test/pr/\(i)"
+            let item = GitHubItem(id: "item-\(i)", repositoryID: "repo", type: "pr", title: "Fixture review \(i)",
+                                  author: "fixture", state: "OPEN", url: url, number: i)
+            let citation = GitHubPassage(id: "p-\(i)", actorID: "fixture", text: "Fixture review", url: url,
+                kind: .review, date: Date(timeIntervalSince1970: Double(1700000000 + i)), edited: nil, verdict: nil, path: nil, line: nil)
+            page.entries.append((item, citation))
+        }
+        try db.commit(page, work: work, repo: repo)
+    }
+
+    @MainActor static func run() async throws {
+        let args = CommandLine.arguments.dropFirst().compactMap(Int.init)
+        let n = args.first ?? 100, trials = args.dropFirst().first ?? 21
+        try require(n >= 4 && trials >= 2, "Expected at least 4 calls and 2 trials")
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let domain = Bundle.main.bundleIdentifier!
+        UserDefaults.standard.removePersistentDomain(forName: domain)
+        defer { try? fm.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: domain) }
+        try await Task.detached { try seed(root, calls: n) }.value
+        UserDefaults.standard.set(root.appendingPathComponent("Calls").path, forKey: "destination")
+        UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
+        let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json"), recoveryRoot: root.appendingPathComponent("Sessions"))
+        recorder.shortcut.shutdown()
+        defer { recorder.transcription.shutdown() }
+        let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
+        defer { library.shutdown() }
+        // Only the local archive is used. Stop the GitHub network coordinator before the fixture account exists.
+        library.github.stop()
+        while library.coding.busy || library.refreshing { try await Task.sleep(for: .milliseconds(10)) }
+        try fillGitHub(root, count: 4 * n)
+        await library.refresh()?.value
+        try require(library.activity.count == 7 * n, "Expected \(7*n) rows, found \(library.activity.count)")
+        let reference = library.activity.map(\.id)
+        var samples: [String: [Sample]] = [:]
+        let call = library.recordings[0]
+        let playback = RecordingPlayback(states: CurrentValueSubject<RecordingState, Never>(.idle).eraseToAnyPublisher())
+        defer { playback.shutdown() }
+        print("READY \(7*n) rows")
+        for trial in -2..<trials {
+            func save(_ key: String, _ value: Sample) { if trial >= 0 { samples[key, default: []].append(value) } }
+            save("with-transcripts", await timed { library.filter = .transcribed })
+            try require(library.activity.count == (n+1)/2 && library.visibleRecordings.allSatisfy(\.hasTranscript), "Sidebar filter")
+            save("all-activity", await timed { library.filter = .activity })
+            try require(library.activity.map(\.id) == reference, "Browse order or membership changed")
+            library.search = "fixture"
+            for _ in 0..<4000 where library.searching { try await Task.sleep(for: .milliseconds(2)) }
+            try require(library.resultQuery == "fixture", "Debounced search timed out")
+            save("search", await timed { await library.updateSearch(debounce: false)?.value })
+            try require(library.visibleGitHub.count == 4*n && !library.visibleRecordings.isEmpty && !library.visibleCoding.isEmpty, "Search membership")
+            // A sidebar change with an active query reranks the matching rows on the baseline.
+            save("search-sidebar", await timed { library.filter = .github })
+            try require(library.activity.count == 4*n && library.visibleRecordings.isEmpty, "Scoped query")
+            library.filter = .activity
+            save("clear", await timed { library.search = "" })
+            try require(library.activity.map(\.id) == reference, "Clear search")
+            playback.clear()
+            save("playback", await timed { playback.select(call) })
+            try require(playback.ready && playback.duration >= 59, "Playback readiness")
+            // Isolate the filesystem transaction from the independent subsequent library scan.
+            let folder = root.appendingPathComponent("Attendance-\(trial)")
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let fresh = LibraryRecording(url: folder, sourceName: "Attendance", isDirectory: true, details: .init(),
+                detailsError: nil, date: Date(), duration: nil, tracks: [], transcripts: [])
+            var roster = AttendanceRoster([])
+            try roster.add(name: "Late guest \(trial)", email: "", remember: true, in: recorder.calendar.directory)
+            let change = try CallDetailsStore.prepareAttendance(roster, for: fresh, confirmOnly: nil)
+            save("attendance", try await timed {
+                try await recorder.calendar.saveAttendanceWithNewPeople(roster, change: change, for: fresh)
+            })
+            let details = try CallDetailsStore.load(for: folder, isDirectory: true)
+            try require(details.participants.count == 1 && recorder.calendar.directory.identity(for: details.callAttendees[0]) != nil, "Lost contact or link")
+        }
+        for key in samples.keys.sorted() { report(key, samples[key]!) }
+        try require(!NSApp.isActive && !NSApp.windows.contains(where: \.isVisible), "Foreground fixture")
+        print("PASS \(7*n) mixed rows, \(trials) measured trials after 2 warmups")
+    }
+}

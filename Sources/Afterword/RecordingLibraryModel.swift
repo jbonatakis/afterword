@@ -373,7 +373,7 @@ enum GitHubPeriod: String, CaseIterable {
         let action = filter == .github && !githubAction.isEmpty ? githubAction : nil
         let period = filter == .github ? githubPeriod.interval() : nil
         let task = Task { [weak self] in
-            if debounce { try? await Task.sleep(for: .milliseconds(150)) }
+            if debounce { try? await Task.sleep(nanoseconds: 150_000_000) }
             guard !Task.isCancelled else { return }
             let work = Task.detached(priority: .userInitiated) { Result {
                 try Task.checkCancellation()
