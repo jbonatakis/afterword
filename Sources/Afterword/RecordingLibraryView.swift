@@ -215,6 +215,32 @@ struct RecordingLibraryView: View {
         }.tag(session.id)
     }
 
+    private var recordingButton: some View {
+        let label: (title: String, icon: String, help: String)
+        switch recorder.state {
+        case .preparing: label = ("Cancel", "xmark", "Cancel recording preparation")
+        case .previewing: label = ("End test", "stop.fill", "End audio test")
+        case .recording: label = ("Stop", "stop.fill", "Stop recording and save")
+        case .finalizing: label = ("Saving…", "clock", "Saving recording")
+        case .idle, .needsPermission, .error, .recoverable: label = ("Record", "record.circle", "Start recording")
+        }
+        return Button {
+            if !recorder.noticesAccepted && !recorder.locked { showControls() }
+            else { recorder.toggleRecording() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: label.icon)
+                    .foregroundStyle(recorder.state == .recording ? Color.red : .primary)
+                Text(label.title)
+                if recorder.capturing { Text(recorder.elapsed).monospacedDigit() }
+            }.frame(minWidth: 66).fixedSize()
+        }
+        .accessibilityLabel(label.help)
+        .accessibilityValue(recorder.capturing ? recorder.elapsed : "")
+        .help(label.help)
+        .disabled(recorder.state == .finalizing || (!recorder.locked && (recorder.resolved == nil || recorder.selectedChannel < 0)))
+    }
+
     private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
@@ -367,46 +393,28 @@ struct RecordingLibraryView: View {
                 if library.sources.contains(.recordings) {
                     Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
                         .help("Microphone, audio levels, and recording controls")
-                    Button {
-                        if !recorder.noticesAccepted { showControls() }
-                        else { recorder.toggleRecording() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: recorder.locked ? "stop.fill" : "record.circle").accessibilityHidden(true)
-                            Text(recorder.locked ? recorder.state == .finalizing ? "Saving…" : "Stop" : "Record")
-                        }.frame(minWidth: 66).fixedSize()
-                    }
-                    .tint(recorder.locked ? .red : .accentColor)
-                    .help(recorder.state == .finalizing ? "Saving recording…" : recorder.state == .preparing ? "Cancel preparation" : recorder.isPreview ? "End audio test" : recorder.locked ? "Stop recording and save" : "Start recording")
-                    .disabled(recorder.state == .finalizing || (!recorder.locked && (recorder.resolved == nil || recorder.selectedChannel < 0)))
+                    recordingButton
                 }
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if library.sources.contains(.recordings) && (recorder.locked || recorder.message != nil) {
-                HStack {
-                    if recorder.locked {
-                        HStack(spacing: 6) {
-                            Circle().fill(recorder.state == .recording ? Color.red : Color.secondary)
-                                .frame(width: 7, height: 7).accessibilityHidden(true)
-                            Text("\(recorder.title) · \(recorder.elapsed)").monospacedDigit()
-                        }.accessibilityElement(children: .combine)
-                    } else {
-                        Label(recorder.title, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
-                    }
-                    if let message = recorder.message { Text(message).lineLimit(2) }
-                    Spacer()
-                }.font(.callout).padding(10).background(.bar)
-            }
-        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !library.issues.isEmpty {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text(library.issues.joined(separator: "\n")).textSelection(.enabled)
-                    Spacer()
-                    Button("Retry") { library.refresh() }
-                }.font(.caption).padding(10).background(.bar)
+            VStack(spacing: 0) {
+                if library.sources.contains(.recordings), let message = recorder.message {
+                    HStack {
+                        Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                        Text(message).textSelection(.enabled)
+                        Spacer()
+                        Button("Recording controls", action: showControls)
+                    }.font(.caption).padding(10).background(.bar)
+                }
+                if !library.issues.isEmpty {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle")
+                        Text(library.issues.joined(separator: "\n")).textSelection(.enabled)
+                        Spacer()
+                        Button("Retry") { library.refresh() }
+                    }.font(.caption).padding(10).background(.bar)
+                }
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
