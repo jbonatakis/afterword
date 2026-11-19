@@ -244,7 +244,7 @@ struct PeopleDirectoryView: View {
                         .frame(width: 25)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(person.name).font(.headline)
-                        Text(person.emails.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
+                        if !person.emails.isEmpty { Text(person.emails.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer()
                     Text(person.kind == .group ? "Group · \(person.memberIDs.count) \(person.memberIDs.count == 1 ? "member" : "members")" : person.kind == .resource ? "Ignored resource" : "Person")
@@ -280,7 +280,7 @@ private struct IdentityEditor: View {
             Text(identity.name.isEmpty ? "New identity" : "Edit identity").font(.title2.weight(.semibold))
             Form {
                 TextField("Preferred name", text: $identity.name)
-                TextField("Email addresses", text: $emails, axis: .vertical).lineLimit(2...4)
+                TextField(identity.kind == .person ? "Email addresses (optional)" : "Email addresses", text: $emails, axis: .vertical).lineLimit(2...4)
                 Picker("Kind", selection: $identity.kind) {
                     Text("Person").tag(IdentityKind.person)
                     Text("Group / mailing list").tag(IdentityKind.group)

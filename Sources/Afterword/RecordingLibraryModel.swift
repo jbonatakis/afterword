@@ -453,6 +453,17 @@ enum GitHubPeriod: String, CaseIterable {
             await finishManagement()?.value
         } catch { finishManagement(); throw error }
     }
+    var peopleDirectory: PeopleDirectory { recorder?.calendar.directory ?? .init() }
+
+    func saveMetadata(title: String, tags: [String], description: String, for recording: LibraryRecording) async throws {
+        try beginManagement()
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try CallDetailsStore.saveMetadata(title: title, tags: tags, description: description, for: recording)
+            }.value
+            await finishManagement()?.value
+        } catch { finishManagement(); throw error }
+    }
     func saveDetails(_ details: CallDetails, for recording: LibraryRecording, reveal: Bool = true, participantRenames: [String: String] = [:]) async throws {
         try beginManagement()
         do {
@@ -498,12 +509,24 @@ enum GitHubPeriod: String, CaseIterable {
         } catch { finishManagement(); throw error }
     }
     func saveAttendance(_ attendees: [CallAttendee], for recording: LibraryRecording, version: LibraryTranscript?, confirmOnly: String?) async throws {
-        let latest = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
-        guard latest.callAttendees == recording.details.callAttendees else {
-            throw RecorderError.message("The participants changed. Reopen attendance to review the updated list.")
-        }
-        let details = try latest.updatingAttendance(attendees, confirmOnly: confirmOnly)
-        try await saveDetails(details, for: recording, reveal: false)
+        try await saveAttendance(AttendanceRoster(attendees), for: recording, version: version, confirmOnly: confirmOnly)
+    }
+    func saveAttendance(_ roster: AttendanceRoster, for recording: LibraryRecording, version: LibraryTranscript?, confirmOnly: String?) async throws {
+        let attendees = roster.attendees
+        try beginManagement()
+        do {
+            let change = try await Task.detached(priority: .userInitiated) {
+                try CallDetailsStore.prepareAttendance(roster, for: recording, confirmOnly: confirmOnly)
+            }.value
+            if roster.newPeople.isEmpty {
+                try await Task.detached(priority: .userInitiated) { try CallDetailsStore.saveAttendance(change, for: recording) }.value
+            } else {
+                guard let calendar = recorder?.calendar else { throw RecorderError.message("The people directory is unavailable.") }
+                try calendar.saveAttendanceWithNewPeople(roster, change: change, for: recording)
+            }
+            transcriptDrafts[recording.id]?.updateParticipants(change.updated.participants, renames: roster.renames)
+            await finishManagement()?.value
+        } catch { finishManagement(); throw error }
         guard let confirmOnly, let person = attendees.first(where: { $0.id == confirmOnly }),
               let current = recordings.first(where: { $0.id == recording.id }), let version, let document = version.document else { return }
         if let draft = transcriptDrafts[recording.id] {

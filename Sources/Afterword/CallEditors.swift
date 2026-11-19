@@ -1,23 +1,13 @@
 import SwiftUI
 import RecorderCore
 
-private struct ParticipantRow: Identifiable {
-    let id = UUID()
-    let originalName: String?
-    var originalDisplayName: String? = nil
-    var name: String
-    var storedName: String {
-        let edited = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return edited == originalDisplayName ? originalName ?? edited : edited
-    }
-}
-
 struct CallDetailsEditor: View {
     let recording: LibraryRecording
     @ObservedObject var library: RecordingLibraryModel
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
-    @State private var participants: [ParticipantRow]
+    @State private var managingAttendance = false
+    private var current: LibraryRecording { library.recordings.first { $0.id == recording.id } ?? recording }
     @State private var tags: String
     @State private var description: String
     @State private var saving = false
@@ -26,10 +16,6 @@ struct CallDetailsEditor: View {
     init(recording: LibraryRecording, library: RecordingLibraryModel) {
         self.recording = recording; self.library = library
         _title = State(initialValue: recording.name)
-        _participants = State(initialValue: recording.details.participants.map { raw in
-            let display = recording.displayName(raw)
-            return ParticipantRow(originalName: raw, originalDisplayName: display, name: display)
-        })
         _tags = State(initialValue: recording.details.tags.joined(separator: ", "))
         _description = State(initialValue: recording.details.description)
     }
@@ -39,24 +25,9 @@ struct CallDetailsEditor: View {
             Form {
                 TextField("Title", text: $title)
                 LabeledContent("Participants") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ScrollView {
-                            VStack(spacing: 6) {
-                                ForEach($participants) { $participant in
-                                    HStack {
-                                        TextField("Name", text: $participant.name).labelsHidden().accessibilityLabel("Participant name")
-                                        Button {
-                                            participants.removeAll { $0.id == participant.id }
-                                        } label: { Image(systemName: "minus.circle") }
-                                            .buttonStyle(.borderless).help("Remove participant").accessibilityLabel("Remove participant")
-                                    }
-                                }
-                            }
-                        }.frame(height: min(120, CGFloat(participants.count) * 28))
-                        Button("Add participant", systemImage: "plus") { participants.append(.init(originalName: nil, name: "")) }
-                            .buttonStyle(.borderless)
-                        Text("List the other people on the call. Renaming updates their labels; removing clears their assignments. One person labels automatic sections; adding people keeps existing assignments.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(current.participantDisplayNames.isEmpty ? "No active participants" : current.participantDisplayNames.joined(separator: ", "))
+                        Button("Manage attendees…") { managingAttendance = true }
                     }
                 }
                 TextField("Tags", text: $tags, prompt: Text("Comma-separated tags"))
@@ -73,22 +44,15 @@ struct CallDetailsEditor: View {
                     .disabled(saving || library.managing || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(24).frame(width: 530).background(Color(nsColor: .windowBackgroundColor)).interactiveDismissDisabled(saving)
+        .sheet(isPresented: $managingAttendance) {
+            AttendanceEditor(recording: current, version: current.latestTranscript, library: library)
+        }
     }
     private func save() {
         error = nil
-        let names = participants.map(\.storedName).filter { !$0.isEmpty }
-        let displayed = CallDetails(participants: participants.map(\.name)).normalized.participants
-        let details = CallDetails(title: title, participants: names,
-                                  tags: tags.components(separatedBy: ","), description: description)
-        guard details.normalized.participants.count == names.count, displayed.count == names.count else { error = "Use a different name for each participant."; return }
-        let renames = Dictionary(uniqueKeysWithValues: participants.compactMap { row -> (String, String)? in
-            let name = row.storedName
-            guard let original = row.originalName, !name.isEmpty, name != original else { return nil }
-            return (original, name)
-        })
         saving = true
         Task {
-            do { try await library.saveDetails(details, for: recording, participantRenames: renames); dismiss() }
+            do { try await library.saveMetadata(title: title, tags: tags.components(separatedBy: ","), description: description, for: recording); dismiss() }
             catch { self.error = error.localizedDescription }
             saving = false
         }
@@ -203,7 +167,7 @@ struct ParticipantPicker: View {
                 Section("This passage only") { passageActions }
             } else { passageActions }
             Divider()
-            Button("Edit participants…", action: editParticipants)
+            Button("Manage attendees…", action: editParticipants)
         } label: { Text(displayName).font(.callout.weight(.semibold)).lineLimit(1) }
             .menuStyle(.borderlessButton).fixedSize()
             .help(suggestedName == nil ? "Assign a speaker" : "Review the suggested speaker for this voice")

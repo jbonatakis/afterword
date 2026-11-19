@@ -253,6 +253,24 @@ actor CalendarReader: CalendarReading {
         return refreshTask
     }
     func preview(_ meeting: CalendarMeeting) -> CallDetails { var copy = directory; return meeting.callDetails(directory: &copy) }
+    func saveAttendanceWithNewPeople(_ roster: AttendanceRoster, change: CallDetailsStore.AttendanceChange, for recording: LibraryRecording) throws {
+        if let directoryError { throw RecorderError.message(directoryError) }
+        let updated = try roster.directory(includingPendingIn: directory)
+        var wrotePeople = false
+        do {
+            try CallDetailsStore.saveAttendance(change, for: recording) {
+                try updated.save(to: self.directoryURL)
+                wrotePeople = true
+            }
+            directory = updated
+        } catch {
+            if wrotePeople {
+                do { try directory.save(to: directoryURL) }
+                catch { directoryError = error.localizedDescription; throw error }
+            }
+            throw error
+        }
+    }
     func updateIdentity(_ identity: KnownIdentity) throws {
         guard directoryError == nil else { throw RecorderError.message(directoryError!) }
         var copy = directory; try copy.update(identity); try copy.save(to: directoryURL); directory = copy

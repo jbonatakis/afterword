@@ -632,17 +632,15 @@ private struct RecordingDetail: View {
                     Button(action: editDetails) { Label("Edit details", systemImage: "pencil") }.disabled(library.managing || library.renamingID != nil)
                         .help("Edit call details (⌘I)")
                 }.font(.callout).foregroundStyle(.secondary)
-                if !recording.details.callAttendees.isEmpty {
-                    HStack {
-                        Label(recording.details.participants.isEmpty ? "No active participants" : recording.participantDisplayNames.joined(separator: ", "), systemImage: "person.2")
-                            .lineLimit(2).textSelection(.enabled)
-                        Spacer()
-                        Button("Attendance…") { showingAttendance = true }.disabled(library.managing)
-                    }.font(.callout)
-                    if recording.details.callAttendees.contains(where: { $0.attendance == .absent }) {
-                        Text("\(recording.details.callAttendees.filter { $0.attendance == .absent }.count) excluded · Review attendance to restore")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                HStack {
+                    Label(recording.details.participants.isEmpty ? "No active participants" : recording.participantDisplayNames.joined(separator: ", "), systemImage: "person.2")
+                        .lineLimit(2).textSelection(.enabled)
+                    Spacer()
+                    Button("Attendance…") { showingAttendance = true }.disabled(library.managing)
+                }.font(.callout)
+                if recording.details.callAttendees.contains(where: { $0.attendance == .absent }) {
+                    Text("\(recording.details.callAttendees.filter { $0.attendance == .absent }.count) excluded · Review attendance to restore")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if let meeting = recording.details.meeting {
                     Label("From " + meeting.calendar, systemImage: "calendar").font(.caption).foregroundStyle(.secondary)
@@ -723,7 +721,7 @@ private struct RecordingDetail: View {
                                    assignment: library.participantAssignments[recording.id].flatMap { $0.versionID == version?.id ? $0 : nil },
                                    assignParticipant: { name, paragraph in
                                        if let version { Task { await library.assignParticipant(name, to: paragraph, recording: recording, version: version) } }
-                                   }, editParticipants: editDetails,
+                                   }, editParticipants: { showingAttendance = true },
                                    searchMatches: library.searchHits[recording.id].flatMap { $0.versionID == version?.id ? $0.paragraphIDs : nil } ?? [])
             } else if let error = version?.error {
                 ContentUnavailableView {
