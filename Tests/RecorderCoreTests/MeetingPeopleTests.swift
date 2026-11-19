@@ -22,6 +22,50 @@ final class MeetingPeopleTests: XCTestCase {
         XCTAssertTrue(other.id != avery.id)
         XCTAssertThrowsError(try directory.update(.init(name: "Duplicate", emails: ["avery@example.com"])))
     }
+    func testAttendeePickerFiltersPeopleAndRestoresCalendarGuestsByAlias() throws {
+        var people = PeopleDirectory()
+        people.selfEmails = ["me@example.com"]
+        let guest = KnownIdentity(name: "Avery", emails: ["avery@example.com", "alias@example.com"])
+        try people.update(guest)
+        _ = people.remember(email: "room@example.com", name: "Room", kind: .resource)
+        _ = people.remember(email: "all@example.com", name: "Team", kind: .group)
+        _ = people.remember(email: "me@example.com", name: "Self")
+        XCTAssertEqual(AttendanceRoster.choices(matching: "ALIAS", in: people).map(\.id), [guest.id])
+        XCTAssertEqual(AttendanceRoster.choices(matching: "", in: people).map(\.id), [guest.id])
+        var roster = AttendanceRoster([.init(id: guest.id, name: guest.name, attendance: .absent, groupIDs: ["team"])])
+        try roster.select(guest, from: people)
+        try roster.select(guest, from: people)
+        XCTAssertEqual(roster.attendees.count, 1)
+        XCTAssertEqual(roster.attendees[0].attendance, .attended)
+        XCTAssertEqual(roster.attendees[0].groupIDs, ["team"])
+        XCTAssertThrowsError(try roster.add(name: "Duplicate", email: "ALIAS@example.com", remember: true, in: people))
+    }
+
+    func testNameOnlyAndCallOnlyGuestsRemainDistinctAndLinkByChoice() throws {
+        var people = PeopleDirectory()
+        var roster = AttendanceRoster([])
+        try roster.add(name: "Lee", email: "guest@example.com", remember: false, in: people)
+        try roster.add(name: "Lee", email: "", remember: true, in: people)
+        XCTAssertTrue(people.people.isEmpty)
+        people = try roster.directory(includingPendingIn: people)
+        XCTAssertEqual(people.people.count, 1)
+        let savedPerson = people.people[0]
+        XCTAssertTrue(savedPerson.emails.isEmpty)
+        let local = roster.attendees[0]
+        let later = people.remember(email: "guest@example.com", name: "Lee Rivera")
+        XCTAssertNil(people.identity(for: local))
+        XCTAssertNotEqual(local.name, roster.attendees[1].name)
+        try roster.select(later, from: people)
+        XCTAssertEqual(roster.attendees.count, 2)
+        XCTAssertEqual(roster.attendees[0].id, local.id)
+        XCTAssertEqual(roster.attendees[0].name, local.name)
+        XCTAssertEqual(people.labels(for: roster.attendees)[local.name], "Lee Rivera")
+        try roster.select(savedPerson, from: people, linking: local.id)
+        XCTAssertEqual(roster.attendees.count, 1)
+        XCTAssertEqual(roster.renames[local.name], roster.attendees[0].name)
+        XCTAssertThrowsError(try people.update(.init(name: "Group", emails: [], kind: .group)))
+    }
+
     func testOneToOneExcludesSelfAndUsesSavedName() throws {
         var directory = PeopleDirectory()
         let avery = directory.remember(email: "avery@example.com", name: "Avery")

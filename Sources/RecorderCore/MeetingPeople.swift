@@ -27,6 +27,8 @@ public struct PeopleDirectory: Codable, Equatable, Sendable {
         return people.first { $0.emails.map(KnownIdentity.email).contains(email) }
     }
     public func identity(for attendee: CallAttendee) -> KnownIdentity? {
+        if attendee.directoryLink == .callOnly { return nil }
+        if case .person(let id) = attendee.directoryLink { return people.first { $0.id == id } }
         if let match = people.first(where: { $0.id == attendee.id }) { return match }
         return identity(email: attendee.email ?? attendee.name)
     }
@@ -35,15 +37,18 @@ public struct PeopleDirectory: Codable, Equatable, Sendable {
     public func labels(for attendees: [CallAttendee]) -> [String: String] {
         let people = attendees.filter { $0.kind == .person }
         let labels = people.map { attendee -> String in
+            if let label = attendee.localDisplayName { return label }
             guard attendee.hasLocalName != true, let person = identity(for: attendee), person.kind == .person else { return attendee.name }
             return person.name
         }
         let duplicates = Dictionary(grouping: labels, by: { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) })
         var result: [String: String] = [:]
+        var occurrences: [String: Int] = [:]
         for (attendee, label) in zip(people, labels) {
             let key = label.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            let email = attendee.email ?? identity(for: attendee)?.emails.first ?? attendee.name
-            let display = duplicates[key, default: []].count > 1 ? "\(label) (\(email))" : label
+            occurrences[key, default: 0] += 1
+            let qualifier = attendee.email ?? identity(for: attendee)?.emails.first ?? String(occurrences[key, default: 1])
+            let display = duplicates[key, default: []].count > 1 ? "\(label) (\(qualifier))" : label
             if display != attendee.name { result[attendee.name] = display }
         }
         return result
@@ -60,7 +65,7 @@ public struct PeopleDirectory: Codable, Equatable, Sendable {
         var identity = identity
         identity.name = identity.name.trimmingCharacters(in: .whitespacesAndNewlines)
         identity.emails = Array(Set(identity.emails.map(KnownIdentity.email).filter { !$0.isEmpty })).sorted()
-        guard !identity.name.isEmpty, !identity.emails.isEmpty,
+        guard !identity.name.isEmpty, identity.kind == .person || !identity.emails.isEmpty,
               identity.emails.allSatisfy({ $0.contains("@") && !$0.contains(where: \.isWhitespace) }) else {
             throw RecorderError.message("Enter a name and valid email addresses.")
         }
@@ -94,6 +99,9 @@ public struct CallAttendee: Codable, Identifiable, Equatable, Sendable {
     public var email: String?
     public var kind: IdentityKind
     public var attendance: Attendance
+    public enum DirectoryLink: Codable, Equatable, Sendable { case person(String), callOnly }
+    public var directoryLink: DirectoryLink?
+    public var localDisplayName: String?
     public var hasLocalName: Bool?
     public var groupIDs: [String]
     public init(id: String = UUID().uuidString, name: String, email: String? = nil, kind: IdentityKind = .person,
@@ -101,6 +109,107 @@ public struct CallAttendee: Codable, Identifiable, Equatable, Sendable {
         self.id = id; self.name = name; self.email = email; self.kind = kind; self.attendance = attendance; self.groupIDs = groupIDs
     }
     public var active: Bool { attendance != .absent && kind == .person }
+}
+
+/// Edits are staged until the attendance sheet is saved. A row's original name
+/// is the key used by existing transcripts, even after a directory link changes.
+public struct AttendanceRoster: Sendable {
+    public var attendees: [CallAttendee]
+    public private(set) var newPeople: [KnownIdentity] = []
+    public private(set) var renames: [String: String] = [:]
+    public init(_ attendees: [CallAttendee]) { self.attendees = attendees }
+
+    public func directory(includingPendingIn directory: PeopleDirectory) throws -> PeopleDirectory {
+        var result = directory
+        for person in newPeople where attendees.contains(where: { $0.directoryLink == .person(person.id) }) {
+            try result.update(person)
+        }
+        return result
+    }
+
+    public static func choices(matching query: String, in directory: PeopleDirectory) -> [KnownIdentity] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return directory.people.filter { person in
+            person.kind == .person && Set(person.emails).isDisjoint(with: directory.selfEmails)
+                && (query.isEmpty || ([person.name] + person.emails).contains { $0.localizedStandardContains(query) })
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    public mutating func select(_ person: KnownIdentity, from directory: PeopleDirectory, linking rowID: String? = nil) throws {
+        guard person.kind == .person, Set(person.emails).isDisjoint(with: directory.selfEmails) else {
+            throw RecorderError.message("Choose an individual attendee other than yourself.")
+        }
+        let linked = attendees.firstIndex { $0.kind == .person && directory.identity(for: $0)?.id == person.id }
+            ?? attendees.firstIndex { row in
+                row.kind == .person && row.email.map { person.emails.contains(KnownIdentity.email($0)) } == true
+            }
+        let source = rowID.flatMap { id in attendees.firstIndex { $0.id == id && $0.kind == .person } }
+        if rowID != nil && source == nil { throw RecorderError.message("This attendee is no longer on the call.") }
+        if let index = linked ?? source {
+            attendees[index].directoryLink = .person(person.id)
+            attendees[index].email = person.emails.first
+            attendees[index].hasLocalName = nil
+            attendees[index].localDisplayName = nil
+            attendees[index].attendance = .attended
+            if let source, source != index {
+                let removed = attendees[source], kept = attendees[index].name
+                renames = renames.mapValues { $0 == removed.name ? kept : $0 }
+                renames[removed.name] = kept
+                attendees[index].groupIDs = Array(Set(attendees[index].groupIDs + removed.groupIDs)).sorted()
+                attendees.remove(at: source)
+            }
+        } else {
+            let id = attendees.contains { $0.id == person.id } ? UUID().uuidString : person.id
+            var row = CallAttendee(id: id, name: availableName(person.name, email: person.emails.first),
+                                   email: person.emails.first, attendance: .attended)
+            row.directoryLink = .person(person.id)
+            attendees.append(row)
+        }
+    }
+
+    public mutating func add(name: String, email: String, remember: Bool, in directory: PeopleDirectory, linking rowID: String? = nil) throws {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines), email = KnownIdentity.email(email)
+        guard !name.isEmpty else { throw RecorderError.message("Enter the attendee’s name.") }
+        guard email.isEmpty || !directory.selfEmails.contains(email) else { throw RecorderError.message("That address belongs to you.") }
+        let person = KnownIdentity(name: name, emails: email.isEmpty ? [] : [email])
+        var checked = directory
+        try checked.update(person)
+        if remember {
+            try select(person, from: checked, linking: rowID)
+            newPeople.append(person)
+        } else if let rowID {
+            guard let index = attendees.firstIndex(where: { $0.id == rowID && $0.kind == .person }) else {
+                throw RecorderError.message("This attendee is no longer on the call.")
+            }
+            if !email.isEmpty && attendees.contains(where: { $0.id != rowID && $0.email.map(KnownIdentity.email) == email }) {
+                throw RecorderError.message("Another attendee on this call already uses that address.")
+            }
+            attendees[index].localDisplayName = name
+            attendees[index].email = person.emails.first
+            attendees[index].directoryLink = .callOnly
+        } else if let index = attendees.firstIndex(where: { attendee in
+            attendee.kind == .person && directory.identity(for: attendee) == nil
+                && (email.isEmpty ? (attendee.localDisplayName ?? attendee.name).localizedCaseInsensitiveCompare(name) == .orderedSame
+                    && attendee.email == nil : attendee.email.map(KnownIdentity.email) == email)
+        }) {
+            attendees[index].attendance = .attended
+        } else {
+            var row = CallAttendee(name: availableName(name, email: person.emails.first), email: person.emails.first, attendance: .attended)
+            row.directoryLink = .callOnly
+            attendees.append(row)
+        }
+    }
+
+    private func availableName(_ name: String, email: String?) -> String {
+        func taken(_ candidate: String) -> Bool {
+            attendees.contains { $0.name.compare(candidate, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
+        }
+        if !taken(name) { return name }
+        if let email, !taken("\(name) (\(email))") { return "\(name) (\(email))" }
+        var number = 2
+        while taken("\(name) (\(number))") { number += 1 }
+        return "\(name) (\(number))"
+    }
 }
 
 public struct MeetingGuest: Equatable, Sendable {

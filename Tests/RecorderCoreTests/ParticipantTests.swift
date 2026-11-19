@@ -153,6 +153,34 @@ final class ParticipantTests: XCTestCase {
         XCTAssertEqual(refreshed.automaticParticipant(for: old), "Alex")
         XCTAssertNil(refreshed.automaticParticipant(for: refreshed.transcripts.first { $0.id != old.id }!))
     }
+    func testAttendanceExpansionAndLinkPreserveAssignedSpeechAndClearInferredSpeech() throws {
+        let initial = try prepare(["Avery"])
+        let original = try XCTUnwrap(initial.latestTranscript)
+        let text = original.document!.paragraphs.map(\.text)
+        _ = try CallFileOperations.saveTranscriptEdits(text, version: original, recording: initial,
+                                                      participants: [nil, "Avery", nil, nil])
+        let edited = try call(), version = try XCTUnwrap(edited.latestTranscript)
+        let bytes = try Data(contentsOf: version.url)
+        let legacy = edited.details.callAttendees[0]
+        var people = PeopleDirectory(), roster = AttendanceRoster([legacy])
+        let person = people.remember(email: "avery@example.com", name: "Avery Willow")
+        try roster.select(person, from: people, linking: legacy.id)
+        try roster.add(name: "Jordan", email: "", remember: false, in: people)
+        let change = try CallDetailsStore.prepareAttendance(roster, for: edited, confirmOnly: nil)
+        try CallDetailsStore.saveAttendance(change, for: edited)
+        try CallDetailsStore.saveMetadata(title: "Retitled", tags: ["updated"], description: "Notes", for: initial)
+        let result = try call().resolvingPeople(people)
+        XCTAssertEqual(result.details.callAttendees.map(\.id), [legacy.id, roster.attendees[1].id])
+        XCTAssertEqual(result.participantDisplayNames, ["Avery Willow", "Jordan"])
+        XCTAssertNil(result.automaticParticipant(for: original))
+        XCTAssertEqual(result.speakerLabel(for: version.document!.paragraphs[1], version: version), "Avery Willow")
+        XCTAssertEqual(result.speakerLabel(for: version.document!.paragraphs[3], version: version), "Other participants")
+        XCTAssertEqual(try Data(contentsOf: version.url), bytes)
+        var published = false
+        XCTAssertThrowsError(try CallDetailsStore.saveAttendance(change, for: edited) { published = true })
+        XCTAssertFalse(published)
+    }
+
     func testPreFeatureSingleNameMetadataIsFrozenWhenSecondNameIsAdded() throws {
         let initial = try prepare(), file = CallDetailsStore.url(for: initial.url, isDirectory: true)
         try Data(#"{"version":1,"participants":["Alex"],"tags":[],"description":""}"#.utf8).write(to: file)

@@ -23,6 +23,8 @@ public struct CallDetails: Codable, Equatable, Sendable {
     public var participantOverrides: [String: [String: String]]?
     public var attendees: [CallAttendee]?
     public var allowSingleParticipantInference: Bool?
+    /// An expanded roster invalidates one-person defaults embedded in older runs.
+    public var suppressPriorSpeakerInference: Bool?
     public var meeting: MeetingReference?
     public init(title: String? = nil, participants: [String] = [], tags: [String] = [], description: String = "", automaticParticipants: [String: String]? = nil,
                 participantOverrides: [String: [String: String]]? = nil, attendees: [CallAttendee]? = nil,
@@ -40,9 +42,13 @@ public struct CallDetails: Codable, Equatable, Sendable {
                 .filter { !$0.isEmpty && seen.insert($0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)).inserted }
         }
         let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return .init(title: title?.isEmpty == false ? title : nil, participants: unique(participants), tags: unique(tags),
-                     description: description.trimmingCharacters(in: .whitespacesAndNewlines), automaticParticipants: automaticParticipants, participantOverrides: participantOverrides,
-                     attendees: attendees, allowSingleParticipantInference: allowSingleParticipantInference, meeting: meeting, scope: scope)
+        var result = self
+        result.version = 4
+        result.title = title?.isEmpty == false ? title : nil
+        result.participants = unique(participants)
+        result.tags = unique(tags)
+        result.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result
     }
     public var callAttendees: [CallAttendee] { attendees ?? participants.map { .init(id: "legacy:" + $0, name: $0) } }
     public var hasActiveGroups: Bool { callAttendees.contains { $0.kind == .group && $0.attendance != .absent } }
@@ -53,8 +59,10 @@ public struct CallDetails: Codable, Equatable, Sendable {
         guard Set(attendees.map(\.id)).count == attendees.count,
               Set(result.participants).count == result.participants.count else { throw RecorderError.message("Use distinct names for each participant.") }
         if Set(attendees.filter { $0.attendance != .absent }.map(\.id)) != Set(callAttendees.filter { $0.attendance != .absent }.map(\.id)) {
-            result.allowSingleParticipantInference = false
+            let firstManualGuest = meeting == nil && callAttendees.isEmpty && attendees.count == 1 && attendees[0].active
+            result.allowSingleParticipantInference = firstManualGuest && allowSingleParticipantInference != false
         }
+        if participants.count <= 1 && result.participants.count > 1 { result.suppressPriorSpeakerInference = true }
         if let personID {
             guard !result.hasActiveGroups, attendees.filter(\.active).count == 1,
                   attendees.first(where: { $0.id == personID })?.active == true else { throw RecorderError.message("Confirm a single attendee and exclude any groups first.") }
@@ -64,6 +72,7 @@ public struct CallDetails: Codable, Equatable, Sendable {
     }
     public func automaticParticipant(for transcript: LibraryTranscript) -> String? {
         if let inferredParticipant { return inferredParticipant }
+        if suppressPriorSpeakerInference == true { return nil }
         let name = automaticParticipants?[transcript.runName] ?? transcript.document?.automaticParticipant
         return name.flatMap { participants.contains($0) ? $0 : nil }
     }
@@ -112,16 +121,57 @@ public enum CallDetailsStore {
             try writeInitial(current, to: url(for: recording.url, isDirectory: recording.isDirectory))
         }
     }
-    @discardableResult public static func save(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String] = [:]) throws -> CallDetails {
+    public static func saveMetadata(title: String, tags: [String], description: String, for recording: LibraryRecording) throws {
         try CallSummaryStore.withCallWriteLock(for: recording) { _, _ in
-            try saveLocked(details, for: recording, participantRenames: participantRenames)
+            var current = try load(for: recording.url, isDirectory: recording.isDirectory)
+            current.title = title
+            current.tags = tags
+            current.description = description
+            try writeInitial(current, to: url(for: recording.url, isDirectory: recording.isDirectory))
         }
     }
-    private static func saveLocked(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String]) throws -> CallDetails {
-        // Do not silently replace an unreadable or newer details file.
-        let previous = try load(for: recording.url, isDirectory: recording.isDirectory)
+
+    public struct AttendanceChange: Sendable {
+        fileprivate let previous: CallDetails
+        public let updated: CallDetails
+    }
+
+    /// Resolving speaker overrides can read every transcript version. Do that
+    /// off the UI thread before publishing the call and any new directory entries.
+    public static func prepareAttendance(_ roster: AttendanceRoster, for recording: LibraryRecording, confirmOnly: String?) throws -> AttendanceChange {
+        try CallFileOperations.validateRecording(recording)
+        let current = try load(for: recording.url, isDirectory: recording.isDirectory)
+        guard current.callAttendees == recording.details.callAttendees else {
+            throw RecorderError.message("The participants changed. Reopen attendance to review the updated list.")
+        }
+        let updated = try current.updatingAttendance(roster.attendees, confirmOnly: confirmOnly)
+        let changes = roster.renames.filter { current.participants.contains($0.key) && updated.participants.contains($0.value) }
+        return try .init(previous: current, updated: resolving(updated, previous: current, for: recording, participantRenames: changes))
+    }
+
+    public static func saveAttendance(_ change: AttendanceChange, for recording: LibraryRecording, committingPeople: (() throws -> Void)? = nil) throws {
+        try CallSummaryStore.withCallWriteLock(for: recording) { _, _ in
+            guard try load(for: recording.url, isDirectory: recording.isDirectory) == change.previous else {
+                throw RecorderError.message("The call changed while attendance was saving. Reopen attendance to review it.")
+            }
+            try committingPeople?()
+            try writeInitial(change.updated, to: url(for: recording.url, isDirectory: recording.isDirectory))
+        }
+    }
+
+    @discardableResult public static func save(_ details: CallDetails, for recording: LibraryRecording, participantRenames: [String: String] = [:]) throws -> CallDetails {
+        try CallSummaryStore.withCallWriteLock(for: recording) { _, _ in
+            let previous = try load(for: recording.url, isDirectory: recording.isDirectory)
+            let saved = try resolving(details, previous: previous, for: recording, participantRenames: participantRenames)
+            try writeInitial(saved, to: url(for: recording.url, isDirectory: recording.isDirectory))
+            return saved
+        }
+    }
+    private static func resolving(_ details: CallDetails, previous: CallDetails, for recording: LibraryRecording,
+                                  participantRenames: [String: String]) throws -> CallDetails {
         var saved = details.normalized
         saved.scope = previous.scope
+        saved.suppressPriorSpeakerInference = saved.suppressPriorSpeakerInference ?? previous.suppressPriorSpeakerInference
         if saved.meeting == nil { saved.meeting = previous.meeting }
         if saved.allowSingleParticipantInference == nil { saved.allowSingleParticipantInference = previous.allowSingleParticipantInference }
         // The existing details editor edits names. Keep identity/attendance
@@ -147,6 +197,11 @@ public enum CallDetailsStore {
             let updated = participantRenames[name] ?? name
             return saved.participants.contains(updated) ? updated : ""
         }
+        if previous.participants == saved.participants && participantRenames.isEmpty && previous.inferredParticipant == saved.inferredParticipant {
+            saved.automaticParticipants = previous.automaticParticipants
+            saved.participantOverrides = previous.participantOverrides
+            return saved
+        }
         var assignments = previous.automaticParticipants ?? [:]
         var overrides = previous.participantOverrides ?? [:]
         // Preserve the previous one-person default when adding names, but let
@@ -161,7 +216,6 @@ public enum CallDetailsStore {
         }
         saved.automaticParticipants = assignments.isEmpty ? nil : assignments
         saved.participantOverrides = overrides.isEmpty ? nil : overrides
-        try writeInitial(saved, to: url(for: recording.url, isDirectory: recording.isDirectory))
         return saved
     }
 }
