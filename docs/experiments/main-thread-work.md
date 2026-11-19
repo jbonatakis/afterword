@@ -84,3 +84,14 @@ The core suite and native library, source-selection, long-transcript reader and 
 'build/Library Check.app/Contents/MacOS/LibraryCheck' --reader
 ./Scripts/check-calendar-integration.sh
 ```
+
+## Release validation
+
+The signed release bundle passed the update-identity check against the previous app. A separately identified, signed copy used a disposable library for the UI smoke test on macOS 15.8.3.
+
+- Typing during a refresh held at the search database's write lock produced the latest query's results. Clearing the field restored both fixture calls.
+- Switching calls, seeking forward with the keyboard, and pressing Space started playback at the requested position. Saving a new attendee updated the UI and persisted the contact link in both the call and the people directory.
+- With audio preparation held pending, queued playback started when the fixture released the file. Repeating the check and pressing Record cleared the queued play and disabled playback during recording preparation. After cancellation, releasing the file left playback paused until the next explicit play action.
+- The attendance fixture observed the writer open the locked call and both competing edits enter the directory queue before releasing the lock. It passed twice. An isolated build that bypassed serialization for one editor failed the same check. All 192 core tests passed.
+
+The app and its four packaged helpers declare a macOS 14.2 deployment target. Runtime validation on 14.2 remains outstanding before distribution.
