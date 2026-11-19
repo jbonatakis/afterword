@@ -20,6 +20,16 @@ struct CallSummaryView: View {
     let cancelEditing: () -> Void
     @State private var selectedID: String?
     @State private var requestError: String?
+    private struct SourceCheck: Equatable {
+        let callID: String
+        let revision: String?
+        let summaryID: String
+    }
+    private var sourceCheck: SourceCheck? {
+        guard let version = selected, version.sourceTranscript != nil else { return nil }
+        return .init(callID: recording.id, revision: recording.indexRevision, summaryID: version.id)
+    }
+    @State private var staleSource: SourceCheck?
     private var requestButton: some View {
         Button("Copy summary request") {
             do { copy(try recording.agentSummaryRequest()) }
@@ -57,7 +67,7 @@ struct CallSummaryView: View {
                 if selected.id != versions.first?.id {
                     Text("Previous version · Select Current to edit the saved summary.").font(.caption).foregroundStyle(.secondary)
                 }
-                if selected.sourceChanged(in: recording) {
+                if let sourceCheck, staleSource == sourceCheck {
                     Label("The transcript or speaker assignments have changed since this summary was created. Review it before relying on it.", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
                         .font(.caption).foregroundStyle(.orange)
                 }
@@ -79,8 +89,20 @@ struct CallSummaryView: View {
             .alert("Couldn’t copy summary request", isPresented: Binding(get: { requestError != nil }, set: { if !$0 { requestError = nil } })) {
                 Button("OK") { requestError = nil }
             } message: { Text(requestError ?? "") }
+            .task(id: sourceCheck) {
+                guard let key = sourceCheck, let version = selected else { return }
+                let changed = await Self.sourceChanged(version, in: recording)
+                guard !Task.isCancelled else { return }
+                staleSource = changed ? key : nil
+            }
             .onChange(of: recording.summary?.current?.id) { _, _ in selectedID = nil }
     }
+    // Fingerprinting can serialize thousands of word timestamps. Keep it off
+    // the main actor and inherit the cancellation of the selected summary.
+    private nonisolated static func sourceChanged(_ version: CallSummaryVersion, in recording: LibraryRecording) async -> Bool {
+        !Task.isCancelled && version.sourceChanged(in: recording)
+    }
+
     private func copy(_ text: String) {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
     }

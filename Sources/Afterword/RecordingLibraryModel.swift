@@ -96,7 +96,7 @@ enum GitHubPeriod: String, CaseIterable {
             configureCodingPage()
             if oldValue.callScope != filter.callScope {
                 searchTask?.cancel(); searchGeneration = UUID()
-                searchIndex?.stopSemanticSearch(); searchIndex = nil
+                discardSearchIndex()
                 searchPresentation.status = nil; polledSemanticStatus = nil
                 browseOrder = nil; matchedOrder = []
                 recordings = []; matchedRecordings = []; searchHits = [:]; speakerNames = []
@@ -239,7 +239,7 @@ enum GitHubPeriod: String, CaseIterable {
         browseOrder = nil
         scan?.cancel(); generation = UUID(); refreshing = false
         searchTask?.cancel(); searchGeneration = UUID(); searching = false
-        searchIndex?.stopSemanticSearch(); searchIndex = nil
+        discardSearchIndex()
         searchPresentation.status = nil; polledSemanticStatus = nil
         let records = next.contains(.recordings)
         recorder.setSourceEnabled(records)
@@ -276,7 +276,7 @@ enum GitHubPeriod: String, CaseIterable {
                 let id = generation
                 Task { [weak self] in
                     let result = await scan.value
-                    result.index?.stopSemanticSearch()
+                    await Task.detached(priority: .utility) { result.index?.stopSemanticSearch() }.value
                     if self?.generation == id { self?.scan = nil }
                 }
             }
@@ -288,6 +288,13 @@ enum GitHubPeriod: String, CaseIterable {
             }
             refresh()
         }
+    }
+    private func discardSearchIndex() {
+        guard let old = searchIndex else { return }
+        searchIndex = nil
+        // A retiring search worker can hold its lock while decoding vectors.
+        // The visible scope and its result generation change immediately.
+        Task.detached(priority: .utility) { old.stopSemanticSearch() }
     }
     func pollSemanticSearch(retry: Bool = false) {
         guard !stopped, !semanticPolling, let index = searchIndex else { return }
@@ -314,7 +321,7 @@ enum GitHubPeriod: String, CaseIterable {
         github.stop(); coding.stop()
         stopped = true; summaryMonitor.stop(); pendingRefresh?.cancel()
         needsRefresh = false; scan?.cancel(); generation = UUID()
-        semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown()
+        semanticTimer?.invalidate(); searchTask?.cancel(); discardSearchIndex(); embeddings.shutdown()
     }
     private func scheduleLibraryRefresh() {
         guard !stopped else { return }
@@ -356,7 +363,7 @@ enum GitHubPeriod: String, CaseIterable {
         let cacheDirectory = embeddingDirectory == EmbeddingSettings.directory ? LibrarySearchIndex.cacheDirectory :
             embeddingDirectory.deletingLastPathComponent().appendingPathComponent("Search")
         let existing = indexRoots == roots ? searchIndex : nil
-        if existing == nil { searchIndex?.stopSemanticSearch() }
+        if existing == nil { discardSearchIndex() }
         let showRecordingsFirst = recordings.isEmpty && sources.contains(.recordings) && !roots.isEmpty
         let task = Task.detached(priority: .utility) { [weak self] () -> LibraryRefresh in
             // SQLite cannot switch a fresh database to WAL from two concurrent opens.
@@ -371,14 +378,11 @@ enum GitHubPeriod: String, CaseIterable {
                     await self?.showInitialRecordings(recordings, generation: id)
                 }
                 try Task.checkCancellation()
-                try index.useCodingArchive(in: codingDirectory)
-                try Task.checkCancellation()
-                try index.useGitHubArchive(in: githubDirectory, shared: false)
-                let githubItems = try index.githubSearch("", keywordOnly: true).hits
-                let order = activityOrder(recordings, sessions, githubItems, query: "")
+                let sources = try index.browseSources(codingDirectory: codingDirectory, githubDirectory: githubDirectory)
+                let order = activityOrder(recordings, sessions, sources.github, query: "")
                 return LibraryRefresh(
-                    index: index, recordings: recordings, error: nil, issues: index.issues, speakers: index.speakerNames,
-                    github: githubItems, order: order)
+                    index: index, recordings: recordings, error: nil, issues: index.issues, speakers: sources.speakers,
+                    github: sources.github, order: order)
             } catch { return LibraryRefresh(index: nil, recordings: [], error: error.localizedDescription) }
         }
         scan = task
@@ -448,6 +452,9 @@ enum GitHubPeriod: String, CaseIterable {
             if debounce { try? await Task.sleep(nanoseconds: 150_000_000) }
             guard !Task.isCancelled else { return }
             let work = Task.detached(priority: .userInitiated) { Result {
+                try Task.checkCancellation()
+                // A query can arrive before the background poll warms a new browse snapshot.
+                index.refreshSemanticSearch()
                 try Task.checkCancellation()
                 let calls = try index.hybridSearch(query, allVersions: history, speaker: speaker.isEmpty ? nil : speaker)
                 try Task.checkCancellation()

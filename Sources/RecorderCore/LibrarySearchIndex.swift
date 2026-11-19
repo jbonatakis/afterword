@@ -149,9 +149,27 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             cached = next
             let verified = calls
             if prepareSemanticSearch { semantic.refresh(verified, codingArchive: codingArchive, github: githubArchive, shared: githubShared) }
-            return verified.map(\.recording)
+            return verified.map { call in
+                var recording = call.recording
+                recording.indexRevision = call.revision
+                return recording
+            }
         } catch { try? db.execute("ROLLBACK"); throw error }
     }
+
+    /// Finish loading native browse data after the verified recordings can be displayed.
+    /// The background search coordinator prepares embeddings after publication.
+    public func browseSources(codingDirectory: URL?, githubDirectory: URL?) throws -> (github: [GitHubHit], speakers: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        try attachCodingArchive(in: codingDirectory)
+        try Task.checkCancellation()
+        try attachGitHubArchive(in: githubDirectory, shared: false)
+        // Each indexed passage already carries its resolved display name, including historical versions.
+        let speakers = Set(try db.rows("SELECT DISTINCT speaker FROM passages").compactMap(\.first))
+        return (try githubArchive?.search("", shared: false) ?? [],
+                speakers.sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+    }
+
     var calls: [AgentCall] {
         lock.lock(); defer { lock.unlock() }
         return cached.values.map(\.call).sorted {
@@ -161,8 +179,11 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     public func stopSemanticSearch() { semantic.stop() }
     public func useCodingArchive(in directory: URL?) throws {
         lock.lock(); defer { lock.unlock() }
-        codingArchive = try directory.flatMap { CodingArchive.exists(in: $0) ? try CodingArchive(directory: $0) : nil }
+        try attachCodingArchive(in: directory)
         semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: githubShared)
+    }
+    private func attachCodingArchive(in directory: URL?) throws {
+        codingArchive = try directory.flatMap { CodingArchive.exists(in: $0) ? try CodingArchive(directory: $0) : nil }
     }
     public func codingSearch(_ query: String, keywordOnly: Bool = false, from: Date? = nil,
                              to: Date? = nil, project: String? = nil, branch: String? = nil) throws -> (hits: [CodingHit], status: SemanticSearchStatus) {
@@ -173,13 +194,16 @@ public final class LibrarySearchIndex: @unchecked Sendable {
     }
     public func useGitHubArchive(in directory: URL?, shared: Bool) throws {
         lock.lock(); defer { lock.unlock() }
+        try attachGitHubArchive(in: directory, shared: shared)
+        semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: shared)
+    }
+    private func attachGitHubArchive(in directory: URL?, shared: Bool) throws {
         let current = directory.flatMap { GitHubArchive.exists(in: $0) ? $0 : nil }
         if current != githubDirectory {
             githubArchive = try current.map { try GitHubArchive(directory: $0) }
             githubDirectory = current
         }
         githubShared = shared
-        semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: shared)
     }
     public func githubSearch(
         _ query: String, keywordOnly: Bool = false, repository: String? = nil, type: String? = nil,

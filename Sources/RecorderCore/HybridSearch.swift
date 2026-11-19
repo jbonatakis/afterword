@@ -27,11 +27,6 @@ extension LibrarySearchIndex {
     static func sameSpeaker(_ a: String, _ b: String) -> Bool {
         a.compare(b, options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")) == .orderedSame
     }
-    public var speakerNames: [String] {
-        Array(Set(calls.filter { $0.recording.detailsError == nil }.flatMap { call in call.recording.transcripts.flatMap { version in
-            (version.document?.paragraphs ?? []).map { call.speaker($0, version: version) }
-        } })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-    }
     private func keywordPassages(_ text: String, allVersions: Bool, allowed: Set<String>, speaker: String?) throws -> [LibrarySearchPassage] {
         guard let speaker, !speaker.isEmpty else { return try passages(text, allVersions: allVersions, allowed: allowed) }
         let query = LibrarySearchQuery(text)

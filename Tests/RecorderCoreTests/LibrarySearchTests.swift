@@ -46,6 +46,38 @@ final class LibrarySearchTests: XCTestCase {
         try AgentAccessStore.save(.init(enabled: true, folders: [root.path]), directory: state)
         return AgentLibrary(directory: state)
     }
+    func testBrowsePublishesBeforeSemanticPreparationAndTracksSummarySourceEdits() throws {
+        try fixture(text: ["First wording"])
+        let embeddingRoot = cache.appendingPathComponent("Embeddings")
+        var settings = EmbeddingSettings()
+        settings.enabled = true
+        try settings.save(directory: embeddingRoot)
+        let index = try index()
+        func browse() throws -> LibraryRecording {
+            let recordings = try index.synchronize(prepareSemanticSearch: false)
+            _ = try index.browseSources(codingDirectory: nil, githubDirectory: nil)
+            return try XCTUnwrap(recordings.first)
+        }
+        let original = try browse()
+        try CallSummaryStore.save("A summary", for: original, source: original.latestTranscript)
+        let current = try browse()
+        let revision = try XCTUnwrap(current.indexRevision)
+        XCTAssertEqual(try browse().indexRevision, revision)
+        XCTAssertEqual(current.summary?.current?.sourceChanged(in: current), false)
+        XCTAssertEqual(try index.search("wording").count, 1)
+        XCTAssertFalse(index.semanticStatus().enabled)
+        index.refreshSemanticSearch()
+        XCTAssertTrue(index.semanticStatus().enabled)
+        XCTAssertGreaterThan(index.semanticStatus().total, 0)
+
+        // An in-place edit keeps both the run name and the selected summary ID.
+        try fixture(text: ["Revised wording"])
+        let edited = try browse()
+        XCTAssertEqual(edited.latestTranscript?.id, current.latestTranscript?.id)
+        XCTAssertEqual(edited.summary?.current?.id, current.summary?.current?.id)
+        XCTAssertNotEqual(edited.indexRevision, revision)
+        XCTAssertEqual(edited.summary?.current?.sourceChanged(in: edited), true)
+    }
     func testDirectoryRenameRefreshesExistingTranscriptSearchAndAgentRevision() throws {
         let raw = "invite@example.test"
         let folder = try fixture(text: ["Hello", "Discuss the budget"])
@@ -64,9 +96,12 @@ final class LibrarySearchTests: XCTestCase {
         var people = PeopleDirectory()
         try people.update(.init(id: "guest", name: "Pat Morgan", emails: ["pat@example.test", raw]))
         try people.save(to: peopleURL)
-        let calls = try index.synchronize()
+        let recordings = try index.synchronize(prepareSemanticSearch: false)
+        let snapshot = try index.browseSources(codingDirectory: nil, githubDirectory: nil)
         XCTAssertEqual(index.lastLoadedCount, 1)
-        let renamed = try XCTUnwrap(calls.first { $0.id == folder.path })
+        XCTAssertTrue(snapshot.speakers.contains("Pat Morgan"))
+        XCTAssertFalse(snapshot.speakers.contains(raw))
+        let renamed = try XCTUnwrap(recordings.first { $0.id == folder.path })
         XCTAssertTrue(renamed.readableText(for: renamed.transcripts[0])?.contains("Pat Morgan · ") == true)
         XCTAssertEqual(renamed.details.participants, [raw])
         XCTAssertEqual(try index.search("Morgan").count, 1)

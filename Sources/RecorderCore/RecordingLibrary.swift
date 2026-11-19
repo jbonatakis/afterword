@@ -97,6 +97,8 @@ public struct LibraryRecording: Identifiable, Codable, Sendable {
     public var summary: CallSummary? = nil
     public var summaryError: String? = nil
     public var directoryLabels: [String: String]? = nil
+    /// Content revision of the snapshot delivered by the library index.
+    public internal(set) var indexRevision: String?
 
     public func displayName(_ label: String) -> String { directoryLabels?[label] ?? label }
     public var participantDisplayNames: [String] { details.participants.map(displayName) }
