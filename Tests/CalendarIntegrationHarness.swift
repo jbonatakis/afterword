@@ -41,15 +41,15 @@ actor FixtureCalendarReader: CalendarReading {
         }
         app.run()
     }
+    static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        if !condition() { throw RecorderError.message(message) }
+    }
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("calendar-integration-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let domain = Bundle.main.bundleIdentifier!
         UserDefaults.standard.removePersistentDomain(forName: domain)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: domain) }
-        func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-            if !condition() { throw RecorderError.message(message) }
-        }
         func pump() async { try? await Task.sleep(nanoseconds: 200_000_000) }
         UserDefaults.standard.set(root.path, forKey: "destination")
         UserDefaults.standard.set(true, forKey: "noticesAccepted")
@@ -82,8 +82,8 @@ actor FixtureCalendarReader: CalendarReading {
         await calendar.connect()
         calendar.select("fixture", enabled: true); calendar.setEnabled(true); await calendar.refresh()?.value
         try require(calendar.meetings.count == 2 && calendar.canStart, "Calendar load or self exclusion failed")
-        var avery = calendar.directory.identity(email: "avery@example.com")!; avery.name = "Avery Willow"; try calendar.updateIdentity(avery)
-        var group = calendar.directory.identity(email: "studio@example.com")!; group.kind = .group; group.memberIDs = [avery.id]; try calendar.updateIdentity(group)
+        var avery = calendar.directory.identity(email: "avery@example.com")!; avery.name = "Avery Willow"; try await calendar.updateIdentity(avery)
+        var group = calendar.directory.identity(email: "studio@example.com")!; group.kind = .group; group.memberIDs = [avery.id]; try await calendar.updateIdentity(group)
         await calendar.refresh()?.value
         try require(calendar.preview(call).inferredParticipant == "Avery Willow", "Preferred name did not reach the meeting preview")
         try require(calendar.preview(groupCall).inferredParticipant == nil && calendar.preview(groupCall).participants == ["Avery Willow"], "Group became a speaker or allowed inference")
@@ -256,10 +256,65 @@ actor FixtureCalendarReader: CalendarReading {
         try require(storedPeople.people.contains { $0.name == "Sam Rivera" && $0.emails.isEmpty }, "The newly linked person did not persist")
         try require(storedPeople.identity(email: "guest@example.com") == nil, "A call-only guest leaked into People & groups")
         try require(updated.details.participants == ["Sam", "Guest"] && updated.displayName("Sam") == "Sam Rivera", "The local speaker lost its assignment or display label")
+        try await checkOverlappingDirectoryEdits(recorder: recorder, root: root)
         print("PASS staged name-only directory link and call-only guest persist independently after refresh")
         print("PASS attendance exclusion, no silent transfer, original preservation, inline speaker assignment, and explicit single-attendee labeling with/without unsaved drafts")
         try require(!NSApp.isActive && !NSApp.windows.contains(where: \.isVisible), "A fixture became visible or activated the app")
         print("PASS eight offscreen calendar/attendance renders; no screenshots, calendar access, meeting navigation, or live capture")
+    }
+    @MainActor static func checkOverlappingDirectoryEdits(recorder: RecordingCoordinator, root: URL) async throws {
+        let directoryURL = root.appendingPathComponent("ConcurrentPeople.json")
+        var original = PeopleDirectory()
+        var identity = KnownIdentity(name: "Original", emails: ["original@example.test"])
+        original.people = [identity]
+        try original.save(to: directoryURL)
+        let calendar = CalendarCoordinator(recorder: recorder, directoryURL: directoryURL, hasAccess: { false })
+        defer { calendar.shutdown() }
+        let folder = root.appendingPathComponent("ConcurrentCall")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let call = LibraryRecording(url: folder, sourceName: "Fixture", isDirectory: true, details: .init(), detailsError: nil,
+                                    date: Date(), duration: nil, tracks: [], transcripts: [])
+        var roster = AttendanceRoster([])
+        try roster.add(name: "New guest", email: "guest@example.test", remember: true, in: original)
+        let change = try CallDetailsStore.prepareAttendance(roster, for: call, confirmOnly: nil)
+        let fd = open(CallSummaryStore.lockURL(for: folder, isDirectory: true).path, O_CREAT | O_RDWR, 0o600)
+        try require(fd >= 0 && flock(fd, LOCK_EX) == 0, "Could not hold fixture call lock")
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) { flock(fd, LOCK_UN); close(fd) }
+        let attendance = Task { try await calendar.saveAttendanceWithNewPeople(roster, change: change, for: call) }
+        try await Task.sleep(nanoseconds: 5_000_000)
+        identity.name = "Renamed"
+        let edit = Task { try await calendar.updateIdentity(identity) }
+        try await calendar.setSelfEmails(["self@example.test"])
+        try await attendance.value; try await edit.value
+        let stored = try PeopleDirectory.load(from: directoryURL)
+        let details = try CallDetailsStore.load(for: folder, isDirectory: true)
+        try require(calendar.directory == stored && stored.identity(email: "original@example.test")?.name == "Renamed"
+                    && stored.selfEmails.contains("self@example.test") && details.callAttendees.count == 1
+                    && stored.identity(for: details.callAttendees[0])?.name == "New guest", "Concurrent directory update was lost")
+
+        var rejected = AttendanceRoster([])
+        try rejected.add(name: "Stale guest", email: "", remember: true, in: stored)
+        var conflicted = false
+        do { try await calendar.saveAttendanceWithNewPeople(rejected, change: change, for: call) }
+        catch { conflicted = true }
+        try require(conflicted, "Stale attendance change was accepted")
+        let afterConflict = try PeopleDirectory.load(from: directoryURL)
+        try require(afterConflict == stored && calendar.directory == stored, "Stale write leaked a contact")
+
+        // A readable call with an existing lock can fail its final atomic rename after People.json was saved.
+        let current = LibraryRecording(url: folder, sourceName: "Fixture", isDirectory: true, details: details, detailsError: nil,
+                                       date: Date(), duration: nil, tracks: [], transcripts: [])
+        let pending = try CallDetailsStore.prepareAttendance(rejected, for: current, confirmOnly: nil)
+        try require(chmod(folder.path, 0o500) == 0, "Could not protect fixture folder")
+        defer { chmod(folder.path, 0o700) }
+        var writeFailed = false
+        do { try await calendar.saveAttendanceWithNewPeople(rejected, change: pending, for: current) }
+        catch { writeFailed = true }
+        try require(writeFailed, "Write to read-only call succeeded")
+        let afterFailure = try PeopleDirectory.load(from: directoryURL)
+        let callAfterFailure = try CallDetailsStore.load(for: folder, isDirectory: true)
+        try require(afterFailure == stored && calendar.directory == stored && callAfterFailure == details, "Attendance rollback failed")
+        print("PASS contended attendance, concurrent directory edits, stale-call rejection and two-file rollback")
     }
     @MainActor static func render<V: View>(_ view: V, size: NSSize, name: String) async throws {
         let host = NSHostingView(rootView: view.preferredColorScheme(.light))

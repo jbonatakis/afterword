@@ -6,6 +6,7 @@ struct CalendarSettings: View {
     @ObservedObject var calendar: CalendarCoordinator
     @State private var emails = ""
     @State private var emailError: String?
+    @State private var savingEmails = false
     var body: some View {
         Form {
             Section("Connection") {
@@ -73,9 +74,14 @@ struct CalendarSettings: View {
                     Text("Used to keep you out of the other participants list. Learned from your own invitations when available.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Save emails") {
-                        do { try calendar.setSelfEmails(emails.components(separatedBy: .newlines)); emailError = nil }
-                        catch { emailError = error.localizedDescription }
-                    }
+                        let values = emails.components(separatedBy: .newlines)
+                        savingEmails = true
+                        Task {
+                            defer { savingEmails = false }
+                            do { try await calendar.setSelfEmails(values); emailError = nil }
+                            catch { emailError = error.localizedDescription }
+                        }
+                    }.disabled(savingEmails)
                 }
                 if let emailError { Text(emailError).foregroundStyle(.red) }
             }
@@ -271,6 +277,7 @@ private struct IdentityEditor: View {
     @State private var identity: KnownIdentity
     @State private var emails: String
     @State private var error: String?
+    @State private var saving = false
     init(calendar: CalendarCoordinator, identity: KnownIdentity) {
         self.calendar = calendar; _identity = State(initialValue: identity)
         _emails = State(initialValue: identity.emails.joined(separator: "\n"))
@@ -307,13 +314,17 @@ private struct IdentityEditor: View {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    do {
-                        identity.emails = emails.components(separatedBy: .newlines)
-                        try calendar.updateIdentity(identity); dismiss()
-                    } catch { self.error = error.localizedDescription }
+                    var edited = identity
+                    edited.emails = emails.components(separatedBy: .newlines)
+                    saving = true
+                    Task {
+                        defer { saving = false }
+                        do { try await calendar.updateIdentity(edited); dismiss() }
+                        catch { self.error = error.localizedDescription }
+                    }
                 }.keyboardShortcut(.defaultAction)
             }
-        }.padding(24).frame(width: 500).background(Color(nsColor: .windowBackgroundColor))
+        }.disabled(saving).interactiveDismissDisabled(saving).padding(24).frame(width: 500).background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

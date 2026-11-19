@@ -532,7 +532,7 @@ enum GitHubPeriod: String, CaseIterable {
                 try await Task.detached(priority: .userInitiated) { try CallDetailsStore.saveAttendance(change, for: recording) }.value
             } else {
                 guard let calendar = recorder?.calendar else { throw RecorderError.message("The people directory is unavailable.") }
-                try calendar.saveAttendanceWithNewPeople(roster, change: change, for: recording)
+                try await calendar.saveAttendanceWithNewPeople(roster, change: change, for: recording)
             }
             transcriptDrafts[recording.id]?.updateParticipants(change.updated.participants, renames: roster.renames)
             await finishManagement()?.value

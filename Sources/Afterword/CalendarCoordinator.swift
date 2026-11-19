@@ -68,6 +68,19 @@ actor CalendarReader: CalendarReading {
     private let defaults: UserDefaults
     weak var library: RecordingLibraryModel?
     private let directoryURL: URL
+    // Directory changes share a read/modify/write transaction. A queued editor must start
+    // from the directory published by its predecessor, including any rollback.
+    private var writingDirectory = false
+    private var directoryWaiters: [CheckedContinuation<Void, Never>] = []
+    private func acquireDirectory() async {
+        if writingDirectory { await withCheckedContinuation { directoryWaiters.append($0) } }
+        else { writingDirectory = true }
+    }
+    private func releaseDirectory() {
+        if directoryWaiters.isEmpty { writingDirectory = false }
+        else { directoryWaiters.removeFirst().resume() }
+    }
+    private enum DirectoryFailure: Error { case rollback(Error) }
     private weak var recorder: RecordingCoordinator?
     private var ledger: MeetingReminderLedger
     private var refreshTask: Task<Void, Never>?
@@ -239,6 +252,9 @@ actor CalendarReader: CalendarReading {
             guard let self, !Task.isCancelled, self.generation == generation, connected else { return }
             let (available, fetched) = await reader.read(selected: selection, now: Date())
             guard !Task.isCancelled, self.generation == generation, connected else { return }
+            await acquireDirectory()
+            defer { releaseDirectory() }
+            guard !Task.isCancelled, self.generation == generation, connected else { return }
             authorized = hasAccess()
             guard authorized else {
                 calendars = []; meetings = []; reminder = nil; loading = false; lastRefresh = Date(); return
@@ -259,29 +275,43 @@ actor CalendarReader: CalendarReading {
         return refreshTask
     }
     func preview(_ meeting: CalendarMeeting) -> CallDetails { var copy = directory; return meeting.callDetails(directory: &copy) }
-    func saveAttendanceWithNewPeople(_ roster: AttendanceRoster, change: CallDetailsStore.AttendanceChange, for recording: LibraryRecording) throws {
+    func saveAttendanceWithNewPeople(_ roster: AttendanceRoster, change: CallDetailsStore.AttendanceChange, for recording: LibraryRecording) async throws {
+        await acquireDirectory()
+        defer { releaseDirectory() }
         if let directoryError { throw RecorderError.message(directoryError) }
-        let updated = try roster.directory(includingPendingIn: directory)
-        var wrotePeople = false
+        let original = directory, url = directoryURL
         do {
-            try CallDetailsStore.saveAttendance(change, for: recording) {
-                try updated.save(to: self.directoryURL)
-                wrotePeople = true
-            }
-            directory = updated
-        } catch {
-            if wrotePeople {
-                do { try directory.save(to: directoryURL) }
-                catch { directoryError = error.localizedDescription; throw error }
-            }
+            directory = try await Task.detached(priority: .userInitiated) {
+                let updated = try roster.directory(includingPendingIn: original)
+                var wrotePeople = false
+                do {
+                    try CallDetailsStore.saveAttendance(change, for: recording) {
+                        try updated.save(to: url)
+                        wrotePeople = true
+                    }
+                } catch {
+                    if wrotePeople {
+                        do { try original.save(to: url) }
+                        catch { throw DirectoryFailure.rollback(error) }
+                    }
+                    throw error
+                }
+                return updated
+            }.value
+        } catch DirectoryFailure.rollback(let error) {
+            directoryError = error.localizedDescription
             throw error
         }
     }
-    func updateIdentity(_ identity: KnownIdentity) throws {
+    func updateIdentity(_ identity: KnownIdentity) async throws {
+        await acquireDirectory()
+        defer { releaseDirectory() }
         guard directoryError == nil else { throw RecorderError.message(directoryError!) }
         var copy = directory; try copy.update(identity); try copy.save(to: directoryURL); directory = copy
     }
-    func setSelfEmails(_ values: [String]) throws {
+    func setSelfEmails(_ values: [String]) async throws {
+        await acquireDirectory()
+        defer { releaseDirectory() }
         guard directoryError == nil else { throw RecorderError.message(directoryError!) }
         var copy = directory
         copy.selfEmails = Array(Set(values.map(KnownIdentity.email).filter { !$0.isEmpty })).sorted()
