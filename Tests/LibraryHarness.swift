@@ -8,11 +8,18 @@ import Lookback
 /// Own-window rendering and silent playback fixtures. Never starts capture or
 /// changes the production app's defaults, files, or shortcut.
 @main struct LibraryHarness {
+    static let interactive = CommandLine.arguments.contains("--interactive")
     @MainActor static func main() {
         let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(interactive ? .accessory : .prohibited)
         Task { @MainActor in
-            do { try await run(); exit(0) }
+            do {
+                try await run()
+                if !interactive {
+                    require(!app.isActive && !app.windows.contains(where: \.isVisible), "A background fixture activated the app or left a visible window")
+                }
+                exit(0)
+            }
             catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
         }
         app.run()
@@ -83,7 +90,7 @@ import Lookback
         UserDefaults.standard.set(true, forKey: "noticesAccepted")
         // A cleared shortcut prevents registration of any production key.
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
-        let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json")); recorder.shortcut.shutdown()
+        let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json"), recoveryRoot: root.appendingPathComponent("Sessions")); recorder.shortcut.shutdown()
         defer { recorder.transcription.shutdown() }
         let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
         defer { library.shutdown() }
@@ -189,16 +196,18 @@ import Lookback
         require(recorder.transcription.recording == nil, "Trashed recording remained selected for transcription")
         print("PASS editable metadata, one-to-many participant transition, manual assignments, transcript versions, original preservation, and transcription mutation guard")
 
-        let native = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
-        native.window?.setFrameOrigin(NSPoint(x: -10000, y: -10000))
-        native.present(); await pump()
-        playback.play(); require(playback.playing, "Silent window-close fixture did not start")
-        native.close(); await pump()
-        require(!playback.playing && recorder.state == .idle, "Window close failed to pause playback independently of capture")
-        native.present(); await pump()
-        require(native.window?.isVisible == true, "Owned native window could not reopen")
-        native.close()
-        print("PASS native window ownership, playback pause on close, and reopen")
+        if interactive {
+            let native = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
+            native.window?.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            native.present(); await pump()
+            playback.play(); require(playback.playing, "Silent window-close fixture did not start")
+            native.close(); await pump()
+            require(!playback.playing && recorder.state == .idle, "Window close failed to pause playback independently of capture")
+            native.present(); await pump()
+            require(native.window?.isVisible == true, "Owned native window could not reopen")
+            native.close()
+            print("PASS native window ownership, playback pause on close, and reopen")
+        }
 
         let summaryCall = library.recordings[0]
         try CallSummaryStore.save("Summary from the original transcript.", for: summaryCall, source: originalVersion)
@@ -208,7 +217,7 @@ import Lookback
         let summaryController = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
         let summaryWindow = summaryController.window!
         summaryWindow.setFrame(NSRect(x: -10000, y: -10000, width: 940, height: 660), display: false)
-        summaryWindow.orderBack(nil); await pump()
+        summaryWindow.displayIfNeeded(); await pump()
         let content = summaryWindow.contentView!
         content.layoutSubtreeIfNeeded()
         func splitView(in view: NSView) -> NSSplitView? {
@@ -230,7 +239,7 @@ import Lookback
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             host.appearance = window.appearance
-            window.contentView = host; window.orderFront(nil); await pump(0.6)
+            window.contentView = host; window.displayIfNeeded(); await pump(0.6)
             host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
             let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
             window.appearance!.performAsCurrentDrawingAppearance { host.cacheDisplay(in: host.bounds, to: bitmap) }
@@ -246,7 +255,7 @@ import Lookback
         let searchSettings = NSHostingView(rootView: EmbeddingSettingsView(library: library, embeddings: library.embeddings))
         let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 640), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         settingsWindow.isReleasedWhenClosed = false; settingsWindow.contentView = searchSettings
-        settingsWindow.orderFront(nil); await pump()
+        settingsWindow.displayIfNeeded(); await pump()
         searchSettings.layoutSubtreeIfNeeded()
         let settingsBitmap = searchSettings.bitmapImageRepForCachingDisplay(in: searchSettings.bounds)!
         searchSettings.cacheDisplay(in: searchSettings.bounds, to: settingsBitmap)
@@ -265,7 +274,7 @@ import Lookback
             let host = NSHostingView(rootView: view.preferredColorScheme(.light))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: .aqua); host.appearance = window.appearance
-            window.contentView = host; window.orderFront(nil); await pump(0.3)
+            window.contentView = host; window.displayIfNeeded(); await pump(0.3)
             host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
             let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
             window.appearance!.performAsCurrentDrawingAppearance { host.cacheDisplay(in: host.bounds, to: bitmap) }
@@ -290,32 +299,34 @@ import Lookback
         library.cancelTranscriptEditing(updated)
         print("PASS rename/remove/replace participant updates in open drafts and saved transcript views")
 
-        let renameView = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}).preferredColorScheme(.light))
-        let renameWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 940, height: 660), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        renameWindow.appearance = NSAppearance(named: .aqua); renameView.appearance = renameWindow.appearance
-        renameWindow.contentView = renameView; renameWindow.makeKeyAndOrderFront(nil)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        await pump()
-        library.beginRenaming(updated)
-        for _ in 0..<40 {
-            if renameWindow.firstResponder is NSTextView { break }
-            await pump(0.05)
+        if interactive {
+            let renameView = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}).preferredColorScheme(.light))
+            let renameWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 940, height: 660), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            renameWindow.appearance = NSAppearance(named: .aqua); renameView.appearance = renameWindow.appearance
+            renameWindow.contentView = renameView; renameWindow.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            await pump()
+            library.beginRenaming(updated)
+            for _ in 0..<40 {
+                if renameWindow.firstResponder is NSTextView { break }
+                await pump(0.05)
+            }
+            require(library.renamingID == updated.id, "Row rename editor dismissed immediately")
+            guard let titleEditor = renameWindow.firstResponder as? NSTextView else { throw RecorderError.message("Inline title did not receive keyboard focus") }
+            renameView.layoutSubtreeIfNeeded(); renameView.displayIfNeeded()
+            let renameBitmap = renameView.bitmapImageRepForCachingDisplay(in: renameView.bounds)!
+            renameWindow.appearance!.performAsCurrentDrawingAppearance { renameView.cacheDisplay(in: renameView.bounds, to: renameBitmap) }
+            try renameBitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/rename-inline.png"))
+            titleEditor.selectAll(nil)
+            titleEditor.insertText("Title saved with Return", replacementRange: titleEditor.selectedRange())
+            await pump(0.1)
+            require(library.renameText == "Title saved with Return", "Typing in the title field did not update the draft")
+            titleEditor.insertNewline(nil)
+            await pump(0.4)
+            require(library.renamingID == nil && library.recordings[0].name == "Title saved with Return", "Return did not save the inline title")
+            renameWindow.orderOut(nil)
+            print("PASS inline title keyboard focus, typing, Return to save, and minimum-width rendering")
         }
-        require(library.renamingID == updated.id, "Row rename editor dismissed immediately")
-        guard let titleEditor = renameWindow.firstResponder as? NSTextView else { throw RecorderError.message("Inline title did not receive keyboard focus") }
-        renameView.layoutSubtreeIfNeeded(); renameView.displayIfNeeded()
-        let renameBitmap = renameView.bitmapImageRepForCachingDisplay(in: renameView.bounds)!
-        renameWindow.appearance!.performAsCurrentDrawingAppearance { renameView.cacheDisplay(in: renameView.bounds, to: renameBitmap) }
-        try renameBitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "build/rename-inline.png"))
-        titleEditor.selectAll(nil)
-        titleEditor.insertText("Title saved with Return", replacementRange: titleEditor.selectedRange())
-        await pump(0.1)
-        require(library.renameText == "Title saved with Return", "Typing in the title field did not update the draft")
-        titleEditor.insertNewline(nil)
-        await pump(0.4)
-        require(library.renamingID == nil && library.recordings[0].name == "Title saved with Return", "Return did not save the inline title")
-        renameWindow.orderOut(nil)
-        print("PASS inline title keyboard focus, typing, Return to save, and minimum-width rendering")
 
         var quickDetails = library.recordings[0].details; quickDetails.participants = ["Taylor", "Morgan"]
         try await library.saveDetails(quickDetails, for: library.recordings[0])
@@ -405,7 +416,8 @@ import Lookback
         let initialHit = stressParagraphs.count / 2
         let stressHost = NSHostingView(rootView: reader("selected evidence", matches: [initialHit]))
         let stressWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 420, height: 500), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        stressWindow.contentView = stressHost; stressWindow.orderFront(nil)
+        stressWindow.contentView = stressHost
+        if interactive { stressWindow.orderFront(nil) } else { stressWindow.displayIfNeeded() }
         await pump()
         func transcriptTable(in view: NSView) -> NSTableView? {
             if let table = view as? NSTableView { return table }
@@ -417,9 +429,16 @@ import Lookback
         require(!mounted.isEmpty && mounted.count < 40, "The transcript mounted \(mounted.count) rows on open")
         require(NSLocationInRange(initialHit, table.rows(in: table.visibleRect)), "Opening a search result did not reveal its paragraph")
         let last = stressParagraphs.count - 1
-        stressHost.rootView = reader("selected evidence", matches: [last])
-        await pump()
-        require(NSLocationInRange(last, table.rows(in: table.visibleRect)), "Search failed to reveal an offscreen paragraph")
+        // SwiftUI delivers subsequent ScrollViewReader updates on the window's display cycle.
+        // The background fixture exercises the initial reveal on its own layout pass.
+        if interactive {
+            stressHost.rootView = reader("selected evidence", matches: [last])
+            for _ in 0..<30 {
+                if NSLocationInRange(last, table.rows(in: table.visibleRect)) { break }
+                await pump(0.05)
+            }
+            require(NSLocationInRange(last, table.rows(in: table.visibleRect)), "Search failed to reveal an offscreen paragraph")
+        }
         playback.play()
         for index in 0..<20 {
             stressWindow.setContentSize(NSSize(width: index.isMultiple(of: 2) ? 420 : 700, height: 500))
@@ -429,6 +448,10 @@ import Lookback
             await pump(0.06)
         }
         playback.pause()
+        guard interactive else {
+            print("PASS 375-paragraph reader virtualization, initial search reveal, resizing and playback. Use --interactive for live scrolling and focus checks.")
+            return
+        }
         let stressDocument = try Transcript(input: input, model: SpeechModel.catalog[0], engine: "fixture", language: "en", segments: stressSegments)
         let version = LibraryTranscript(url: recording.transcripts[0].url, document: stressDocument, error: nil, date: Date(), fileModificationDate: Date())
         let edit = TranscriptDraft(version: version, focusedParagraph: last, details: recording.details)
@@ -464,7 +487,7 @@ import Lookback
         let suite = UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let recorder = RecordingCoordinator(peopleURL: support.appendingPathComponent("People.json"), enabled: false)
+        let recorder = RecordingCoordinator(peopleURL: support.appendingPathComponent("People.json"), enabled: false, recoveryRoot: support.appendingPathComponent("Sessions"))
         let destination = support.appendingPathComponent("Recordings", isDirectory: true)
         recorder.destination = destination
         let library = RecordingLibraryModel(recorder: recorder, defaults: defaults, embeddingDirectory: embeddings)
@@ -479,7 +502,7 @@ import Lookback
         defer { playback.shutdown() }
         let controller = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
         let window = controller.window!
-        controller.present()
+        window.displayIfNeeded()
         let host = window.contentViewController!.view
         defer { window.orderOut(nil) }
         func sidebar(_ view: NSView) -> NSOutlineView? {
@@ -567,7 +590,7 @@ import Lookback
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 680, height: 650),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view
-        window.orderFront(nil)
+        window.displayIfNeeded()
         defer { window.orderOut(nil) }
         func text(_ node: NSObject) -> [String] {
             let children = node.accessibilityAttributeValue(.children) as? [NSObject] ?? []
@@ -684,7 +707,7 @@ import Lookback
         let sidebar = NSHostingView(rootView: LibrarySidebar(selection: Binding(get: { library.filter }, set: { library.filter = $0 })))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 235, height: 320),
                               styleMask: [.titled], backing: .buffered, defer: false)
-        window.contentView = sidebar; window.orderFront(nil)
+        window.contentView = sidebar; window.displayIfNeeded()
         defer { window.orderOut(nil) }
         await pump()
         func outline(in view: NSView) -> NSOutlineView? {
@@ -759,7 +782,7 @@ import Lookback
             let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: library.coding.directory, hit: hit))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
-            window.contentView = detail; window.orderFront(nil)
+            window.contentView = detail; window.displayIfNeeded()
             var text = ""
             for _ in 0..<40 {
                 await pump(0.05)

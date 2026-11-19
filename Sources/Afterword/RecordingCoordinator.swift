@@ -10,6 +10,7 @@ import RecorderCore
     lazy var shortcut = RecordingShortcut(register: false)
     private(set) var sourceEnabled = false
     let peopleURL: URL
+    private let recoveryRoot: URL
     lazy var calendar = CalendarCoordinator(recorder: self, directoryURL: peopleURL)
     @Published private(set) var state: RecordingState = .idle {
         didSet { transcription.recordingStateChanged(active: locked) }
@@ -64,7 +65,8 @@ import RecorderCore
         case .recoverable: return "Recoverable recording"
         }
     }
-    init(peopleURL: URL? = nil, enabled: Bool = true) {
+    init(peopleURL: URL? = nil, enabled: Bool = true, recoveryRoot: URL = SessionStore.defaultRoot) {
+        self.recoveryRoot = recoveryRoot
         transcription = TranscriptionCoordinator(loadRecording: false)
         self.peopleURL = peopleURL ?? PeopleDirectory.fileURL
         destination = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music/Call Recordings").path, isDirectory: true)
@@ -232,8 +234,8 @@ import RecorderCore
         }
     }
     func refreshRecoveries() {
-        Task { [weak self] in
-            let sessions = await Task.detached(priority: .utility) { Recovery.scan() }.value
+        Task { [weak self, recoveryRoot] in
+            let sessions = await Task.detached(priority: .utility) { Recovery.scan(root: recoveryRoot) }.value
             guard let self, self.sourceEnabled, !self.locked else { return }
             self.recoveries = sessions
             if !sessions.isEmpty && self.state == .idle && self.savedFile == nil { self.lifecycle.finish(.recoverable); self.state = .recoverable }

@@ -107,7 +107,7 @@ The **Call** and **Playback** menus list the shortcuts. **Help → Keyboard Shor
 
 Letter, deletion, and playback shortcuts leave text inputs alone and are inactive while a dialog or another window is focused. Playback remains disabled during capture and saving. Command–1 (library), Command–2 (upcoming calls), and the configurable global recording shortcut remain available.
 
-Run `Scripts/check-library.sh Tests/LibraryKeyboardHarness.swift` for the isolated native keyboard check. It uses generated silent audio, temporary preferences, and a uniquely named fixture for the Trash confirmation.
+The calendar and library fixtures render offscreen by default. Use `Scripts/check-library.sh --interactive` for live scrolling, window reopening, and keyboard focus checks that require a foreground window. Run `Scripts/check-library.sh Tests/LibraryKeyboardHarness.swift` for the dedicated foreground keyboard check. It uses generated silent audio, temporary preferences, and a uniquely named fixture for the Trash confirmation.
 
 ## Balanced listening volume (version 0.10)
 

@@ -34,7 +34,7 @@ actor FixtureCalendarReader: CalendarReading {
     @MainActor static func main() {
         setbuf(stdout, nil)
         let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(.prohibited)
         Task { @MainActor in
             do { try await run(); exit(0) }
             catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
@@ -54,7 +54,7 @@ actor FixtureCalendarReader: CalendarReading {
         UserDefaults.standard.set(root.path, forKey: "destination")
         UserDefaults.standard.set(true, forKey: "noticesAccepted")
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
-        let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json")); recorder.shortcut.shutdown()
+        let recorder = RecordingCoordinator(peopleURL: root.appendingPathComponent("People.json"), recoveryRoot: root.appendingPathComponent("Sessions")); recorder.shortcut.shutdown()
         defer { recorder.transcription.shutdown() }
         let migrationDomain = domain + ".migration"
         let migrationDefaults = UserDefaults(suiteName: migrationDomain)!
@@ -62,7 +62,7 @@ actor FixtureCalendarReader: CalendarReading {
         defer { migrationDefaults.removePersistentDomain(forName: migrationDomain) }
         migrationDefaults.set(["fixture"], forKey: "calendarSelection")
         let migrated = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), defaults: migrationDefaults,
-                                           reader: FixtureCalendarReader([]), hasAccess: { true })
+                                           reader: FixtureCalendarReader([]), hasAccess: { true }, presentReminder: { _ in nil })
         try require(migrated.connected && !migrated.enabled, "An existing connection with reminders disabled was not preserved")
         migrated.shutdown()
         let now = Date(), url = URL(string: "https://meet.google.com/abc-defg-hij")!
@@ -71,8 +71,10 @@ actor FixtureCalendarReader: CalendarReading {
         let groupCall = CalendarMeeting(reference: .init(occurrenceID: "two", title: "Group planning", start: now.addingTimeInterval(3600), end: now.addingTimeInterval(5400), calendar: "Work", joinURL: url),
                                         guests: [.init(email: "casey@example.com", isSelf: true), .init(email: "avery@example.com"), .init(email: "studio@example.com", name: "Studio")])
         let reader = FixtureCalendarReader([call, groupCall])
+        var presentedReminder = false
         let calendar = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), reader: reader,
-                                           hasAccess: { !UserDefaults.standard.bool(forKey: "fixtureCalendarDenied") })
+                                           hasAccess: { !UserDefaults.standard.bool(forKey: "fixtureCalendarDenied") },
+                                           presentReminder: { _ in presentedReminder = true; return nil })
         defer { calendar.shutdown() }
         calendar.startMonitoring(); await calendar.refresh()?.value
         let initialReads = await reader.readCount
@@ -87,8 +89,8 @@ actor FixtureCalendarReader: CalendarReading {
         try require(calendar.preview(groupCall).inferredParticipant == nil && calendar.preview(groupCall).participants == ["Avery Willow"], "Group became a speaker or allowed inference")
         calendar.startMonitoring(); await calendar.refresh()?.value; await pump()
         try require(calendar.reminder?.id == call.id, "Due reminder was not shown")
-        try require(NSApp.windows.contains { $0.title == "Upcoming Call" && $0.isVisible }, "Native reminder panel is not visible")
-        print("PASS fake calendar fetch, self email learning, preferred name, remembered group, and visible native reminder")
+        try require(presentedReminder, "The due reminder was not presented")
+        print("PASS fake calendar fetch, self email learning, preferred name, remembered group, and reminder presentation")
         try await render(CalendarReminderView(calendar: calendar), size: NSSize(width: 450, height: 365), name: "reminder")
         try await render(UpcomingMeetingsView(calendar: calendar), size: NSSize(width: 680, height: 590), name: "upcoming")
         try await render(CalendarSettings(calendar: calendar), size: NSSize(width: 560, height: 640), name: "settings")
@@ -107,7 +109,7 @@ actor FixtureCalendarReader: CalendarReading {
         calendar.startMonitoring(); await calendar.refresh()?.value; calendar.checkReminder(now: now.addingTimeInterval(63))
         let readsAfterRefresh = await reader.readCount
         try require(readsAfterRefresh == disconnectedReads && calendar.reminder == nil, "Disconnected calendar still reads or reminds")
-        let restarted = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), reader: reader, hasAccess: { true })
+        let restarted = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), reader: reader, hasAccess: { true }, presentReminder: { _ in nil })
         restarted.startMonitoring(); await restarted.refresh()?.value
         let readsAfterRestart = await reader.readCount
         try require(!restarted.connected && readsAfterRestart == disconnectedReads, "Relaunch silently reconnected with existing OS permission")
@@ -186,7 +188,7 @@ actor FixtureCalendarReader: CalendarReading {
         try require(calendar.reminder == nil, "Dismissed prompt repeated")
         await reader.replace([])
         await calendar.startMeeting(call, join: false)
-        try require(recorder.state == .idle && calendar.error != nil, "Stale event started recording")
+        try require(recorder.state == .idle && calendar.error != nil, "Stale event check ended in \(recorder.state) with calendar error \(calendar.error ?? "none")")
         let declined = CalendarMeeting(reference: call.reference, guests: [.init(email: "casey@example.com", declined: true), .init(email: "avery@example.com")])
         await reader.replace([declined]); await calendar.refresh()?.value
         try require(calendar.meetings.isEmpty, "Declined meeting remained eligible through a shared-calendar alias")
@@ -207,6 +209,8 @@ actor FixtureCalendarReader: CalendarReading {
             .init(source: .microphone, start: 2, end: 3, text: "A question.", timing: "segment"),
             .init(source: .system, start: 4, end: 5, text: "Second answer.", timing: "segment")])
         _ = try document.save(beside: input)
+        calendar.disconnect()
+        try ActivitySourceStore.save([.recordings], directory: root.appendingPathComponent("MCP"))
         let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
         defer { library.shutdown() }
         // Initialization starts the scan. Wait for it instead of opening a second index at the same time.
@@ -242,14 +246,26 @@ actor FixtureCalendarReader: CalendarReading {
         try await library.saveAttendance(absent, for: recording, version: version, confirmOnly: sam.id)
         recording = library.recordings[0]
         try require(recording.transcripts.contains { $0.document?.paragraphs.first?.participant == "Sam" }, "Explicit confirmation did not save speaker assignments")
+        var roster = AttendanceRoster(recording.details.callAttendees)
+        try roster.add(name: "Sam Rivera", email: "", remember: true, in: library.peopleDirectory, linking: sam.id)
+        try roster.add(name: "Guest", email: "guest@example.com", remember: false, in: library.peopleDirectory)
+        try require(!library.peopleDirectory.people.contains { $0.name == "Sam Rivera" }, "A draft contact leaked into the directory")
+        try await library.saveAttendance(roster, for: recording, version: recording.latestTranscript, confirmOnly: nil)
+        let storedPeople = try PeopleDirectory.load(from: root.appendingPathComponent("People.json"))
+        let updated = library.recordings[0]
+        try require(storedPeople.people.contains { $0.name == "Sam Rivera" && $0.emails.isEmpty }, "The newly linked person did not persist")
+        try require(storedPeople.identity(email: "guest@example.com") == nil, "A call-only guest leaked into People & groups")
+        try require(updated.details.participants == ["Sam", "Guest"] && updated.displayName("Sam") == "Sam Rivera", "The local speaker lost its assignment or display label")
+        print("PASS staged name-only directory link and call-only guest persist independently after refresh")
         print("PASS attendance exclusion, no silent transfer, original preservation, inline speaker assignment, and explicit single-attendee labeling with/without unsaved drafts")
-        print("PASS eight own-view calendar/attendance renders; no screenshots, calendar access, meeting navigation, or live capture")
+        try require(!NSApp.isActive && !NSApp.windows.contains(where: \.isVisible), "A fixture became visible or activated the app")
+        print("PASS eight offscreen calendar/attendance renders; no screenshots, calendar access, meeting navigation, or live capture")
     }
     @MainActor static func render<V: View>(_ view: V, size: NSSize, name: String) async throws {
         let host = NSHostingView(rootView: view.preferredColorScheme(.light))
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua); host.appearance = window.appearance
-        window.contentView = host; window.orderFront(nil)
+        window.contentView = host; window.displayIfNeeded()
         try? await Task.sleep(nanoseconds: 300_000_000)
         host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
         let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!

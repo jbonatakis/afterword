@@ -81,11 +81,18 @@ actor CalendarReader: CalendarReading {
     private var startingFromCalendar = false
     private var upcomingWindow: NSWindowController?
     private var peopleWindow: NSWindowController?
+    private let presentReminder: @MainActor (CalendarCoordinator) -> NSWindowController?
     private var reminderWindow: NSWindowController?
     private var reminderSubscription: AnyCancellable?
 
     init(recorder: RecordingCoordinator, directoryURL: URL, defaults: UserDefaults = .standard, reader: any CalendarReading = CalendarReader(),
-         hasAccess: @escaping @Sendable () -> Bool = { EKEventStore.authorizationStatus(for: .event) == .fullAccess }) {
+         hasAccess: @escaping @Sendable () -> Bool = { EKEventStore.authorizationStatus(for: .event) == .fullAccess },
+         presentReminder: @escaping @MainActor (CalendarCoordinator) -> NSWindowController? = { coordinator in
+             let controller = CalendarWindows.reminder(calendar: coordinator)
+             controller.window?.orderFrontRegardless()
+             return controller
+         }) {
+        self.presentReminder = presentReminder
         self.reader = reader; self.hasAccess = hasAccess
         self.recorder = recorder; self.directoryURL = directoryURL; self.defaults = defaults
         let savedEnabled = defaults.bool(forKey: "calendarEnabled")
@@ -137,8 +144,7 @@ actor CalendarReader: CalendarReading {
                 guard let self else { return }
                 self.reminderWindow?.close(); self.reminderWindow = nil
                 if key != nil, self.reminder != nil {
-                    self.reminderWindow = CalendarWindows.reminder(calendar: self)
-                    self.reminderWindow?.window?.orderFrontRegardless()
+                    self.reminderWindow = self.presentReminder(self)
                 }
             }
         }
