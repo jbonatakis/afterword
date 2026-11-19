@@ -137,7 +137,7 @@ enum GitHubPeriod: String, CaseIterable {
     private var subscriptions: Set<AnyCancellable> = []
     private let defaults: UserDefaults
     private lazy var summaryMonitor = LibrarySummaryMonitor { [weak self] in self?.scheduleLibraryRefresh() }
-    private var pendingRefreshTask: Task<Void, Never>?
+    private var pendingRefresh: DispatchWorkItem?
     private var needsRefresh = false
     private var stopped = false
 
@@ -312,20 +312,20 @@ enum GitHubPeriod: String, CaseIterable {
     func retrySemanticSearch() { pollSemanticSearch(retry: true) }
     func shutdown() {
         github.stop(); coding.stop()
-        stopped = true; summaryMonitor.stop(); pendingRefreshTask?.cancel()
+        stopped = true; summaryMonitor.stop(); pendingRefresh?.cancel()
         needsRefresh = false; scan?.cancel(); generation = UUID()
         semanticTimer?.invalidate(); searchTask?.cancel(); searchIndex?.stopSemanticSearch(); embeddings.shutdown()
     }
     private func scheduleLibraryRefresh() {
         guard !stopped else { return }
         needsRefresh = true
-        pendingRefreshTask?.cancel()
-        pendingRefreshTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(200))
-            guard !Task.isCancelled, let self else { return }
-            self.pendingRefreshTask = nil
-            self.refreshIfNeeded()
+        pendingRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingRefresh = nil
+            self?.refreshIfNeeded()
         }
+        pendingRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(200), execute: work)
     }
     private func refreshIfNeeded() {
         // Changes arriving during an index scan or local save must survive until
@@ -343,7 +343,7 @@ enum GitHubPeriod: String, CaseIterable {
     @discardableResult func refresh() -> Task<Void, Never>? {
         guard !stopped, !sources.isEmpty, !managing else { return nil }
         summaryMonitor.watch(roots)
-        needsRefresh = false; pendingRefreshTask?.cancel(); pendingRefreshTask = nil
+        needsRefresh = false; pendingRefresh?.cancel(); pendingRefresh = nil
         let previousScan = scan
         previousScan?.cancel()
         let id = UUID(); generation = id; refreshing = true
