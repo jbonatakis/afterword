@@ -72,6 +72,7 @@ actor CalendarReader: CalendarReading {
     // from the directory published by its predecessor, including any rollback.
     private var writingDirectory = false
     private var directoryWaiters: [CheckedContinuation<Void, Never>] = []
+    var queuedDirectoryWriteCount: Int { directoryWaiters.count }
     private func acquireDirectory() async {
         if writingDirectory { await withCheckedContinuation { directoryWaiters.append($0) } }
         else { writingDirectory = true }

@@ -262,6 +262,25 @@ actor FixtureCalendarReader: CalendarReading {
         try require(!NSApp.isActive && !NSApp.windows.contains(where: \.isVisible), "A fixture became visible or activated the app")
         print("PASS eight offscreen calendar/attendance renders; no screenshots, calendar access, meeting navigation, or live capture")
     }
+    // Both opens are inside this fixture process. The second descriptor identifies the real
+    // call writer at flock, even when the worker or the main actor is scheduled late.
+    private static func anotherDescriptorIsOpen(for held: Int32) -> Bool {
+        var lock = stat()
+        guard fstat(held, &lock) == 0 else { return false }
+        var entry = stat()
+        return (0..<getdtablesize()).contains { fd in
+            fd != held && fstat(fd, &entry) == 0 && entry.st_dev == lock.st_dev && entry.st_ino == lock.st_ino
+        }
+    }
+
+    @MainActor private static func waitFor(_ description: String, until predicate: () -> Bool) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while !predicate() {
+            try require(ProcessInfo.processInfo.systemUptime < deadline, "Timed out waiting for " + description)
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
     @MainActor static func checkOverlappingDirectoryEdits(recorder: RecordingCoordinator, root: URL) async throws {
         let directoryURL = root.appendingPathComponent("ConcurrentPeople.json")
         var original = PeopleDirectory()
@@ -278,14 +297,28 @@ actor FixtureCalendarReader: CalendarReading {
         try roster.add(name: "New guest", email: "guest@example.test", remember: true, in: original)
         let change = try CallDetailsStore.prepareAttendance(roster, for: call, confirmOnly: nil)
         let fd = open(CallSummaryStore.lockURL(for: folder, isDirectory: true).path, O_CREAT | O_RDWR, 0o600)
-        try require(fd >= 0 && flock(fd, LOCK_EX) == 0, "Could not hold fixture call lock")
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) { flock(fd, LOCK_UN); close(fd) }
+        try require(fd >= 0, "Could not open fixture call lock")
+        guard flock(fd, LOCK_EX) == 0 else { close(fd); throw RecorderError.message("Could not hold fixture call lock") }
+        let release = DispatchSemaphore(value: 0)
+        // The watchdog only releases a hung test; firing it is always a failure.
+        let (unlockResult, finished) = AsyncStream<Bool>.makeStream()
+        DispatchQueue.global().async {
+            let requested = release.wait(timeout: .now() + 15) == .success
+            flock(fd, LOCK_UN); close(fd)
+            finished.yield(requested); finished.finish()
+        }
+        defer { release.signal() }
         let attendance = Task { try await calendar.saveAttendanceWithNewPeople(roster, change: change, for: call) }
-        try await Task.sleep(nanoseconds: 5_000_000)
+        try await waitFor("attendance to open the held call lock") { anotherDescriptorIsOpen(for: fd) }
         identity.name = "Renamed"
         let edit = Task { try await calendar.updateIdentity(identity) }
-        try await calendar.setSelfEmails(["self@example.test"])
-        try await attendance.value; try await edit.value
+        let emails = Task { try await calendar.setSelfEmails(["self@example.test"]) }
+        try await waitFor("both directory editors to queue behind attendance") { calendar.queuedDirectoryWriteCount == 2 }
+        release.signal()
+        var unlocks = unlockResult.makeAsyncIterator()
+        let releasedOnRequest = await unlocks.next()
+        try require(releasedOnRequest == true, "Call lock watchdog fired")
+        try await attendance.value; try await edit.value; try await emails.value
         let stored = try PeopleDirectory.load(from: directoryURL)
         let details = try CallDetailsStore.load(for: folder, isDirectory: true)
         try require(calendar.directory == stored && stored.identity(email: "original@example.test")?.name == "Renamed"
