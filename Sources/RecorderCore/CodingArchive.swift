@@ -97,6 +97,24 @@ public struct CodingHit: Sendable {
     public var archived: Bool { passages.first?.archived ?? false }
 }
 
+public struct CodingBrowseFilter: Equatable, Sendable {
+    public var provider: CodingProvider?
+    public var project: String?
+    public var branch: String?
+    public init(provider: CodingProvider? = nil, project: String? = nil, branch: String? = nil) {
+        self.provider = provider; self.project = project; self.branch = branch
+    }
+}
+
+public struct CodingSessionPage: Sendable {
+    public struct Cursor: Sendable {
+        fileprivate let modified, id: String
+    }
+    public let sessions: [CodingSession]
+    public let revision: String
+    public let next: Cursor?
+}
+
 // Each connection has one owner. SQLite transactions coordinate the importer, UI and MCP processes.
 public final class CodingArchive {
     public static let directory = AgentAccessStore.directory.deletingLastPathComponent().appendingPathComponent("CodingSessions", isDirectory: true)
@@ -113,6 +131,10 @@ public final class CodingArchive {
         try db.execute("CREATE TABLE IF NOT EXISTS project_folders (path TEXT PRIMARY KEY, included INTEGER NOT NULL)")
         try db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL, modified TEXT NOT NULL, info TEXT NOT NULL, history TEXT NOT NULL)")
         try db.execute("CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project)")
+        for (name, prefix) in [("recent", ""), ("project_recent", "project,"),
+                               ("provider_recent", "json_extract(info,'$.source'),"), ("branch_recent", "json_extract(info,'$.branch'),")] {
+            try db.execute("CREATE INDEX IF NOT EXISTS sessions_\(name) ON sessions(\(prefix) -CAST(modified AS REAL),id)")
+        }
         try db.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS coding_text USING fts5(session UNINDEXED, message UNINDEXED, stamp UNINDEXED,
               archived UNINDEXED, title, project, branch, body, embed UNINDEXED, tokenize="unicode61 remove_diacritics 2 tokenchars '_'")
@@ -159,30 +181,42 @@ public final class CodingArchive {
     public func setProjectFolder(_ value: String, included: Bool) throws {
         guard let path = CodingProjectSelection.path(value) else { throw RecorderError.message("Select a folder with an absolute path.") }
         try db.transaction {
-            // A folder toggle replaces all more specific rules below it, even
-            // for projects that no longer have files on this Mac.
             let selection = try projectSelection()
-            for row in try db.rows("SELECT path FROM projects") {
-                if let exact = CodingProjectSelection.path(row[0]), CodingProjectSelection.contains(exact, in: path) {
-                    try db.execute("DELETE FROM projects WHERE path=?", [row[0]])
-                }
-            }
-            for folder in selection.folders.keys where CodingProjectSelection.contains(folder, in: path) {
-                try db.execute("DELETE FROM project_folders WHERE path=?", [folder])
-            }
-            let parentIncluded = path != "/" && selection.inherited(at: (path as NSString).deletingLastPathComponent)
-            if parentIncluded != included {
-                try db.execute("INSERT INTO project_folders VALUES (?,?)", [path, included ? "1" : "0"])
-            }
+            try saveProjectSelection(selection.settingFolder(path, included: included))
             if !included {
-                for row in try db.rows("SELECT DISTINCT project FROM sessions") {
-                    guard let project = CodingProjectSelection.path(row[0]), CodingProjectSelection.contains(project, in: path) else { continue }
-                    try db.execute("DELETE FROM coding_text WHERE session IN (SELECT id FROM sessions WHERE project=?)", [row[0]])
-                    try db.execute("DELETE FROM sessions WHERE project=?", [row[0]])
-                }
-                try bumpRevision()
+                try removeHistory { CodingProjectSelection.contains($0, in: path) }
             }
         }
+    }
+
+    public func applyProjectSelection(_ next: CodingProjectSelection, replacing previous: CodingProjectSelection) throws {
+        try db.transaction {
+            guard try projectSelection() == previous else {
+                throw RecorderError.message("Project selections changed. Review the current folders and apply again.")
+            }
+            try saveProjectSelection(next)
+            if next.removesProjects(from: previous) {
+                try removeHistory { previous.includes($0) && !next.includes($0) }
+            }
+        }
+    }
+
+    private func saveProjectSelection(_ selection: CodingProjectSelection) throws {
+        try db.execute("DELETE FROM projects")
+        try db.execute("DELETE FROM project_folders")
+        for path in selection.exact { try db.execute("INSERT INTO projects VALUES (?)", [path]) }
+        for (path, included) in selection.folders {
+            try db.execute("INSERT INTO project_folders VALUES (?,?)", [path, included ? "1" : "0"])
+        }
+    }
+
+    private func removeHistory(where excluded: (String) -> Bool) throws {
+        for row in try db.rows("SELECT DISTINCT project FROM sessions") {
+            guard let path = CodingProjectSelection.path(row[0]), excluded(path) else { continue }
+            try db.execute("DELETE FROM coding_text WHERE session IN (SELECT id FROM sessions WHERE project=?)", [row[0]])
+            try db.execute("DELETE FROM sessions WHERE project=?", [row[0]])
+        }
+        try bumpRevision()
     }
 
     public func refresh(discoverProjects: Bool, readers: [any SessionReader]? = nil) throws -> (projects: [String], issues: [String], accounts: [LocalCodexAccount]) {
@@ -196,11 +230,14 @@ public final class CodingArchive {
             do {
                 try Task.checkCancellation()
                 if let codex = reader as? CodexReader {
-                    accounts = try codex.localAccounts().map {
+                    let catalog = try codex.catalogSnapshot()
+                    accounts = try catalog.localAccounts().map {
                         LocalCodexAccount(id: .init(accountID: $0.accountID, userID: $0.userID ?? ""), project: $0.lastWorkingDirectory, lastUsed: $0.lastModified)
                     }
                     let scope = options.codexAccount.resolve(accounts)
-                    reader = CodexReader(homeDirectory: codex.homeDirectory, includeArchived: codex.includeArchived, accountID: scope?.accountID, userID: scope?.userID)
+                    reader = catalog.scoped(accountID: scope?.accountID, userID: scope?.userID)
+                } else if let claude = reader as? ClaudeCodeReader {
+                    reader = try claude.catalogSnapshot()
                 }
                 let infos = try reader.listSessions()
                 if discoverProjects { projects.formUnion(infos.compactMap(\.workingDirectory).filter { $0.hasPrefix("/") }) }
@@ -248,7 +285,7 @@ public final class CodingArchive {
                         let merged = old.messages.map { latest[$0.id] ?? $0 } + imported.messages.filter { !oldIDs.contains($0.id) }
                         history = CodingHistory(session: session, messages: merged, conversationIDs: imported.conversationIDs)
                     }
-                    try db.execute("DELETE FROM coding_text WHERE session=?", [id])
+                    if previous != nil { try db.execute("DELETE FROM coding_text WHERE session=?", [id]) }
                     try db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?)",
                                    [id, project, stamp, try Self.encode(session), try Self.encode(history)])
                     try index(history)
@@ -361,13 +398,55 @@ public final class CodingArchive {
     private func bumpRevision() throws {
         try db.execute("INSERT OR REPLACE INTO settings VALUES ('revision',?)", [UUID().uuidString])
     }
-    var revision: String { get throws { try db.rows("SELECT value FROM settings WHERE key='revision'").first?.first ?? "" } }
+    public var revision: String { get throws { try db.rows("SELECT value FROM settings WHERE key='revision'").first?.first ?? "" } }
+    public func sessionProjects() throws -> [String] {
+        try db.rows("SELECT DISTINCT project FROM sessions ORDER BY project").map { $0[0] }
+    }
+    public func sessionBranches() throws -> [String] {
+        try db.rows("SELECT DISTINCT json_extract(info,'$.branch') AS branch FROM sessions WHERE branch IS NOT NULL ORDER BY branch").map { $0[0] }
+    }
+
+    /// A short read transaction keeps the cursor and rows on one revision even during an import.
+    public static func sessionPage(in directory: URL, filter: CodingBrowseFilter = .init(),
+                                   after cursor: CodingSessionPage.Cursor? = nil, limit: Int = 200) throws -> CodingSessionPage {
+        guard limit > 0 && limit < Int.max else { throw RecorderError.message("Invalid coding session page size.") }
+        guard exists(in: directory) else { return .init(sessions: [], revision: "", next: nil) }
+        let db = try SearchDatabase(reading: directory.appendingPathComponent("History.sqlite"))
+        try db.execute("BEGIN")
+        let revision = try db.rows("SELECT value FROM settings WHERE key='revision'").first?.first ?? ""
+        var clauses: [String] = [], values: [String] = []
+        for (column, value) in [("project", filter.project), ("json_extract(info,'$.source')", filter.provider?.rawValue),
+                                ("json_extract(info,'$.branch')", filter.branch)] {
+            if let value { clauses.append(column + "=?"); values.append(value) }
+        }
+        if let cursor {
+            // SQLite needs the scalar bound to seek into an expression index for the tuple comparison.
+            clauses.append("-CAST(modified AS REAL) >= -CAST(? AS REAL) AND (-CAST(modified AS REAL),id) > (-CAST(? AS REAL),?)")
+            values += [cursor.modified, cursor.modified, cursor.id]
+        }
+        let predicate = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
+        let rows = try db.rows("SELECT info,modified,id FROM sessions" + predicate + " ORDER BY -CAST(modified AS REAL),id LIMIT ?",
+                               values + [String(limit + 1)])
+        try db.execute("COMMIT")
+        let page = rows.prefix(limit)
+        let decoder = JSONDecoder()
+        let sessions = try page.map { try decoder.decode(CodingSession.self, from: Data($0[0].utf8)) }
+        let next = rows.count > limit ? page.last.map { CodingSessionPage.Cursor(modified: $0[1], id: $0[2]) } : nil
+        return .init(sessions: sessions, revision: revision, next: next)
+    }
     public func sessions() throws -> [CodingSession] {
         try db.rows("SELECT info FROM sessions ORDER BY CAST(modified AS REAL) DESC,id").map {
             try JSONDecoder().decode(CodingSession.self, from: Data($0[0].utf8))
         }
     }
     public func history(id: String) throws -> CodingHistory {
+        try Self.history(in: db, id: id)
+    }
+    public static func history(in directory: URL, id: String) throws -> CodingHistory {
+        guard exists(in: directory) else { throw AgentFailure("Coding session unavailable.") }
+        return try history(in: SearchDatabase(reading: directory.appendingPathComponent("History.sqlite")), id: id)
+    }
+    private static func history(in db: SearchDatabase, id: String) throws -> CodingHistory {
         guard let row = try db.rows("SELECT history FROM sessions WHERE id=?", [id]).first else { throw AgentFailure("Coding session unavailable.") }
         return try JSONDecoder().decode(CodingHistory.self, from: Data(row[0].utf8))
     }

@@ -74,8 +74,8 @@ enum GitHubPeriod: String, CaseIterable {
     let coding: CodingCoordinator
     @Published private(set) var codingHits: [String: CodingHit] = [:]
     @Published private(set) var visibleCoding: [CodingSession] = []
-    @Published var codingProject = "" { didSet { updateSearch() } }
-    @Published var codingBranch = "" { didSet { updateSearch() } }
+    @Published var codingProject = "" { didSet { configureCodingPage(); updateSearch() } }
+    @Published var codingBranch = "" { didSet { configureCodingPage(); updateSearch() } }
     private var matchedCoding: [CodingSession] = []
     var selectedCoding: CodingSession? { visibleCoding.first { $0.id == selection } }
     let embeddings: EmbeddingCoordinator
@@ -92,6 +92,7 @@ enum GitHubPeriod: String, CaseIterable {
     @Published private(set) var visibleRecordings: [LibraryRecording] = []
     @Published var filter: LibraryFilter = .activity {
         didSet {
+            configureCodingPage()
             if oldValue.callScope != filter.callScope {
                 searchTask?.cancel(); searchGeneration = UUID()
                 searchIndex?.stopSemanticSearch(); searchIndex = nil
@@ -123,7 +124,7 @@ enum GitHubPeriod: String, CaseIterable {
     @Published private(set) var renameError: String?
     @Published private(set) var renaming = false
     private weak var recorder: RecordingCoordinator?
-    private var currentDestination: URL
+    private var currentDestination: URL?
     private var scan: Task<LibraryRefresh, Never>?
     private var searchIndex: LibrarySearchIndex?
     private var indexRoots: [URL] = []
@@ -172,8 +173,13 @@ enum GitHubPeriod: String, CaseIterable {
             guard let self, sources.contains(.coding) else { return }
             browseOrder = nil
             if !codingProject.isEmpty && !coding.projects.contains(codingProject) { codingProject = "" }
-            if !codingBranch.isEmpty && !coding.sessions.contains(where: { $0.branch == self.codingBranch }) { codingBranch = "" }
+            if !codingBranch.isEmpty && !coding.branches.contains(codingBranch) { codingBranch = "" }
             refresh()
+        }
+        coding.pageChanged = { [weak self] in
+            guard let self, sources.contains(.coding) else { return }
+            browseOrder = nil
+            if browsing { updateSearch(debounce: false) }
         }
         github.changed = { [weak self] in
             guard let self, sources.contains(.github) else { return }
@@ -186,8 +192,9 @@ enum GitHubPeriod: String, CaseIterable {
         }
         recorder.$destination.dropFirst().removeDuplicates().sink { [weak self] folder in
             guard let self, sources.contains(.recordings) else { return }
-            currentDestination = folder.resolvingSymlinksInPath().standardizedFileURL
-            remember(folder); refresh()
+            currentDestination = folder?.resolvingSymlinksInPath().standardizedFileURL
+            if let folder { remember(folder) }
+            refresh()
         }.store(in: &subscriptions)
         recorder.$savedFile.compactMap { $0 }.sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
         recorder.transcription.$transcript.compactMap { $0 }.sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
@@ -200,7 +207,7 @@ enum GitHubPeriod: String, CaseIterable {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
     }
-    func setSources(_ next: Set<ActivitySource>) {
+    func setSources(_ next: Set<ActivitySource>, recordingDestination: URL? = nil) {
         guard sources != next, let recorder else { return }
         if sources.contains(.recordings) && !next.contains(.recordings)
             && (recorder.locked || recorder.transcription.busy || recorder.transcription.downloadingID != nil ||
@@ -211,6 +218,7 @@ enum GitHubPeriod: String, CaseIterable {
         do {
             try ActivitySourceStore.save(next, directory: sourceDirectory)
             sourceError = nil
+            if next.contains(.recordings), let recordingDestination { recorder.destination = recordingDestination }
             applySources(next)
         } catch { sourceError = error.localizedDescription }
     }
@@ -227,9 +235,9 @@ enum GitHubPeriod: String, CaseIterable {
         recorder.setSourceEnabled(records)
         sources = next
         if records && !previous.contains(.recordings) {
-            roots = (defaults.stringArray(forKey: "libraryFolders") ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
-            currentDestination = recorder.destination.resolvingSymlinksInPath().standardizedFileURL
-            remember(currentDestination)
+            roots = Self.savedRecordingFolders(in: defaults)
+            currentDestination = recorder.destination?.resolvingSymlinksInPath().standardizedFileURL
+            if let currentDestination { remember(currentDestination) }
             recorder.calendar.library = self
             peopleSubscription = recorder.calendar.$directory.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleLibraryRefresh() }
         } else if !records {
@@ -325,7 +333,8 @@ enum GitHubPeriod: String, CaseIterable {
         let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
         let callScope = filter.callScope
         let sessions = sources.contains(.coding) && callScope == .work ? coding.sessions : []
-        let codingDirectory = callScope == .work && sources.contains(.coding) && !coding.sessions.isEmpty ? coding.directory : nil
+        let pageGeneration = coding.pageGeneration
+        let codingDirectory = callScope == .work && sources.contains(.coding) ? coding.directory : nil
         let githubDirectory = callScope == .work && sources.contains(.github) ? github.directory : nil
         let cacheDirectory = embeddingDirectory == EmbeddingSettings.directory ? LibrarySearchIndex.cacheDirectory :
             embeddingDirectory.deletingLastPathComponent().appendingPathComponent("Search")
@@ -357,24 +366,39 @@ enum GitHubPeriod: String, CaseIterable {
             defer { self.refreshIfNeeded() }
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
-            self.browseOrder = result.order
+            self.browseOrder = self.coding.pageGeneration == pageGeneration ? result.order : nil
             self.githubHistory = result.github; self.recordings = result.recordings; self.issues = result.issues
             if self.speakerNames != result.speakers { self.speakerNames = result.speakers }
             self.pollSemanticSearch()
             await self.updateSearch(debounce: false)?.value
         }
     }
+    private func configureCodingPage() {
+        guard filter.showsCoding else { return }
+        let provider: CodingProvider? = filter == .codex ? .codex : filter == .claudeCode ? .claudeCode : nil
+        coding.setBrowseFilter(.init(provider: provider, project: codingProject.isEmpty ? nil : codingProject,
+                                     branch: codingBranch.isEmpty ? nil : codingBranch))
+    }
+    private var browsing: Bool {
+        search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && searchSpeaker.isEmpty && !(filter == .github && hasGitHubFilters)
+    }
+    var hasMoreCoding: Bool { filter.showsCoding && sources.contains(.coding) && browsing && coding.hasMore }
+    func loadOlderCoding(after id: String) {
+        if hasMoreCoding && id == coding.sessions.last?.id { coding.loadMore() }
+    }
     @discardableResult func updateSearch(debounce: Bool = true) -> Task<Void, Never>? {
         searchTask?.cancel()
         let token = UUID(); searchGeneration = token
-        if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && searchSpeaker.isEmpty
-            && !(filter == .github && hasGitHubFilters)
-        {
+        if browsing {
             searchHits = [:]; resultQuery = ""; searching = false
             matchedGitHub = githubHistory; matchedRecordings = recordings; codingHits = [:]
             matchedCoding = sources.contains(.coding) && filter.callScope == .work ? coding.sessions : []
             // A coding snapshot can change while its replacement scan is still running.
-            matchedOrder = browseOrder ?? activityOrder(recordings, matchedCoding, githubHistory, query: "")
+            if recordings.isEmpty && githubHistory.isEmpty {
+                matchedOrder = matchedCoding.map(\.id)
+            } else {
+                matchedOrder = browseOrder ?? activityOrder(recordings, matchedCoding, githubHistory, query: "")
+            }
             applyFilter(); return nil
         }
         guard let index = searchIndex else { return nil }
@@ -650,7 +674,8 @@ enum GitHubPeriod: String, CaseIterable {
             throw RecorderError.message("Save or cancel your edits before moving this item to Trash.")
         }
         guard let recorder, !recorder.locked else { throw RecorderError.message("Finish recording before moving items to Trash.") }
-        if version == nil, recording.isDirectory, CallFileOperations.contains(recording.url, recorder.destination.resolvingSymlinksInPath()) {
+        if version == nil, recording.isDirectory, let destination = recorder.destination,
+           CallFileOperations.contains(recording.url, destination.resolvingSymlinksInPath()) {
             throw RecorderError.message("This call contains the current recording destination. Choose another destination in Settings first.")
         }
         try beginManagement()
@@ -687,6 +712,23 @@ enum GitHubPeriod: String, CaseIterable {
         if !roots.contains(folder) {
             roots.append(folder); defaults.set(roots.map(\.path), forKey: "libraryFolders")
         }
+    }
+    static func savedRecordingFolders(in defaults: UserDefaults,
+                                      legacyDestination: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music/Call Recordings", isDirectory: true)) -> [URL] {
+        var paths = defaults.stringArray(forKey: "libraryFolders") ?? []
+        if !defaults.bool(forKey: "migratedImplicitRecordingFolder") {
+            // Older versions registered this path when Recordings was enabled, even before it existed.
+            let path = legacyDestination.resolvingSymlinksInPath().standardizedFileURL.path
+            if paths.contains(path), defaults.object(forKey: "destination") == nil {
+                do { _ = try FileManager.default.attributesOfItem(atPath: path) }
+                catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                    paths.removeAll { $0 == path }
+                    defaults.set(paths, forKey: "libraryFolders")
+                } catch { /* Keep inaccessible folders so the library reports the error. */ }
+            }
+            defaults.set(true, forKey: "migratedImplicitRecordingFolder")
+        }
+        return paths.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
     func removeFolder(_ folder: URL) {
         guard folder != currentDestination else { return }

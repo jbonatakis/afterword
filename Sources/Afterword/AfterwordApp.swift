@@ -99,13 +99,14 @@ private struct RecordingMenuCommands: View {
 
 private struct AfterwordSettings: View {
     @ObservedObject var library: RecordingLibraryModel
-    let recorder: RecordingCoordinator
+    @ObservedObject var recorder: RecordingCoordinator
 
     var body: some View {
         TabView(selection: $library.settingsTab) {
             Form {
                 Section("Library sources") {
-                    SourceToggles(selection: Binding(get: { library.sources }, set: library.setSources))
+                    SourceToggles(selection: Binding(get: { library.sources }, set: { library.setSources($0) }),
+                                  destination: $recorder.destination, recordingLocked: recorder.locked)
                     Text("Turning off a source pauses its background work and hides it from the library and connected agents. Turn it on again to restore your setup.")
                         .font(.caption).foregroundStyle(.secondary)
                     if let error = library.sourceError { Text(error).foregroundStyle(.red) }
@@ -230,7 +231,9 @@ struct RecorderView: View {
                                     HStack {
                                         Button("Recover recording") { recorder.recover(candidate) }.disabled(!candidate.canRecover)
                                         Menu("More") {
-                                            Button("Export to selected destination") { recorder.recover(candidate, useCurrentDestination: true) }.disabled(!candidate.canRecover)
+                                            Button(recorder.destination == nil ? "Choose export folder…" : "Export to selected destination") {
+                                                recorder.recover(candidate, useCurrentDestination: true)
+                                            }.disabled(!candidate.canRecover)
                                             Button("Show recovery files") { recorder.reveal(candidate.directory) }
                                         }.menuStyle(.borderlessButton)
                                     }
@@ -309,10 +312,7 @@ struct RecorderSettings: View {
         Form {
             SourcePicker(recorder: recorder)
             LabeledContent("Save recordings to") {
-                VStack(alignment: .trailing) {
-                    Text(recorder.destination.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")).lineLimit(2)
-                    Button("Choose folder…") { recorder.chooseDestination() }.disabled(recorder.locked)
-                }
+                RecordingFolderPicker(destination: $recorder.destination).disabled(recorder.locked)
             }
             Text("Each recording gets a dated folder with Microphone.m4a, System.m4a, and Mixed.m4a. The tracks share the same start time and duration.").font(.caption).foregroundStyle(.secondary)
             Text("Audio stays local. Your selected folder may be synced or backed up by another service.").font(.caption).foregroundStyle(.secondary)

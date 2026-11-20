@@ -208,6 +208,65 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertEqual(absolute.map(\.path), ["/"])
     }
 
+    func testFolderBatchPreservesHistoryUntilApplyAndKeepsIncludedChildren() throws {
+        let store = try imported()
+        try store.setEnabled(true, for: .codex)
+        let other = "/projects/other"
+        try writeRollout(threadID, project: other)
+        let saved = try store.settings().projectSelection
+        let both = saved.settingFolder("/projects", included: true)
+        XCTAssertFalse(both.removesProjects(from: saved))
+        try store.applyProjectSelection(both, replacing: saved)
+        try store.synchronize(reader: CodexReader(homeDirectory: codexHome))
+        let originalSessions = try store.sessions()
+        XCTAssertEqual(Set(originalSessions.map(\.project)), [project, other])
+
+        let draft = both.settingFolder("/projects", included: false)
+            .settingFolder(project, included: true)
+            .settingFolder("/new/repo", included: true)
+        XCTAssertTrue(draft.removesProjects(from: both))
+        XCTAssertEqual(try store.settings().projectSelection, both)
+        XCTAssertEqual(try store.sessions(), originalSessions)
+
+        try store.applyProjectSelection(draft, replacing: both)
+        XCTAssertEqual(try store.settings().projectSelection, draft)
+        XCTAssertEqual(try store.sessions(), originalSessions.filter { $0.project == project })
+        XCTAssertFalse(try store.history(id: XCTUnwrap(store.sessions().first).id).messages.isEmpty)
+        XCTAssertThrowsError(try store.applyProjectSelection(.init(), replacing: both))
+        XCTAssertEqual(try store.settings().projectSelection, draft)
+        XCTAssertEqual(try store.sessions().count, 1)
+    }
+
+    func testSavedPagesUseStableTiesAndFilterBeforeLimiting() throws {
+        XCTAssertTrue(try CodingArchive.sessionPage(in: archived).sessions.isEmpty)
+        XCTAssertFalse(CodingArchive.exists(in: archived))
+        let archive = try imported()
+        try archive.setEnabled(true, for: .codex)
+        try archive.setProjectFolder("/projects", included: true)
+        for n in 1...6 {
+            try writeRollout(String(format: "00000000-0000-4000-a000-%012d", n), project: "/projects/other")
+        }
+        try archive.synchronize(reader: CodexReader(homeDirectory: codexHome))
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("UPDATE sessions SET modified='100.125'")
+        let expected = try archive.sessions()
+        var ids: [String] = []
+        var cursor: CodingSessionPage.Cursor?
+        repeat {
+            let page = try CodingArchive.sessionPage(in: archived, after: cursor, limit: 2)
+            ids += page.sessions.map(\.id)
+            cursor = page.next
+            XCTAssertEqual(page.revision, try archive.revision)
+        } while cursor != nil
+        XCTAssertEqual(ids, expected.map(\.id))
+        let filtered = try CodingArchive.sessionPage(in: archived, filter: .init(provider: .claudeCode, project: project, branch: "device-guard"), limit: 1)
+        XCTAssertEqual(filtered.sessions.map(\.source), ["claude-code"])
+        XCTAssertNil(filtered.next)
+        let plan = try db.rows("EXPLAIN QUERY PLAN SELECT info FROM sessions WHERE -CAST(modified AS REAL) >= -CAST(? AS REAL) AND (-CAST(modified AS REAL),id) > (-CAST(? AS REAL),?) ORDER BY -CAST(modified AS REAL),id LIMIT 201", ["100.125", "100.125", "id"])
+        XCTAssertTrue(plan.contains { $0.last?.contains("SEARCH sessions USING INDEX sessions_recent") == true })
+        XCTAssertFalse(plan.contains { $0.last?.contains("TEMP B-TREE") == true })
+    }
+
     func testOptInArchiveViewsAndCleanup() throws {
         let store = try CodingArchive(directory: archived)
         try store.synchronize(reader: reader)

@@ -31,26 +31,26 @@ public final class RecordingEngine {
     private var permissionFailure = false
     private var lastPermissionCheck: TimeInterval = 0
     public init(onEvent: @escaping (EngineEvent) -> Void) { self.onEvent = onEvent }
-    public func start(input: ResolvedInput, destination: URL, preview: Bool, microphoneEnabled: Bool, callDetails: CallDetails? = nil, balanceMix: Bool = true) {
+    public func start(input: ResolvedInput, destination: URL?, preview: Bool, microphoneEnabled: Bool, callDetails: CallDetails? = nil, balanceMix: Bool = true) {
         controlLock.lock(); desiredMicrophoneEnabled = microphoneEnabled; controlLock.unlock()
         queue.async { [self] in
             guard !active else { return }
             active = true; self.preview = preview; announced = false; permissionFailure = false
             do {
-                if !preview {
+                let recordingFolder = preview ? nil : destination
+                if let recordingFolder {
+                    try StorageGuard.checkRecordingFolder(recordingFolder, reserve: StorageGuard.startReserve)
                     try PrivateFiles.directory(SessionStore.defaultRoot)
-                    if !FileManager.default.fileExists(atPath: destination.path) {
-                        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                    }
                     try StorageGuard.check(SessionStore.defaultRoot, reserve: StorageGuard.startReserve)
-                    try StorageGuard.check(destination, reserve: StorageGuard.startReserve)
+                } else if !preview {
+                    throw RecorderError.message("Choose where to save recordings before starting.")
                 }
                 let capture = CoreAudioCapture(); self.capture = capture
                 try capture.prepare(input: input, queue: queue) { [weak self] message in self?.finish(reason: message) }
                 guard let layout = capture.layout, let ring = capture.ring else { throw RecorderError.message("Capture layout is unavailable.") }
                 onEvent(.prepared(formats: capture.formats, layout: layout))
-                if !preview {
-                    store = try SessionStore(manifest: SessionManifest(input: input, formats: capture.formats, destination: destination, callDetails: callDetails, balanceMix: balanceMix))
+                if let recordingFolder {
+                    store = try SessionStore(manifest: SessionManifest(input: input, formats: capture.formats, destination: recordingFolder, callDetails: callDetails, balanceMix: balanceMix))
                 }
                 pipeline = try AudioPipeline(sampleRate: layout.sampleRate, store: store)
                 controlLock.lock()

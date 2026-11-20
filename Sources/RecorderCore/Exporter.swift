@@ -34,12 +34,9 @@ public enum Exporter {
             // the remaining mix alone or overwrite the earlier delivery.
         }
         let destination = URL(fileURLWithPath: manifest.destination, isDirectory: true)
-        if !FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        }
         let bytesPerSecond = manifest.hasSeparateTracks ? 40_000.0 : 16_000.0
         let expectedBytes = Int64(Double(manifest.totalFrames) / 48_000 * bytesPerSecond) + 12_000_000
-        try StorageGuard.check(destination, reserve: StorageGuard.emergencyReserve + expectedBytes)
+        try StorageGuard.checkRecordingFolder(destination, reserve: StorageGuard.emergencyReserve + expectedBytes)
         let temporary = destination.appendingPathComponent(".Call-\(manifest.id.uuidString)-\(UUID().uuidString)\(manifest.hasSeparateTracks ? "" : ".m4a")", isDirectory: manifest.hasSeparateTracks)
         if manifest.hasSeparateTracks { try PrivateFiles.directory(temporary) }
         else { try PrivateFiles.create(temporary) }

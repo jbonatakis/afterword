@@ -156,6 +156,11 @@ import Lookback
         while library.coding.busy || library.refreshing { try await Task.sleep(for: .milliseconds(10)) }
         try fillGitHub(root, count: 4 * n)
         await library.refresh()?.value
+        for _ in 0..<2000 {
+            if library.coding.sessions.count == 2 * n { break }
+            if let last = library.coding.sessions.last { library.loadOlderCoding(after: last.id) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         try require(library.activity.count == 7 * n, "Expected \(7*n) rows, found \(library.activity.count)")
         try checkOrder(library)
         // Measure the attendance transaction independently: publishing to the library's own calendar

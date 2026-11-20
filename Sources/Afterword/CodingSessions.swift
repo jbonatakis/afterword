@@ -1,55 +1,94 @@
 import SwiftUI
 import RecorderCore
 
+struct ProjectFolderChanges: Equatable {
+    let original, selection: CodingProjectSelection
+}
+
 private struct CodingSnapshot {
     let settings: CodingImportSettings?
-    let available: [String]
+    let folders: [CodingProjectFolder]
+    let projects: [String]
     let accounts: [LocalCodexAccount]
-    let sessions: [CodingSession]
+    let branches: [String]
+    let revision: String
     let issue: String?
 }
 
 private actor CodingImportWorker {
     let directory: URL
+    private var available: [String] = []
     init(directory: URL) { self.directory = directory }
 
     func refresh(change: CodingCoordinator.Change?, discover: Bool) throws -> CodingSnapshot {
         try Task.checkCancellation()
         if change == nil && !CodingArchive.exists(in: directory) {
-            return .init(settings: nil, available: [], accounts: [], sessions: [], issue: nil)
+            available = []
+            return .init(settings: nil, folders: [], projects: [], accounts: [], branches: [], revision: "", issue: nil)
         }
         let archive = try CodingArchive(directory: directory)
+        var issues: [String] = []
         switch change {
         case .enabled(let provider, let value): try archive.setEnabled(value, for: provider)
         case .account(let selection): try archive.setCodexAccount(selection)
-        case .folder(let path, let included): try archive.setProjectFolder(path, included: included)
+        case .folders(let changes):
+            do { try archive.applyProjectSelection(changes.selection, replacing: changes.original) }
+            catch { issues.append(error.localizedDescription) }
         case nil: break
         }
         let result = try archive.refresh(discoverProjects: discover)
-        return try .init(settings: archive.settings(), available: result.projects, accounts: result.accounts, sessions: archive.sessions(),
-                         issue: result.issues.isEmpty ? nil : result.issues.joined(separator: "\n"))
+        issues += result.issues
+        let settings = try archive.settings()
+        let projects = try Set(archive.sessionProjects()).union(settings.projectSelection.exact)
+        if discover || settings.providers.isEmpty { available = result.projects }
+        let paths = projects.union(available).union(settings.projectSelection.folders.keys)
+        return try .init(settings: settings, folders: CodingProjectFolder.tree(paths: paths), projects: projects.sorted(),
+                     accounts: result.accounts, branches: archive.sessionBranches(), revision: archive.revision,
+                     issue: issues.isEmpty ? nil : issues.joined(separator: "\n"))
     }
 }
 
 @MainActor final class CodingCoordinator: ObservableObject {
-    enum Change: Equatable { case enabled(CodingProvider, Bool), account(CodexAccountSelection), folder(String, Bool) }
+    enum Change: Equatable {
+        case enabled(CodingProvider, Bool), account(CodexAccountSelection)
+        case folders(ProjectFolderChanges)
+
+        var folderSelection: CodingProjectSelection? {
+            if case .folders(let changes) = self { return changes.selection }
+            return nil
+        }
+    }
     let directory: URL
     private let worker: CodingImportWorker
     @Published private(set) var providers: Set<CodingProvider> = []
     @Published private(set) var codexAccount = CodexAccountSelection.automatic
     @Published private(set) var accounts: [LocalCodexAccount] = []
     var enabled: Bool { !providers.isEmpty }
-    @Published private(set) var selection = CodingProjectSelection()
+    @Published private var selection = CodingProjectSelection()
+    var effectiveSelection: CodingProjectSelection {
+        pendingChanges.reversed().lazy.compactMap(\.folderSelection).first ?? activeChange?.folderSelection ?? selection
+    }
     @Published private(set) var projects: [String] = []
-    @Published private(set) var available: [String] = []
+    @Published private(set) var folders: [CodingProjectFolder] = []
+    @Published private(set) var branches: [String] = []
     @Published private(set) var sessions: [CodingSession] = []
+    private var cursor: CodingSessionPage.Cursor?
+    var hasMore: Bool { cursor != nil }
+    private(set) var pageGeneration = UUID()
+    private var pageRevision: String?
+    private var importRevision: String?
+    private var browseFilter = CodingBrowseFilter()
+    private var pageTask: Task<Void, Never>?
+    var pageChanged: (() -> Void)?
+    private static let pageSize = 200
     @Published private(set) var busy = false
     @Published private(set) var issue: String?
     var changed: (() -> Void)?
     private var timer: Timer?
     private var task: Task<Void, Never>?
     private var wantsDiscovery = false
-    private var pendingChanges: [Change] = []
+    @Published private var activeChange: Change?
+    @Published private var pendingChanges: [Change] = []
 
     init(directory: URL) {
         self.directory = directory
@@ -60,12 +99,15 @@ private actor CodingImportWorker {
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in if self?.enabled == true { self?.refresh() } }
         }
+        loadPage()
         refresh()
     }
     func stop() {
         timer?.invalidate(); timer = nil
         task?.cancel(); task = nil; busy = false
-        wantsDiscovery = false; pendingChanges = []
+        pageTask?.cancel(); pageTask = nil
+        cursor = nil; pageRevision = nil; importRevision = nil; sessions = []
+        wantsDiscovery = false; pendingChanges = []; activeChange = nil
     }
     func refresh(_ change: Change? = nil, discover: Bool = false) {
         guard timer != nil else { return }
@@ -75,25 +117,28 @@ private actor CodingImportWorker {
             return
         }
         busy = true
+        activeChange = change
         task = Task(priority: .utility) {
             do {
                 let next = try await worker.refresh(change: change, discover: discover)
                 guard !Task.isCancelled else { return }
                 let nextProviders = next.settings?.providers ?? []
                 let rules = next.settings?.projectSelection ?? CodingProjectSelection()
-                let nextProjects = Set(next.sessions.map(\.project)).union(rules.exact).sorted()
                 if selection != rules { selection = rules }
-                let updated = sessions != next.sessions || projects != nextProjects || providers != nextProviders
-                providers = nextProviders; projects = nextProjects; sessions = next.sessions; issue = next.issue
+                let updated = importRevision != next.revision || projects != next.projects || providers != nextProviders
+                importRevision = next.revision
+                providers = nextProviders; projects = next.projects; folders = next.folders; issue = next.issue
+                branches = next.branches
+                if next.revision != pageRevision { loadPage() }
                 codexAccount = next.settings?.codexAccount ?? .automatic
                 if discover || !rules.folders.isEmpty || !projects.isEmpty || !providers.contains(.codex) { accounts = next.accounts }
-                if discover || !enabled { available = next.available }
                 if updated { changed?() }
             } catch {
                 guard !Task.isCancelled else { return }
                 issue = error.localizedDescription
             }
             busy = false
+            activeChange = nil
             if !pendingChanges.isEmpty || wantsDiscovery {
                 let next = pendingChanges.isEmpty ? nil : pendingChanges.removeFirst()
                 let discover = wantsDiscovery
@@ -101,16 +146,64 @@ private actor CodingImportWorker {
             }
         }
     }
+
+    func setBrowseFilter(_ filter: CodingBrowseFilter) {
+        guard filter != browseFilter else { return }
+        browseFilter = filter
+        cursor = nil; pageRevision = nil; sessions = []
+        pageGeneration = UUID()
+        if timer != nil { loadPage() }
+    }
+
+    func loadMore() {
+        guard timer != nil, cursor != nil, pageTask == nil else { return }
+        loadPage(append: true)
+    }
+
+    private func loadPage(append: Bool = false) {
+        pageTask?.cancel()
+        let directory = directory, filter = browseFilter
+        let after = append ? cursor : nil, revision = pageRevision
+        let size = Self.pageSize
+        let loaded = sessions.count
+        pageTask = Task {
+            let read = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                var page = try CodingArchive.sessionPage(in: directory, filter: filter, after: after,
+                                                        limit: append ? size : max(loaded, size))
+                let canAppend = append && page.revision == revision
+                if append && !canAppend {
+                    // Imports can move or delete rows across the cursor. Replace the visible prefix atomically.
+                    try Task.checkCancellation()
+                    page = try CodingArchive.sessionPage(in: directory, filter: filter, limit: loaded + size)
+                }
+                return (page, canAppend)
+            }
+            do {
+                let (page, canAppend) = try await withTaskCancellationHandler { try await read.value } onCancel: { read.cancel() }
+                guard !Task.isCancelled else { return }
+                pageTask = nil
+                cursor = page.next
+                pageRevision = page.revision
+                if canAppend { sessions.append(contentsOf: page.sessions) } else { sessions = page.sessions }
+                pageGeneration = UUID()
+                pageChanged?()
+            } catch {
+                guard !Task.isCancelled else { return }
+                pageTask = nil; pageRevision = nil; issue = error.localizedDescription
+            }
+        }
+    }
+
 }
 
 struct CodingSettingsView: View {
     @ObservedObject var coding: CodingCoordinator
-    @State private var removing: String?
-    private var folders: [CodingProjectFolder] {
-        let paths = Set(coding.available + coding.projects).union(coding.selection.folders.keys)
-        return CodingProjectFolder.tree(paths: paths)
-    }
+    @State private var draft: ProjectFolderChanges?
+    @State private var confirmingRemoval = false
+
     var body: some View {
+        let selection = draft?.selection ?? coding.effectiveSelection
         Form {
             Section {
                 ForEach(CodingProvider.allCases, id: \.self) { provider in
@@ -137,29 +230,50 @@ struct CodingSettingsView: View {
                 }
                 Text("Folder selections apply to every enabled source and include future projects beneath each checked folder. Afterword saves prompts, replies, and tool names locally. Pausing a source keeps its saved sessions available.")
                     .font(.caption).foregroundStyle(.secondary)
-            }
+            }.disabled(coding.busy)
             Section("Projects") {
-                ForEach(folders) { folder in
-                    ProjectFolderRow(folder: folder, selection: coding.selection, importing: coding.enabled, depth: 0) { path, included in
-                        if included { coding.refresh(.folder(path, true)) } else { removing = path }
+                ForEach(coding.folders) { folder in
+                    ProjectFolderRow(folder: folder, selection: selection, importing: coding.enabled, depth: 0) { path, included in
+                        let original = draft?.original ?? coding.effectiveSelection
+                        let next = selection.settingFolder(path, included: included)
+                        draft = next == original ? nil : ProjectFolderChanges(original: original, selection: next)
                     }
                 }
                 if coding.enabled {
-                    Button("Refresh projects") { coding.refresh(discover: true) }
-                    if folders.isEmpty && !coding.busy {
+                    Button("Refresh projects") { coding.refresh(discover: true) }.disabled(coding.busy)
+                    if coding.folders.isEmpty && !coding.busy {
                         Text("No local sessions with a project directory were found.").foregroundStyle(.secondary)
                     }
                 }
             }
-            if coding.busy { ProgressView("Checking coding sessions…").controlSize(.small) }
             if let issue = coding.issue { Text(issue).foregroundStyle(.red) }
         }
-        .formStyle(.grouped).disabled(coding.busy)
+        .formStyle(.grouped)
+        .safeAreaInset(edge: .bottom) {
+            if coding.busy || draft != nil {
+                HStack {
+                    if coding.busy { ProgressView("Checking coding sessions…").controlSize(.small) }
+                    Spacer()
+                    if let changes = draft {
+                        Button("Discard") { draft = nil }
+                        Button("Apply") {
+                            if changes.selection.removesProjects(from: changes.original) { confirmingRemoval = true }
+                            else { apply(changes) }
+                        }.buttonStyle(.borderedProminent)
+                    }
+                }.padding().background(.bar)
+            }
+        }
         .onAppear { coding.refresh(discover: true) }
-        .confirmationDialog("Remove saved sessions in this folder?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible, presenting: removing) { path in
-            Button("Remove folder history", role: .destructive) { coding.refresh(.folder(path, false)) }
+        .confirmationDialog("Remove saved sessions from excluded folders?", isPresented: $confirmingRemoval, titleVisibility: .visible, presenting: draft) { changes in
+            Button("Apply and remove history", role: .destructive) { apply(changes) }
             Button("Cancel", role: .cancel) {}
-        } message: { path in Text("Afterword will remove its saved sessions for \(path) and its subfolders, and stop importing them.") }
+        } message: { _ in Text("Afterword will delete its saved history for projects you deselected and stop importing their sessions.") }
+    }
+
+    private func apply(_ changes: ProjectFolderChanges) {
+        coding.refresh(.folders(changes))
+        draft = nil
     }
 }
 
@@ -191,7 +305,7 @@ private struct ProjectFolderRow: View {
                 }.fixedSize().disabled(!importing && state == .off)
                     .contextMenu {
                         if importing && state != .on { Button("Include folder and subfolders") { change(folder.path, true) } }
-                        if state != .off { Button("Remove folder history…", role: .destructive) { change(folder.path, false) } }
+                        if state != .off { Button("Exclude folder and subfolders") { change(folder.path, false) } }
                     }
             }
             if open {
@@ -293,7 +407,7 @@ struct CodingSessionDetail: View {
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: session.updated) {
             let id = session.id
-            let result = await Task.detached(priority: .userInitiated) { Result { try CodingArchive(directory: directory).history(id: id) } }.value
+            let result = await Task.detached(priority: .userInitiated) { Result { try CodingArchive.history(in: directory, id: id) } }.value
             guard !Task.isCancelled else { return }
             switch result {
             case .success(let value): history = value; issue = nil

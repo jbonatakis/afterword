@@ -41,6 +41,23 @@ public struct CodingProjectSelection: Sendable, Equatable {
         return exact.contains(path) || inherited(at: path)
     }
 
+    public func settingFolder(_ value: String, included: Bool) -> Self {
+        guard let path = Self.path(value) else { return self }
+        let remainingExact = exact.filter { !Self.contains($0, in: path) }
+        var remainingFolders = folders.filter { !Self.contains($0.key, in: path) }
+        let parentIncluded = path != "/" && inherited(at: (path as NSString).deletingLastPathComponent)
+        if included != parentIncluded { remainingFolders[path] = included }
+        return Self(exact: remainingExact, folders: remainingFolders)
+    }
+
+    public func removesProjects(from previous: Self) -> Bool {
+        if previous.exact.contains(where: { !includes($0) }) { return true }
+        // Coverage can only change at a rule boundary in either tree.
+        return Set(previous.folders.keys).union(folders.keys).contains {
+            previous.inherited(at: $0) && !inherited(at: $0)
+        }
+    }
+
     public func state(at path: String, hasChildren: Bool) -> State {
         if inherited(at: path) {
             return folders.contains { !$0.value && Self.contains($0.key, in: path) } ? .mixed : .on

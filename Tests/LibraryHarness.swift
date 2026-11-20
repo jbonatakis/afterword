@@ -40,6 +40,7 @@ import Lookback
         let name = Bundle.main.bundleIdentifier!
         UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
+        if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
         if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }
         let folder = root.appendingPathComponent("Call-2026-11-14_09-30-00")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -523,9 +524,15 @@ import Lookback
         let suite = UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let recorder = RecordingCoordinator(peopleURL: support.appendingPathComponent("People.json"), enabled: false, recoveryRoot: support.appendingPathComponent("Sessions"))
+        var chosenFolder: URL?
+        var pickerCount = 0
+        let recorder = RecordingCoordinator(peopleURL: support.appendingPathComponent("People.json"), enabled: false,
+                                           recoveryRoot: support.appendingPathComponent("Sessions"), requestRecordingFolder: {
+            pickerCount += 1
+            return chosenFolder
+        })
         let destination = support.appendingPathComponent("Recordings", isDirectory: true)
-        recorder.destination = destination
+        require(recorder.destination == nil, "A fresh install already had a recording destination")
         let library = RecordingLibraryModel(recorder: recorder, defaults: defaults, embeddingDirectory: embeddings)
         defer { library.shutdown() }
         require(library.sources.isEmpty && library.refresh() == nil, "A fresh library started source work")
@@ -563,9 +570,22 @@ import Lookback
         }
         require(!CodingArchive.exists(in: library.coding.directory) && !GitHubArchive.exists(in: library.github.directory),
                 "An unconfigured source created an archive")
-        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         UserDefaults.standard.set(false, forKey: "KeyboardShortcuts_toggleCallRecording")
         library.setSources([.recordings])
+        await library.refresh()?.value
+        require(pickerCount == 0 && library.roots.isEmpty && library.issues.isEmpty, "Skipping the folder in setup produced a warning or registered a folder")
+        recorder.selectedUID = "unavailable-test-device" // Exercise preparation without capturing live input.
+        recorder.start(preview: true)
+        require(pickerCount == 0 && recorder.state == .idle, "Testing audio requested a destination")
+        recorder.toggleRecording()
+        require(pickerCount == 1 && recorder.state == .idle && recorder.destination == nil, "Cancelling the first Record did not leave the recorder idle")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        chosenFolder = destination
+        recorder.start()
+        require(pickerCount == 2 && recorder.destination == destination && recorder.state == .idle, "First Record did not accept the chosen folder")
+        recorder.start()
+        require(pickerCount == 2, "Recording asked for the same folder twice")
+        require(RecordingCoordinator(enabled: false).destination == destination, "The chosen recording destination did not survive relaunch")
         await library.refresh()?.value
         let savedFolders = defaults.stringArray(forKey: "libraryFolders")
         require(library.filter == .recordings && recorder.sourceEnabled && savedFolders?.count == 1, "Recordings did not start independently")
@@ -581,7 +601,27 @@ import Lookback
         require(library.activity.isEmpty && library.refresh() == nil, "Turning off all sources left activity visible")
         let reopened = RecordingLibraryModel(recorder: recorder, defaults: defaults, embeddingDirectory: embeddings)
         require(reopened.sources.isEmpty && reopened.roots.isEmpty, "An explicit empty selection was treated as an upgrade")
+        let setupFolder = support.appendingPathComponent("ChosenDuringSetup", isDirectory: true)
+        try FileManager.default.createDirectory(at: setupFolder, withIntermediateDirectories: true)
+        reopened.setSources([.recordings], recordingDestination: setupFolder)
+        require(recorder.destination == setupFolder && reopened.roots.contains(setupFolder.resolvingSymlinksInPath().standardizedFileURL), "Setup did not register the chosen recording destination")
+        try FileManager.default.removeItem(at: setupFolder)
+        await reopened.refresh()?.value
+        require(reopened.issues.contains { $0.contains("ChosenDuringSetup") }, "The library hid a missing chosen folder")
         reopened.shutdown()
+        let legacyFolder = support.appendingPathComponent("Music/Call Recordings", isDirectory: true)
+        let legacyPath = legacyFolder.resolvingSymlinksInPath().standardizedFileURL.path
+        defaults.set([legacyPath, destination.path], forKey: "libraryFolders")
+        defaults.removeObject(forKey: "migratedImplicitRecordingFolder")
+        require(RecordingLibraryModel.savedRecordingFolders(in: defaults, legacyDestination: legacyFolder).map(\.path) == [destination.path],
+                "Upgrade kept a missing implicit folder or removed another library folder")
+        defaults.set([legacyPath], forKey: "libraryFolders")
+        require(RecordingLibraryModel.savedRecordingFolders(in: defaults, legacyDestination: legacyFolder).count == 1,
+                "Upgrade cleanup repeated on a subsequently added folder")
+        defaults.removeObject(forKey: "migratedImplicitRecordingFolder")
+        defaults.set(legacyPath, forKey: "destination")
+        require(RecordingLibraryModel.savedRecordingFolders(in: defaults, legacyDestination: legacyFolder).count == 1,
+                "Upgrade removed the explicitly selected former default")
         print("PASS fresh launch, each standalone source, live switching, folder preservation, and explicit empty selection on relaunch")
     }
 
@@ -701,6 +741,74 @@ import Lookback
         await pump()
         require((scroll.documentView?.frame.height ?? fullHeight) < fullHeight / 2, "Typing in the repository picker did not filter the list")
         print("PASS repository picker native list and search across 603 repositories")
+    }
+
+    @MainActor static func checkCodingPages(_ root: URL) async throws {
+        let directory = root.appendingPathComponent("CodingSessions")
+        _ = try CodingArchive(directory: directory)
+        let db = try SearchDatabase(url: directory.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("""
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<450)
+            , summaries AS (SELECT i, json_object('id',printf('s%03d',i),'project','/fixture',
+              'title',CASE WHEN i=1 THEN 'archivedneedle' ELSE 'fixture' END,'source',CASE WHEN i=1 THEN 'claude-code' ELSE 'codex' END,
+              'branch',CASE WHEN i=1 THEN 'old' ELSE 'main' END,'updated',i) AS info FROM n)
+            INSERT INTO sessions SELECT printf('s%03d',i), '/fixture', i, info,
+              json_object('session',json(info),'messages',json('[]'),'conversationIDs',json('[]')) FROM summaries
+            """)
+        try db.execute("INSERT INTO coding_text VALUES ('s001','','1','0','archivedneedle','/fixture','old','','0')")
+        // Hold up the importer's schema update while the UI opens the saved SQLite page.
+        try db.execute("DROP INDEX sessions_branch_recent")
+        try db.execute("BEGIN IMMEDIATE")
+        try ActivitySourceStore.save([.coding], directory: root.appendingPathComponent("MCP"))
+        let recorder = RecordingCoordinator(enabled: false)
+        let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
+        defer { library.shutdown() }
+        func waitFor(_ message: String, _ ready: () -> Bool) async throws {
+            for _ in 0..<150 { if ready() { return }; try await Task.sleep(for: .milliseconds(20)) }
+            throw RecorderError.message(message)
+        }
+        try await waitFor("Cached page did not appear while import was blocked") { library.visibleCoding.count == 200 }
+        require(library.coding.busy && library.hasMoreCoding, "Cached page waited for synchronization")
+        require(library.visibleCoding.first?.id == "s450" && library.visibleCoding.last?.id == "s251", "Incorrect first page")
+        let history = try CodingArchive.history(in: directory, id: "s450")
+        require(history.session.id == "s450", "The selected session could not open during import")
+        let playback = RecordingPlayback(states: recorder.$state.eraseToAnyPublisher())
+        defer { playback.shutdown() }
+        let host = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 1180, height: 720),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentView = host; window.orderBack(nil); window.displayIfNeeded()
+        defer { window.orderOut(nil) }
+        func sessionTable(_ view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView, table.numberOfRows == 200 { return table }
+            return view.subviews.lazy.compactMap { sessionTable($0) }.first
+        }
+        try await waitFor("First page did not render in the session list") { sessionTable(host) != nil }
+        await pump(0.15)
+        require(library.visibleCoding.count == 200, "Rendering the top of the list loaded older pages")
+        sessionTable(host)?.scrollRowToVisible(199)
+        try await waitFor("Second page waited for import") { library.visibleCoding.count == 400 }
+        try db.execute("DELETE FROM sessions WHERE id='s450'")
+        try db.execute("INSERT OR REPLACE INTO settings VALUES ('revision','changed')")
+        try db.execute("COMMIT")
+        try await waitFor("Refresh lost the loaded range or kept a deleted session") {
+            library.visibleCoding.count == 400 && library.visibleCoding.first?.id == "s449"
+        }
+        await library.refresh()?.value
+        library.search = "archivedneedle"
+        await library.updateSearch(debounce: false)?.value
+        require(library.visibleCoding.map(\.id) == ["s001"] && library.coding.sessions.count == 400,
+                "Search missed a session outside the loaded pages")
+        library.search = ""
+        library.loadOlderCoding(after: "s050")
+        try await waitFor("Final page did not load") { !library.hasMoreCoding && library.visibleCoding.count == 449 }
+        require(Set(library.visibleCoding.map(\.id)).count == 449, "Paging repeated a session")
+        library.filter = .claudeCode
+        try await waitFor("Provider filter missed the oldest row") { library.visibleCoding.map(\.id) == ["s001"] }
+        library.filter = .coding; library.codingBranch = "old"
+        try await waitFor("Branch filter missed the oldest row") { library.visibleCoding.map(\.id) == ["s001"] }
+        require(library.coding.branches == ["main", "old"], "Branch picker only contained loaded pages")
+        print("PASS cached first paint and detail during a blocked import, native scrolling, concurrent removal, and archive-wide search and filters")
     }
 
     @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {

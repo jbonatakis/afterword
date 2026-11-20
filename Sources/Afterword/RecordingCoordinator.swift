@@ -11,6 +11,7 @@ import RecorderCore
     private(set) var sourceEnabled = false
     let peopleURL: URL
     private let recoveryRoot: URL
+    private let requestRecordingFolder: @MainActor () -> URL?
     lazy var calendar = CalendarCoordinator(recorder: self, directoryURL: peopleURL)
     @Published private(set) var state: RecordingState = .idle {
         didSet { transcription.recordingStateChanged(active: locked) }
@@ -18,7 +19,9 @@ import RecorderCore
     @Published var devices: [InputDevice] = []
     @Published var selectedUID: String?
     @Published var selectedChannel = -1
-    @Published var destination: URL
+    @Published var destination: URL? {
+        didSet { defaults.set(destination?.path, forKey: "destination") }
+    }
     @Published var balanceMix = UserDefaults.standard.object(forKey: "balanceMix") as? Bool ?? true { didSet { defaults.set(balanceMix, forKey: "balanceMix") } }
     @Published private(set) var personalRecording = false
     @Published private(set) var savingScope = false
@@ -65,11 +68,13 @@ import RecorderCore
         case .recoverable: return "Recoverable recording"
         }
     }
-    init(peopleURL: URL? = nil, enabled: Bool = true, recoveryRoot: URL = SessionStore.defaultRoot) {
+    init(peopleURL: URL? = nil, enabled: Bool = true, recoveryRoot: URL = SessionStore.defaultRoot,
+         requestRecordingFolder: @escaping @MainActor () -> URL? = { RecordingCoordinator.pickDestination(current: nil) }) {
         self.recoveryRoot = recoveryRoot
+        self.requestRecordingFolder = requestRecordingFolder
         transcription = TranscriptionCoordinator(loadRecording: false)
         self.peopleURL = peopleURL ?? PeopleDirectory.fileURL
-        destination = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Music/Call Recordings").path, isDirectory: true)
+        destination = UserDefaults.standard.string(forKey: "destination").map { URL(fileURLWithPath: $0, isDirectory: true) }
         noticesAccepted = UserDefaults.standard.bool(forKey: "noticesAccepted")
         if let data = defaults.data(forKey: "selection"), let selection = try? JSONDecoder().decode(MicrophoneSelection.self, from: data), case .device(let uid) = selection { selectedUID = uid }
         if let data = defaults.data(forKey: "channels"), let choices = try? JSONDecoder().decode([String: ChannelPreference].self, from: data) { channelPreferences = choices }
@@ -136,12 +141,18 @@ import RecorderCore
         defaults.set(try? JSONEncoder().encode(channelPreferences), forKey: "channels")
     }
     func acceptNotices() { noticesAccepted = true; defaults.set(true, forKey: "noticesAccepted") }
-    func chooseDestination() {
-        guard !locked else { return }
+    static func pickDestination(current: URL?) -> URL? {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
-        panel.prompt = "Use folder"; panel.directoryURL = destination
-        if panel.runModal() == .OK, let url = panel.url { destination = url; defaults.set(url.path, forKey: "destination") }
+        panel.message = "Choose where to save recordings."
+        panel.prompt = "Use folder"; panel.directoryURL = current
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+    private func ensureDestination() -> Bool {
+        if destination != nil { return true }
+        guard let folder = requestRecordingFolder() else { return false }
+        destination = folder
+        return true
     }
     func setPersonalRecording(_ personal: Bool) {
         guard !savingScope, !locked || state == .recording else { return }
@@ -162,6 +173,7 @@ import RecorderCore
     }
     func start(preview: Bool = false, callDetails: CallDetails? = nil) {
         guard sourceEnabled, !locked else { return }
+        guard preview || ensureDestination() else { return }
         message = nil; savedFile = nil; refreshDevices()
         guard let resolved else { return }
         guard let channel = DeviceSelection.channel(for: resolved, preferences: channelPreferences) else {
@@ -243,6 +255,7 @@ import RecorderCore
     }
     func recover(_ candidate: RecoveryCandidate, useCurrentDestination: Bool = false) {
         guard sourceEnabled, !locked, candidate.canRecover else { return }
+        guard !useCurrentDestination || ensureDestination() else { return }
         lifecycle.finish(.finalizing); state = .finalizing; message = nil
         engine?.recover(candidate, destination: useCurrentDestination ? destination : nil)
     }

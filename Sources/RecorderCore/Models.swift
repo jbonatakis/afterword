@@ -149,4 +149,11 @@ public enum StorageGuard {
         let free = try available(at: url)
         guard free >= reserve else { throw RecorderError.message("Low disk space: \(free / 1_000_000) MB available at \(url.lastPathComponent). Recording needs a \(reserve / 1_000_000) MB reserve.") }
     }
+    static func checkRecordingFolder(_ url: URL, reserve: Int64) throws {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw RecorderError.message("The recording folder at \(url.path) is unavailable. Reconnect it or choose another folder in Recording settings.")
+        }
+        try check(url, reserve: reserve)
+    }
 }

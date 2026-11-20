@@ -106,6 +106,11 @@ final class PersistenceTests: XCTestCase {
     }
     func testStorageFailuresAndDestinationReplacement() throws {
         let store = try makeStore(); try append(store, frames: 48_000, frequency: 440); try store.finish()
+        let missing = root.appendingPathComponent("disconnected")
+        try store.setDestination(missing)
+        XCTAssertThrowsError(try Exporter.export(store))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.directory.path))
         let bad = root.appendingPathComponent("not-a-directory")
         try Data([1]).write(to: bad); try store.setDestination(bad)
         XCTAssertThrowsError(try Exporter.export(store))

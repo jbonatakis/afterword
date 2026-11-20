@@ -347,7 +347,9 @@ actor CalendarReader: CalendarReading {
             if join { NSWorkspace.shared.open(current.reference.joinURL) }
         } else {
             startingFromCalendar = false
-            error = recorder?.message ?? "Recording could not start. Check the selected microphone."
+            if recorder?.destination != nil {
+                error = recorder?.message ?? "Recording could not start. Check the selected microphone."
+            }
         }
     }
     func showUpcoming() {

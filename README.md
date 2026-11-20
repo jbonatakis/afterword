@@ -8,7 +8,7 @@ Transcription prepares speaker groups and caches them on this Mac. When clips fr
 
 ## Choose your sources
 
-On first launch, select **Recordings**, **Coding sessions**, **GitHub**, or any combination. With one source enabled, the library opens directly to that source. For coding sessions, choose Claude Code or Codex and your projects in **Settings → Coding**. For GitHub, connect your account and select repositories in **Settings → GitHub**.
+On first launch, select **Recordings**, **Coding sessions**, **GitHub**, or any combination. For Recordings, choose a save folder during setup or when you start your first recording. Afterword remembers your choice in **Settings → Recording**. With one source enabled, the library opens directly to that source. For coding sessions, choose Claude Code or Codex and your projects in **Settings → Coding**. For GitHub, connect your account and select repositories in **Settings → GitHub**.
 
 Change these choices in **Settings → Sources**. Turning off Recordings releases the global shortcut, removes recording controls, and stops watching recording folders and calendars. Turning off Coding sessions or GitHub stops that import. Disabled sources are hidden from search and MCP. Re-enabling a source restores its saved history, settings, and sharing grants. Upgrading from an existing library keeps all three sources available.
 
@@ -139,7 +139,7 @@ Meeting metadata is checkpointed with the recording session and published atomic
 3. Press **Test audio** and grant the separate microphone and system-audio prompts. Speak and play audio in another app. Preview saves no audio and stops on panel dismissal or after 60 seconds. A permission dialog may dismiss the panel; reopen it and test again after granting access.
 4. Press **Start recording**. The menu-bar icon changes when valid capture buffers arrive, even if they contain silence. Closing the popover leaves recording running.
 5. **Record microphone** controls both the microphone track and playback mix. Turning it off zeros the selected microphone before queueing; the worker also enforces silence over the corresponding converted-frame interval. System audio continues, and silent portions remain in place so all tracks stay aligned. It does not mute your meeting app.
-6. Press **Stop recording**. Wait for **Saved mix + separate tracks**, then use **Show in Finder**. A dated `Call-YYYY-MM-DD_HH-mm-ss` folder in your selected destination contains all three files. The default destination is `~/Music/Call Recordings`; folder collisions get numeric suffixes.
+6. Press **Stop recording**. Wait for **Saved mix + separate tracks**, then use **Show in Finder**. A dated `Call-YYYY-MM-DD_HH-mm-ss` folder in your selected destination contains all three files. Folder collisions get numeric suffixes.
 
 **Global shortcut:** press **Control–Option–Command–R** (⌃⌥⌘R) to start or stop from any app while Afterword is running. Change it in **Settings → Recording → Keyboard shortcut** by clicking the field and pressing a new combination. Clear the field to disable it, or use **Restore default shortcut**. Your choice persists across launches. The action happens once when the keys are released. During preparation it cancels; during an audio test it ends the test; while saving it does nothing. Recording still uses the selected microphone, destination, and normal permission checks. A shortcut registration conflict is shown in Settings and the recorder panel.
 
@@ -153,13 +153,15 @@ Settings have Recording and Transcription tabs. Sources/destination lock during 
 
 ## Coding sessions
 
-In **Settings → Coding**, enable Claude Code, Codex, or both. Expand the project tree to select individual projects, or check a folder to include its existing and future descendants from every enabled source. A dash marks a partially selected folder. Clear a child to exclude its subtree. Removing a folder from import also removes its saved sessions from Afterword after confirmation. Selections from earlier versions keep their exact-path scope until you change them.
+In **Settings → Coding**, enable Claude Code, Codex, or both. Expand the project tree to select individual projects, or check a folder to include its existing and future descendants from every enabled source. A dash marks a partially selected folder. Clear a child to exclude its subtree. Choose **Apply** to import all selected folders in the background. You can keep selecting folders during an import. If your changes exclude previously selected projects, Afterword asks for confirmation before removing their saved sessions. Selections from earlier versions keep their exact-path scope until you change them.
 
 Afterword checks for new sessions every minute while running and when you refresh the library. Pausing a source keeps its saved sessions available.
 
 Afterword uses Lookback to read Claude Code’s local projects and Codex’s active and archived local threads. Codex discovery uses `$CODEX_HOME` when set and otherwise opens `~/.codex`. It includes top-level sessions and user forks. Afterword includes account-scoped chats automatically when it finds one local Codex account. If several accounts have chats on this Mac, choose one in Coding settings. Account discovery reads local thread headers. [Lookback](https://github.com/jbonatakis/lookback)
 
 Open **Coding sessions** for an individual project conversation or **All activity** to search across calls, coding sessions, and imported GitHub contributions. The conversation view follows the current branch. Recorded history includes earlier branches and pre-compaction messages. Search results open at the matching message and select the relevant view. Project and Git branch filters are in Search options. Tool names are available in collapsed disclosures. Afterword omits tool arguments and result payloads from the archive.
+
+On launch, Afterword shows the 200 most recent saved coding sessions while it checks for changes in the background. Scroll to load older sessions. Search and the provider, project, and branch filters cover the whole saved archive.
 
 The durable archive lives in `~/Library/Application Support/Afterword/CodingSessions`. It retains imported sessions when the source rotates or deletes local transcripts. Search works immediately with keywords. The optional semantic model indexes session titles and coding passages locally, with prompt and response context and the existing recording priority rules.
 

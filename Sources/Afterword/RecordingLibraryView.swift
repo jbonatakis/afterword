@@ -73,8 +73,26 @@ private extension LibraryFilter {
     }
 }
 
+struct RecordingFolderPicker: View {
+    @Binding var destination: URL?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let destination {
+                Text((destination.path as NSString).abbreviatingWithTildeInPath)
+                    .lineLimit(2).truncationMode(.middle).help(destination.path)
+            }
+            Button(destination == nil ? "Choose where to save recordings…" : "Change folder…") {
+                if let folder = RecordingCoordinator.pickDestination(current: destination) { destination = folder }
+            }
+        }
+    }
+}
+
 struct SourceToggles: View {
     @Binding var selection: Set<ActivitySource>
+    @Binding var destination: URL?
+    var recordingLocked = false
 
     var body: some View {
         ForEach(ActivitySource.allCases, id: \.self) { source in
@@ -96,6 +114,13 @@ struct SourceToggles: View {
                     }
                 } icon: { source.libraryFilter.icon }
             }
+            if source == .recordings && selection.contains(.recordings) {
+                RecordingFolderPicker(destination: $destination).disabled(recordingLocked)
+                if destination == nil {
+                    Text("You can also choose a folder when you start your first recording.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }
@@ -103,15 +128,16 @@ struct SourceToggles: View {
 private struct LibrarySourceChooser: View {
     @ObservedObject var library: RecordingLibraryModel
     @State private var selection: Set<ActivitySource> = []
+    @State var destination: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Choose your sources").font(.title.bold())
             Text("What would you like to see in Afterword? You can change this in Settings.")
                 .foregroundStyle(.secondary)
-            SourceToggles(selection: $selection)
+            SourceToggles(selection: $selection, destination: $destination)
             if let error = library.sourceError { Text(error).foregroundStyle(.red) }
-            Button("Open library") { library.setSources(selection) }
+            Button("Open library") { library.setSources(selection, recordingDestination: destination) }
                 .keyboardShortcut(.defaultAction).disabled(selection.isEmpty)
         }.frame(maxWidth: 360, alignment: .leading).padding(32)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -256,7 +282,7 @@ struct RecordingLibraryView: View {
                                 Menu(folder.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")) {
                                     Button("Show in Finder") { recorder.reveal(folder) }
                                     Button("Remove from library") { library.removeFolder(folder) }
-                                        .disabled(folder == recorder.destination.resolvingSymlinksInPath().standardizedFileURL)
+                                        .disabled(folder == recorder.destination?.resolvingSymlinksInPath().standardizedFileURL)
                                 }
                             }
                         } label: { Label("Recording folders", systemImage: "folder") }
@@ -292,7 +318,11 @@ struct RecordingLibraryView: View {
                         ForEach(library.activity) { row in
                             switch row {
                             case .call(let recording): recordingRow(recording)
-                            case .coding(let session): codingRow(session)
+                            case .coding(let session):
+                                codingRow(session)
+                                    .task(id: library.hasMoreCoding && session.id == library.coding.sessions.last?.id) {
+                                        library.loadOlderCoding(after: session.id)
+                                    }
                             case .github(let hit):
                                 VStack(alignment: .leading, spacing: 5) {
                                     Label(hit.item.title, systemImage: "arrow.triangle.branch").font(.headline).lineLimit(2)
@@ -316,7 +346,7 @@ struct RecordingLibraryView: View {
                         Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
                     }
                     if !library.visibleCoding.isEmpty || (library.filter.showsCoding && !library.filter.showsRecordings) {
-                        Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")")
+                        Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")\(library.hasMoreCoding ? " loaded" : "")")
                     }
                     if library.filter == .github || !library.visibleGitHub.isEmpty {
                         Text("\(library.visibleGitHub.count) GitHub items")
@@ -370,14 +400,14 @@ struct RecordingLibraryView: View {
                             ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
                         }
                     }
-                    if library.sources.contains(.coding) && !library.coding.sessions.isEmpty && library.filter.showsCoding {
+                    if library.sources.contains(.coding) && !library.coding.projects.isEmpty && library.filter.showsCoding {
                         Picker("Coding project", selection: $library.codingProject) {
                             Text("Any project").tag("")
                             ForEach(library.coding.projects, id: \.self) { Text($0).tag($0) }
                         }
                         Picker("Coding branch", selection: $library.codingBranch) {
                             Text("Any branch").tag("")
-                            ForEach(Array(Set(library.coding.sessions.compactMap(\.branch))).sorted(), id: \.self) { Text($0).tag($0) }
+                            ForEach(library.coding.branches, id: \.self) { Text($0).tag($0) }
                         }
                     }
                     Divider()
@@ -422,7 +452,7 @@ struct RecordingLibraryView: View {
 
     var body: some View {
         Group {
-            if library.sources.isEmpty { LibrarySourceChooser(library: library) }
+            if library.sources.isEmpty { LibrarySourceChooser(library: library, destination: recorder.destination) }
             else { libraryContent }
         }
         .background(LibraryCommandScope(bindings: keyboardBindings, cancelEditing: .init(enabled: {
