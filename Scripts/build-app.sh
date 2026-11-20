@@ -17,6 +17,10 @@ stage_app="$stage_root/Afterword.app"
 mkdir -p "$stage_app/Contents/MacOS" "$stage_app/Contents/Resources"
 cp "$binary_dir/Afterword" "$stage_app/Contents/MacOS/Afterword"
 cp Configuration/Info.plist "$stage_app/Contents/Info.plist"
+if [[ -n "${AFTERWORD_RELEASE_VERSION:-}" ]]; then
+    plutil -replace CFBundleShortVersionString -string "$AFTERWORD_RELEASE_VERSION" "$stage_app/Contents/Info.plist"
+    plutil -replace CFBundleVersion -string "$(git rev-list --count HEAD)" "$stage_app/Contents/Info.plist"
+fi
 if [[ -n "${AFTERWORD_GITHUB_CLIENT_ID:-}" ]]; then
     plutil -replace AfterwordGitHubClientID -string "$AFTERWORD_GITHUB_CLIENT_ID" "$stage_app/Contents/Info.plist"
 fi

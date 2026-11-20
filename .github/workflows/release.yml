@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  draft:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: afterword-main-draft
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Update draft for the current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 Scripts/draft-release.py
+
+  build:
+    if: github.event_name == 'release'
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    concurrency:
+      group: afterword-build-${{ github.event.release.id }}
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the release tag and runner
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$GITHUB_SHA" ]]
+          [[ "$(uname -m)" == arm64 ]]
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install uv==0.9.29
+      - name: Fetch the private Lookback dependency
+        env:
+          GH_TOKEN: ${{ secrets.LOOKBACK_READ_TOKEN }}
+        run: |
+          : "${GH_TOKEN:?Set LOOKBACK_READ_TOKEN to a token with read access to Lookback}"
+          url=https://github.com/jbonatakis/lookback.git
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' clone --bare "$url" "$RUNNER_TEMP/lookback.git"
+          git config --global url."file://$RUNNER_TEMP/lookback.git".insteadOf "$url"
+      - name: Import the release signing identity
+        env:
+          P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          : "${P12_BASE64:?Set MACOS_SIGNING_P12_BASE64 to the base64-encoded Developer ID Application PKCS#12 file}"
+          : "${P12_PASSWORD:?Set MACOS_SIGNING_P12_PASSWORD to the PKCS#12 export password}"
+          umask 077
+          cert="$RUNNER_TEMP/afterword-signing.p12"
+          trap 'rm -f "$cert"' EXIT
+          printf '%s' "$P12_BASE64" | base64 -D > "$cert"
+          keychain="$RUNNER_TEMP/afterword-release.keychain-db"
+          password="$(openssl rand -hex 32)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ { print $2 }')"
+          [[ "$identity" =~ ^[A-Fa-f0-9]{40}$ ]] || { echo 'Expected one valid Developer ID Application identity in the PKCS#12 file.' >&2; exit 1; }
+          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build and verify the Apple Silicon release
+        env:
+          AFTERWORD_GITHUB_CLIENT_ID: ${{ vars.AFTERWORD_GITHUB_CLIENT_ID }}
+        run: ./Scripts/build-release.sh "$RELEASE_TAG"
+      - name: Attach the signed app to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "build/release/Afterword-$RELEASE_TAG-macOS-arm64.zip" --clobber
+      - name: Remove the temporary signing keychain
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/afterword-release.keychain-db"
+          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi

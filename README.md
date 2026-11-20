@@ -53,6 +53,8 @@ xcodebuild -project Afterword.xcodeproj -scheme Afterword \
 
 The checked-in native project has app, core framework, C library, and XCTest targets, and defaults to the same local signing certificate. Override `CODE_SIGN_IDENTITY` consistently if using an Apple-issued certificate. Regenerate the project after adding/removing source or test files with `python3 Scripts/generate-project.py`. The Swift package provides the command-line build without Xcode project tooling.
 
+For GitHub releases, pushes to `main` update the draft. Publishing it builds the signed Apple Silicon ZIP. [Release setup and versioning](docs/releases.md)
+
 ## Recording library (version 0.8)
 
 The app opens a regular Mac window and appears in the Dock and app switcher. During a recording, the toolbar’s **Record** button shows a red stop icon, **Stop**, and the elapsed time. Click it to stop and save the call. The menu-bar recorder and your configured global shortcut remain available. Closing the library pauses playback and keeps Afterword running; use **Quit Afterword** to exit. Reopen the library from the Dock, **File → Show Library** (Command–1), or **Library** in the menu-bar panel.
