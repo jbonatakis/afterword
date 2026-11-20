@@ -2,9 +2,11 @@ import AppKit
 import AVFoundation
 import Combine
 import Lookback
+import SwiftUI
 @testable import RecorderCore
 
 /// Run with Scripts/check-library.sh Tests/MainThreadBenchmark.swift --release [calls] [trials].
+/// Append --recording-scroll to exercise a hidden activity list under 10 Hz recorder updates.
 /// All recordings, sessions, contacts and issues are generated in a private temporary directory.
 @main struct MainThreadBenchmark {
     @MainActor static func main() {
@@ -133,6 +135,68 @@ import Lookback
         try require(library.activity.map(\.id) == expected, "Cross-source result ordering changed")
     }
 
+    @MainActor static func measureRecordingScroll(library: RecordingLibraryModel, recorder: RecordingCoordinator, trials: Int) async throws {
+        let playback = RecordingPlayback(recorder: recorder)
+        defer { playback.shutdown() }
+        let host = NSHostingView(rootView: RecordingLibraryView(library: library, recorder: recorder, playback: playback, showControls: {}))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 1180, height: 740),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        func findList(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView, table.numberOfRows >= library.activity.count { return table }
+            return view.subviews.lazy.compactMap { findList(in: $0) }.first
+        }
+        guard let table = findList(in: host), let scroll = table.enclosingScrollView else {
+            throw RecorderError.message("Activity list did not render")
+        }
+        let clip = scroll.contentView
+        for trial in 1...trials {
+            clip.scroll(to: .zero)
+            scroll.reflectScrolledClipView(clip)
+            var moved = false
+            let start = now(), cpu = clock()
+            var previous = start, gaps: [Double] = []
+            let wheel = DispatchSource.makeTimerSource(queue: .main)
+            let meters = DispatchSource.makeTimerSource(queue: .main)
+            defer { wheel.cancel(); meters.cancel() }
+            // Deliver scroll steps to the fixture's clip view without posting system input.
+            wheel.setEventHandler {
+                let time = now()
+                gaps.append(time - previous)
+                previous = time
+                let offset = CGFloat(gaps.count % 60) * 2
+                clip.scroll(to: CGPoint(x: 0, y: offset))
+                scroll.reflectScrolledClipView(clip)
+                if clip.bounds.origin.y > 0 { moved = true }
+            }
+            var ticks = 0
+            meters.setEventHandler {
+                ticks += 1
+                var sample = PipelineSnapshot()
+                sample.frames = Int64((now() - start) * 48)
+                sample.systemPeak = Float(ticks % 10) / 10
+                recorder.receive(.levels(sample))
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+            }
+            wheel.schedule(deadline: .now() + .milliseconds(10), repeating: .milliseconds(10))
+            meters.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+            wheel.resume(); meters.resume()
+            try await Task.sleep(nanoseconds: 3_000_000_000)
+            let end = now()
+            let usage = Double(clock() - cpu) / Double(CLOCKS_PER_SEC) / ((end - start) / 1000) * 100
+            try require(moved && ticks > 0, "Timed scroll or recorder updates did not advance")
+            gaps.append(end - previous)
+            gaps.sort()
+            let p95 = gaps[Int(ceil(0.95 * Double(gaps.count))) - 1]
+            print(String(format: "SCROLL rows=%d trial=%d CPU=%.1f%% gap_p95=%.1fms gap_max=%.1fms ticks=%d",
+                         library.activity.count, trial, usage, p95, gaps.last!, ticks))
+        }
+        try require(!NSApp.isActive && !window.isVisible, "Scroll fixture became visible")
+    }
+
     @MainActor static func run() async throws {
         let args = CommandLine.arguments.dropFirst().compactMap(Int.init)
         let n = args.first ?? 100, trials = args.dropFirst().first ?? 21
@@ -163,6 +227,10 @@ import Lookback
         }
         try require(library.activity.count == 7 * n, "Expected \(7*n) rows, found \(library.activity.count)")
         try checkOrder(library)
+        if CommandLine.arguments.contains("--recording-scroll") {
+            try await measureRecordingScroll(library: library, recorder: recorder, trials: trials)
+            return
+        }
         // Measure the attendance transaction independently: publishing to the library's own calendar
         // schedules another full scan, which otherwise overlaps the following search sample.
         let attendanceCalendar = CalendarCoordinator(recorder: recorder, directoryURL: root.appendingPathComponent("People.json"), hasAccess: { false })
