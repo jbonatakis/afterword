@@ -1,8 +1,12 @@
 #!/bin/bash
-# Print one certificate fingerprint; never fall back to ad-hoc signing.
+# Resolve the signing identity used by the app and its helpers.
 set -euo pipefail
 requested="${SIGNING_IDENTITY:-${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-Call Recorder Local Development}}}"
 if [[ "$requested" == - ]]; then
+    if [[ -n "${AFTERWORD_RELEASE_VERSION:-}" ]]; then
+        echo '-'
+        exit 0
+    fi
     echo 'Afterword requires a persistent signing certificate. Run Scripts/setup-local-signing.sh or set SIGNING_IDENTITY to an existing certificate.' >&2
     exit 1
 fi

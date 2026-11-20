@@ -39,7 +39,7 @@ SIGNING_IDENTITY='Apple Development: Your Name (TEAMID)' ./Scripts/build-app.sh
 
 The bundle ID is `io.local.afterword`; the helper uses `io.local.afterword.transcription`. The default designated requirements bind each identifier to the signing certificate, so subsequent builds can satisfy the identity recorded with earlier permission grants. This follows [Apple’s documented update-identity mechanism](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements/). Moving from the old ad-hoc build to certificate signing can require one more round of permission approvals. Selecting a different certificate later can require approval again.
 
-Production builds stop before replacing the app if the signing identity is missing, ambiguous, or explicitly set to `-`; there is no ad-hoc fallback. Helper and app signatures are verified before installation. To verify two different signed builds without launching them, run `python3 Scripts/check-signing.py '/path/to/Previous.app' '/path/to/Updated.app'`. It checks mutual identity compatibility and rejects an ad-hoc copy with the same bundle ID. No build or setup script edits TCC records or resets permissions. Local self-signing does not provide Developer ID distribution or notarization; distribution beyond this Mac needs that separate setup.
+The local `build-app.sh` command requires a persistent signing identity so macOS can recognize the app across rebuilds. Helper and app signatures are verified before installation. To verify two different signed builds without launching them, run `python3 Scripts/check-signing.py '/path/to/Previous.app' '/path/to/Updated.app'`. It checks mutual identity compatibility and rejects an ad-hoc copy with the same bundle ID. No build or setup script edits TCC records or resets permissions. Apple Developer ID signing and notarization require separate setup.
 
 With Xcode 26 or newer, open `Afterword.xcodeproj` and choose the shared **Afterword** scheme, or run:
 
@@ -53,7 +53,7 @@ xcodebuild -project Afterword.xcodeproj -scheme Afterword \
 
 The checked-in native project has app, core framework, C library, and XCTest targets, and defaults to the same local signing certificate. Override `CODE_SIGN_IDENTITY` consistently if using an Apple-issued certificate. Regenerate the project after adding/removing source or test files with `python3 Scripts/generate-project.py`. The Swift package provides the command-line build without Xcode project tooling.
 
-For GitHub releases, pushes to `main` update the draft. Publishing it builds the signed Apple Silicon ZIP. [Release setup and versioning](docs/releases.md)
+For GitHub releases, pushes to `main` update the draft. Publishing it builds the Apple Silicon ZIP with ad-hoc signatures and requires no Apple Developer account. [Release setup and versioning](docs/releases.md)
 
 ## Recording library (version 0.8)
 

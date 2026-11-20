@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build a signed Apple Silicon app and zip it with the macOS bundle metadata.
+# Package an Apple Silicon release using certificate-free ad-hoc signatures.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tag="${1:-}"
@@ -15,7 +15,7 @@ fi
 output="$PWD/build/release"
 app="$output/Afterword.app"
 mkdir -p "$output"
-AFTERWORD_RELEASE_VERSION="${tag#v}" AFTERWORD_APP_OUTPUT="$app" CONFIGURATION=release ./Scripts/build-app.sh
+SIGNING_IDENTITY=- AFTERWORD_RELEASE_VERSION="${tag#v}" AFTERWORD_APP_OUTPUT="$app" CONFIGURATION=release ./Scripts/build-app.sh
 for binary in "$app"/Contents/MacOS/* "$app"/Contents/Helpers/*; do
     if [[ "$(lipo -archs "$binary")" != arm64 ]]; then
         echo "Unexpected architecture in $binary" >&2

@@ -16,14 +16,10 @@ The published tag supplies the app's version. The number of commits reachable fr
 
 ## GitHub Actions setup
 
-In **Settings → Secrets and variables → Actions**, add these repository secrets before publishing the first draft.
-
-| Secret | Value |
-| --- | --- |
-| `LOOKBACK_READ_TOKEN` | A fine-grained token with **Contents: Read-only** access to the private `jbonatakis/lookback` repository. SwiftPM uses the revision pinned by Afterword. |
-| `MACOS_SIGNING_P12_BASE64` | Base64-encoded PKCS#12 export containing the **Developer ID Application** certificate and its private key. |
-| `MACOS_SIGNING_P12_PASSWORD` | The password used to encrypt that export. |
+In **Settings → Secrets and variables → Actions**, add one repository secret, `LOOKBACK_READ_TOKEN`. Use a fine-grained token with read-only access to the contents of the private `jbonatakis/lookback` repository. SwiftPM uses the revision pinned by Afterword.
 
 If your release bundles a GitHub OAuth client ID, set the repository **variable** `AFTERWORD_GITHUB_CLIENT_ID`. Release immutability must be off for this publish-then-upload flow because GitHub locks assets when an immutable release is published. [GitHub release documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
 
-The workflow produces a Developer ID–signed `Afterword-vX.Y.Z-macOS-arm64.zip` with a deployment target of macOS 14.2. Apple notarization is a separate distribution step. To exercise the same packaging path locally on Apple Silicon, run `./Scripts/build-release.sh v0.16.0` with your usual signing identity. The ZIP is written to `build/release/`.
+The workflow packages `Afterword-vX.Y.Z-macOS-arm64.zip` for macOS 14.2 and later. It uses ad-hoc signatures for the app and its helpers, which you can create without an Apple Developer account. To build the same ZIP locally on Apple Silicon, run `./Scripts/build-release.sh v0.16.0`. The ZIP is written to `build/release/`.
+
+On first launch, macOS may flag a downloaded release as coming from an unidentified developer. After attempting to open a copy you trust, you can approve that app in **System Settings → Privacy & Security → Open Anyway**. [Apple’s guide to opening downloaded apps](https://support.apple.com/en-us/102445)

@@ -63,38 +63,11 @@ jobs:
           url=https://github.com/jbonatakis/lookback.git
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' clone --bare "$url" "$RUNNER_TEMP/lookback.git"
           git config --global url."file://$RUNNER_TEMP/lookback.git".insteadOf "$url"
-      - name: Import the release signing identity
-        env:
-          P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
-          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
-        run: |
-          : "${P12_BASE64:?Set MACOS_SIGNING_P12_BASE64 to the base64-encoded Developer ID Application PKCS#12 file}"
-          : "${P12_PASSWORD:?Set MACOS_SIGNING_P12_PASSWORD to the PKCS#12 export password}"
-          umask 077
-          cert="$RUNNER_TEMP/afterword-signing.p12"
-          trap 'rm -f "$cert"' EXIT
-          printf '%s' "$P12_BASE64" | base64 -D > "$cert"
-          keychain="$RUNNER_TEMP/afterword-release.keychain-db"
-          password="$(openssl rand -hex 32)"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 7200 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$cert" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
-          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ { print $2 }')"
-          [[ "$identity" =~ ^[A-Fa-f0-9]{40}$ ]] || { echo 'Expected one valid Developer ID Application identity in the PKCS#12 file.' >&2; exit 1; }
-          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
       - name: Build and verify the Apple Silicon release
         env:
           AFTERWORD_GITHUB_CLIENT_ID: ${{ vars.AFTERWORD_GITHUB_CLIENT_ID }}
         run: ./Scripts/build-release.sh "$RELEASE_TAG"
-      - name: Attach the signed app to the published release
+      - name: Attach the Apple Silicon ZIP to the published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "build/release/Afterword-$RELEASE_TAG-macOS-arm64.zip" --clobber
-      - name: Remove the temporary signing keychain
-        if: always()
-        run: |
-          keychain="$RUNNER_TEMP/afterword-release.keychain-db"
-          if [[ -f "$keychain" ]]; then security delete-keychain "$keychain"; fi
