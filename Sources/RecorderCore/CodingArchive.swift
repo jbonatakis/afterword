@@ -6,6 +6,8 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
     public let branch: String?
     public let started: Date?
     public let updated: Date
+    // Legacy sessions omit this field. Zero marks a compacted-context import queued for replay.
+    var transcriptVersion: Int? = nil
     public var providerName: String { CodingProvider(rawValue: source)?.name ?? source }
 }
 
@@ -257,6 +259,7 @@ public final class CodingArchive {
 
     private func synchronize(_ infos: [SessionInfo], reader: any SessionReader, provider: CodingProvider, options: CodingImportSettings) throws {
         guard !infos.isEmpty else { return }
+        if provider == .codex { try scheduleCodexTranscriptRepairs() }
         let rows = try db.rows("SELECT id,info FROM sessions WHERE json_extract(info,'$.source')=?", [provider.rawValue])
         let known = Dictionary(uniqueKeysWithValues: rows.map { ($0[0], $0[1]) })
         var failures = 0
@@ -265,11 +268,14 @@ public final class CodingArchive {
             guard let project = info.workingDirectory, options.projectSelection.includes(project) else { continue }
             let id = AgentJSON.hash(info.id.source + "/" + info.id.value)
             let stamp = String(info.modifiedAt.timeIntervalSince1970)
-            let session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
-                                        branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
             do {
+                let old = try known[id].map { try JSONDecoder().decode(CodingSession.self, from: Data($0.utf8)) }
+                var session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
+                                            branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
+                session.transcriptVersion = old?.transcriptVersion
                 // Codex can rename a thread in its index without modifying the rollout.
-                if let old = known[id], try JSONDecoder().decode(CodingSession.self, from: Data(old.utf8)) == session { continue }
+                if old == session && session.transcriptVersion != 0 { continue }
+                if provider == .codex { session.transcriptVersion = 1 }
                 let source = try reader.readSession(info.id)
                 if let metadata = source.info, metadata.workingDirectory != project { continue }
                 let imported = Self.project(source, session: session)
@@ -300,6 +306,21 @@ public final class CodingArchive {
             catch { failures += 1 }
         }
         if failures > 0 { throw RecorderError.message("Could not import \(failures) coding session(s). Afterword will retry.") }
+    }
+
+    private func scheduleCodexTranscriptRepairs() throws {
+        let flag = "codexBranchTranscriptV1"
+        guard try db.rows("SELECT 1 FROM settings WHERE key=?", [flag]).isEmpty else { return }
+        try db.transaction {
+            // Only sessions with archived passages could have lost replies. Scan the index once,
+            // then let the regular scoped importer replay each candidate when its source is available.
+            try db.execute("""
+                UPDATE sessions SET info=json_set(info,'$.transcriptVersion',0)
+                WHERE json_extract(info,'$.source')='codex' AND json_extract(info,'$.transcriptVersion') IS NULL
+                  AND id IN (SELECT DISTINCT session FROM coding_text WHERE archived='1')
+                """)
+            try db.execute("INSERT OR IGNORE INTO settings VALUES (?, '1')", [flag])
+        }
     }
 
     private static func project(_ source: SessionHistory, session: CodingSession) -> CodingHistory {
@@ -344,7 +365,7 @@ public final class CodingArchive {
         var conversationIDs: [String] = []
         var activeParents: [String: String] = [:]
         var previous: String?
-        for message in source.conversation {
+        for message in source.transcript {
             if message.isCompactionSummary { previous = nil }
             guard let position = message.recordedIndex, let id = idsByPosition[position] else { continue }
             conversationIDs.append(id)

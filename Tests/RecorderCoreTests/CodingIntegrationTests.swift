@@ -116,6 +116,49 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertTrue(try store.embeddingChunks().isEmpty)
     }
 
+    func testCodexCompactionRepairsExistingConversationAndSearchCitations() throws {
+        let rows = #"""
+        {"type":"event_msg","payload":{"type":"user_message","id":"prompt","message":"Build the app"}}
+        {"type":"event_msg","payload":{"type":"agent_message","id":"answer","message":"Signed the release bundle."}}
+        {"type":"compacted","payload":{"replacement_history":[{"type":"message","id":"prompt","role":"user","content":[{"type":"input_text","text":"Build the app"}]}]}}
+        {"type":"event_msg","payload":{"type":"user_message","id":"next","message":"Which files were included in the new package and where can I find them?"}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        let store = try CodingArchive(directory: archived)
+        try store.addProject(project)
+        try store.setEnabled(true, for: .codex)
+        let reader = CodexReader(homeDirectory: codexHome)
+        try store.synchronize(reader: reader)
+        let id = try XCTUnwrap(store.sessions().first).id
+        let expected = ["prompt", "answer", "next"]
+        XCTAssertEqual(try store.history(id: id).conversationIDs, expected)
+
+        // Recreate the unchanged source stamp, cache and search flags from the old importer.
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("""
+            UPDATE sessions SET info=json_remove(info,'$.transcriptVersion'),
+              history=json_set(json_remove(history,'$.session.transcriptVersion'),'$.conversationIDs',json('["prompt","next"]')) WHERE id=?
+            """, [id])
+        try db.execute("UPDATE coding_text SET archived='1' WHERE session=? AND message='answer'", [id])
+        try db.execute("DELETE FROM settings WHERE key='codexBranchTranscriptV1'")
+        try AgentAccessStore.save(.init(enabled: true, allowCodingSessions: true), directory: root)
+        let agent = AgentLibrary(directory: root)
+        let page = try agent.call("get_coding_session", arguments: ["session_id": id])
+        XCTAssertEqual(page["total"] as? Int, 2)
+        let revision = try XCTUnwrap(page["revision"] as? String)
+
+        try store.synchronize(reader: reader)
+        let repaired = try agent.call("get_coding_session", arguments: ["session_id": id])
+        XCTAssertEqual((repaired["items"] as? [[String: Any]])?.compactMap { $0["message_id"] as? String }, expected)
+        XCTAssertThrowsError(try agent.call("get_coding_session", arguments: ["session_id": id, "expected_revision": revision]))
+        let hit = try store.matches(query: "signed", semantic: [], from: nil, to: nil, project: project, branch: nil).first
+        XCTAssertEqual(hit?.messageID, "answer")
+        XCTAssertEqual(hit?.archived, false)
+        let repairedRevision = try store.revision
+        try store.synchronize(reader: reader)
+        XCTAssertEqual(try store.revision, repairedRevision)
+    }
+
     func testCodexArchivedAndAccountScopedProjectDiscovery() throws {
         let store = try CodingArchive(directory: archived)
         try store.setEnabled(true, for: .codex)

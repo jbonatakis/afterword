@@ -711,7 +711,7 @@ struct CodingSessionDetail: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: session.updated) {
+        .task(id: session) {
             let id = session.id, directory = directory
             let result = await Task.detached(priority: .userInitiated) {
                 Result { CodingConversationTimeline(try CodingArchive.history(in: directory, id: id)) }
