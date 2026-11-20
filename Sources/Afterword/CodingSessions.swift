@@ -678,6 +678,7 @@ struct CodingSessionDetail: View {
     @State private var issue: String?
 
     var body: some View {
+        let rows = recorded ? timeline?.recorded : timeline?.conversation
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(session.title).font(.title2.bold()).textSelection(.enabled)
@@ -690,37 +691,12 @@ struct CodingSessionDetail: View {
             }
             .padding(20)
             Divider()
-            if let timeline {
-                let rows = recorded ? timeline.recorded : timeline.conversation
+            if let rows {
                 if rows.isEmpty {
                     ContentUnavailableView("No saved messages", systemImage: "text.bubble")
                 } else {
-                    let anchor = hit?.messageID.flatMap { id in rows.first { $0.contains(id) }?.id }
-                    GeometryReader { geometry in
-                        let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
-                        ScrollViewReader { proxy in
-                            ScrollView {
-                                LazyVStack(spacing: 0) {
-                                    ForEach(rows) { row in
-                                        VStack(spacing: 0) {
-                                            if let day = row.dayHeading {
-                                                Text(day.formatted(date: .long, time: .omitted))
-                                                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                                                    .padding(.top, 8)
-                                            }
-                                            CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
-                                                               maxWidth: maxWidth, matchedID: row.id == anchor ? hit?.messageID : nil) { questionID in
-                                                proxy.scrollTo(questionID, anchor: .top)
-                                            }
-                                        }.id(row.id)
-                                    }
-                                }
-                                .padding(16)
-                            }
-                            .task(id: anchor) {
-                                if let anchor { await Task.yield(); proxy.scrollTo(anchor, anchor: .top) }
-                            }
-                        }
+                    ScrollViewReader { proxy in
+                        transcript(rows, proxy: proxy)
                     }
                 }
             } else if let issue {
@@ -744,5 +720,49 @@ struct CodingSessionDetail: View {
         .onChange(of: hit?.messageID, initial: true) { _, _ in
             if let hit { recorded = hit.archived }
         }
+    }
+
+    private func transcript(_ rows: [CodingConversationRow], proxy: ScrollViewProxy) -> some View {
+        let anchor = hit?.messageID.flatMap { id in rows.first { $0.contains(id) }?.id }
+        return GeometryReader { geometry in
+            let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
+            ScrollView {
+                VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(rows.dropLast()) { row in
+                            messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
+                        }
+                    }
+                    // Keep the final row measured while the lazy stack estimates earlier message heights.
+                    if let last = rows.last {
+                        messageRow(last, width: maxWidth, anchor: anchor, proxy: proxy)
+                    }
+                }
+            }
+            .contentMargins(16, for: .scrollContent)
+            .task(id: anchor) {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                if let anchor {
+                    proxy.scrollTo(anchor, anchor: .top)
+                } else if let last = rows.last {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private func messageRow(_ row: CodingConversationRow, width: CGFloat, anchor: String?, proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: 0) {
+            if let day = row.dayHeading {
+                Text(day.formatted(date: .long, time: .omitted))
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .padding(.top, 8)
+            }
+            CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
+                                maxWidth: width, matchedID: row.id == anchor ? hit?.messageID : nil) { questionID in
+                proxy.scrollTo(questionID, anchor: .top)
+            }
+        }.id(row.id)
     }
 }

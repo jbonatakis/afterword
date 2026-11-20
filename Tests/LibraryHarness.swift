@@ -936,7 +936,17 @@ import Lookback
         {"type":"user","uuid":"again","parentUuid":"reply","message":{"content":"Run the integration tests once more and tell me whether the final result matches the expected behavior."}}
         {"type":"assistant","uuid":"tools-3","parentUuid":"again","message":{"content":[{"type":"tool_use","id":"t4","name":"Test"}]}}
         """#
-        try Data(sessionText.utf8).write(to: source)
+        // Alternate short prompts and tall replies so the lazy stack's estimated height changes as it scrolls.
+        let prompt = "Review this section."
+        let paragraph = "This paragraph wraps across several lines in a narrow window. "
+        let turns = try (0..<32).map { index in
+            let user = index.isMultiple(of: 2)
+            let body = user ? prompt : String(repeating: paragraph + "\n\n", count: index % 7 + 8) + "End of reply \(index)."
+            let event: [String: Any] = ["type": user ? "user" : "assistant", "uuid": "turn-\(index)",
+                                        "parentUuid": index == 0 ? "tools-3" : "turn-\(index - 1)", "message": ["content": body]]
+            return String(decoding: try JSONSerialization.data(withJSONObject: event), as: UTF8.self)
+        }
+        try Data(([sessionText] + turns).joined(separator: "\n").utf8).write(to: source)
         let archive = try CodingArchive(directory: library.coding.directory)
         try archive.setEnabled(true); try archive.addProject("/projects/fixture")
         try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: projects))
@@ -1044,6 +1054,7 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }
         require(library.codingHits[session.id]?.messageID == "answer", "Coding search lost the message citation")
+        try await checkSessionScrolling(session: session, directory: library.coding.directory)
         let history = try archive.history(id: session.id)
         for messages in [history.conversation, history.messages] {
             let rows = CodingConversationRow.group(messages)
@@ -1119,6 +1130,30 @@ import Lookback
         }
         print("PASS coding search opens labeled Claude Code and Codex sessions with rendered Markdown")
         try await checkProviderToggles(project: project, coding: library.coding)
+    }
+
+    @MainActor static func checkSessionScrolling(session: CodingSession, directory: URL) async throws {
+        let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: nil))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 540, height: 660),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = detail
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func isTextVisible(_ text: String) -> Bool {
+            guard let scroll = descendants(detail).compactMap({ $0 as? NSScrollView }).first,
+                  let document = scroll.documentView else { return false }
+            return descendants(document).compactMap { $0 as? NSTextField }.contains { field in
+                field.stringValue == text && scroll.documentVisibleRect.contains(field.convert(field.bounds, to: document))
+            }
+        }
+        for _ in 0..<40 {
+            await pump(0.05)
+            if isTextVisible("End of reply 31.") { break }
+        }
+        require(isTextVisible("End of reply 31."), "The last paragraph must be visible when the chat opens")
+        print("PASS last paragraph visible when opening a long agent session")
     }
 
     static func checkQuestionReplies() throws {
