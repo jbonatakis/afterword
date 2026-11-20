@@ -465,10 +465,18 @@ private struct ProjectFolderCheckbox: NSViewRepresentable {
 
 /// A display row starts at a message and may include the assistant's following tool-only messages.
 struct CodingConversationRow: Identifiable, Sendable {
+    struct AssistantThread: Equatable, Sendable {
+        let connectsAbove: Bool
+        let connectsBelow: Bool
+        let isReply: Bool
+    }
+
     let message: CodingMessage
+    let hasText: Bool
     let dayHeading: Date?
     private(set) var toolMessages: [CodingMessage] = []
     private(set) var toolCount = 0
+    private(set) var thread: AssistantThread?
     var id: String { message.id }
 
     static func group(_ messages: [CodingMessage]) -> [Self] {
@@ -476,17 +484,30 @@ struct CodingConversationRow: Identifiable, Sendable {
         let calendar = Calendar.current
         var previousDay: Date?
         for message in messages {
-            let continuesAssistant = message.role == "Assistant" && !message.tools.isEmpty
-                && message.text.allSatisfy(\.isWhitespace) && rows.last?.message.role == "Assistant"
+            let hasText = message.text.contains { !$0.isWhitespace }
+            if message.role == "Assistant" && !hasText && message.tools.isEmpty { continue }
+            let day = message.timestamp.map { calendar.startOfDay(for: $0) }
+            let heading = day != previousDay ? day : nil
+            let continuesAssistant = message.role == "Assistant" && !hasText && rows.last?.message.role == "Assistant" && heading == nil
             if !continuesAssistant {
-                let day = message.timestamp.map { calendar.startOfDay(for: $0) }
-                rows.append(Self(message: message, dayHeading: day != previousDay ? day : nil))
-                if let day { previousDay = day }
+                rows.append(Self(message: message, hasText: hasText, dayHeading: heading))
             }
+            if let day { previousDay = day }
             if !message.tools.isEmpty {
                 let index = rows.count - 1
                 rows[index].toolMessages.append(message)
                 rows[index].toolCount += message.tools.count
+            }
+        }
+        for i in rows.indices where rows[i].message.role == "Assistant" {
+            let connectsAbove = i > 0 && rows[i - 1].message.role == "Assistant" && rows[i].dayHeading == nil
+            let precedesAgent = i + 1 < rows.count && rows[i + 1].message.role == "Assistant"
+            let hasTools = rows[i].toolCount > 0
+            if connectsAbove || precedesAgent || hasTools {
+                // A date heading breaks the line on screen, but doesn't turn an update into a reply.
+                rows[i].thread = AssistantThread(connectsAbove: connectsAbove,
+                                                connectsBelow: precedesAgent && rows[i + 1].dayHeading == nil,
+                                                isReply: !precedesAgent && !hasTools)
             }
         }
         return rows
@@ -510,6 +531,7 @@ private struct CodingConversationTimeline: Sendable {
 
 private struct CodingMessageBubble: View {
     let row: CodingConversationRow
+    let thread: CodingConversationRow.AssistantThread?
     let providerName: String
     let maxWidth: CGFloat
     let matchedID: String?
@@ -527,51 +549,52 @@ private struct CodingMessageBubble: View {
 
     var body: some View {
         VStack(alignment: alignment, spacing: 5) {
-            HStack(spacing: 6) {
-                Text(speaker).fontWeight(.semibold)
-                if let date = row.message.timestamp {
-                    Text(date.formatted(date: .omitted, time: .shortened)).help(date.formatted())
-                }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-
-            if row.message.text.contains(where: { !$0.isWhitespace }) {
-                let content = MarkdownContent(markdown: row.message.text, fillsWidth: false)
-                if isUser || isAgent {
-                    content
-                        .foregroundStyle(isUser ? Color.white : Color.primary)
-                        .tint(isUser ? .white : .accentColor)
-                        .padding(.horizontal, 13).padding(.vertical, 9)
-                        .background(isUser ? Color(red: 0.12, green: 0.36, blue: 0.70) : Color.primary.opacity(0.08), in: bubble)
-                } else {
-                    content.padding(.leading, 10)
-                        .overlay(alignment: .leading) { Capsule().fill(.tertiary).frame(width: 2) }
-                }
-            }
-            if row.toolCount > 0 {
-                DisclosureGroup(isExpanded: $toolsExpanded) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(row.toolMessages) { message in
-                            ForEach(message.tools.indices, id: \.self) { index in
-                                Text(verbatim: message.tools[index])
-                                    .help(message.timestamp?.formatted() ?? "")
-                            }
-                        }
+            if thread?.connectsAbove != true {
+                HStack(spacing: 6) {
+                    Text(speaker).fontWeight(.semibold)
+                    if let date = row.message.timestamp {
+                        Text(date.formatted(date: .omitted, time: .shortened)).help(date.formatted())
                     }
-                    .textSelection(.enabled).font(.system(.caption, design: .monospaced))
-                    .padding(.vertical, 4).padding(.leading, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } label: {
-                    Text("\(row.toolCount) tool call\(row.toolCount == 1 ? "" : "s")")
                 }
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
             }
+            VStack(alignment: alignment, spacing: 5) {
+                if row.hasText {
+                    let content = MarkdownContent(markdown: row.message.text, fillsWidth: false)
+                    if let thread, !thread.isReply {
+                        content.foregroundStyle(.primary.opacity(0.8))
+                    } else if isUser || isAgent {
+                        content
+                            .foregroundStyle(isUser ? Color.white : Color.primary)
+                            .tint(isUser ? .white : .accentColor)
+                            .padding(.horizontal, 13).padding(.vertical, 9)
+                            .background(isUser ? Color(red: 0.12, green: 0.36, blue: 0.70) : Color.primary.opacity(0.08), in: bubble)
+                    } else {
+                        content.padding(.leading, 10)
+                            .overlay(alignment: .leading) { Capsule().fill(.tertiary).frame(width: 2) }
+                    }
+                }
+                if row.toolCount > 0 { tools }
+            }
+            .padding(.horizontal, 4)
+            .overlay(alignment: edge) {
+                if matchedID != nil {
+                    Capsule().fill(Color.accentColor).frame(width: 2).accessibilityHidden(true)
+                }
+            }
+            .padding(.leading, thread == nil ? 0 : 18)
+            .padding(.bottom, thread?.connectsBelow == true ? 12 : 0)
+            .background(alignment: .leading) {
+                if let thread {
+                    AssistantThreadConnector(thread: thread)
+                        .stroke(.secondary.opacity(0.6), lineWidth: 1)
+                        .frame(width: 22).accessibilityHidden(true).allowsHitTesting(false)
+                }
+            }
+            .help(row.message.timestamp?.formatted() ?? "")
         }
-        .padding(4)
-        .overlay(alignment: edge) {
-            if matchedID != nil { Capsule().fill(Color.accentColor).frame(width: 2).accessibilityHidden(true) }
-        }
+        .padding(.top, thread?.connectsAbove == true ? 0 : 12)
         .frame(maxWidth: maxWidth, alignment: edge)
         .frame(maxWidth: .infinity, alignment: edge)
         .onChange(of: matchedID, initial: true) { _, id in
@@ -579,6 +602,53 @@ private struct CodingMessageBubble: View {
                 toolsExpanded = true
             }
         }
+    }
+
+    private var tools: some View {
+        DisclosureGroup(isExpanded: $toolsExpanded) {
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(row.toolMessages) { message in
+                    ForEach(message.tools.indices, id: \.self) { index in
+                        Text(verbatim: message.tools[index])
+                            .help(message.timestamp?.formatted() ?? "")
+                    }
+                }
+            }
+            .textSelection(.enabled).font(.system(.caption, design: .monospaced))
+            .padding(.vertical, 4).padding(.leading, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Text("\(row.toolCount) tool call\(row.toolCount == 1 ? "" : "s")")
+        }
+        .font(.callout).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct AssistantThreadConnector: Shape {
+    let thread: CodingConversationRow.AssistantThread
+
+    func path(in rect: CGRect) -> Path {
+        let x: CGFloat = 8
+        var line = Path()
+        if thread.isReply {
+            line.move(to: CGPoint(x: x, y: 0))
+            line.addLine(to: CGPoint(x: x, y: 10))
+            line.addQuadCurve(to: CGPoint(x: x + 6, y: 16), control: CGPoint(x: x, y: 16))
+            line.addLine(to: CGPoint(x: rect.maxX, y: 16))
+        } else {
+            let y: CGFloat = 8, radius: CGFloat = 2.5
+            if thread.connectsAbove {
+                line.move(to: CGPoint(x: x, y: 0))
+                line.addLine(to: CGPoint(x: x, y: y - radius))
+            }
+            line.addEllipse(in: CGRect(x: x - radius, y: y - radius, width: 2 * radius, height: 2 * radius))
+            if thread.connectsBelow {
+                line.move(to: CGPoint(x: x, y: y + radius))
+                line.addLine(to: CGPoint(x: x, y: rect.maxY))
+            }
+        }
+        return line
     }
 }
 
@@ -613,14 +683,15 @@ struct CodingSessionDetail: View {
                         let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
                         ScrollViewReader { proxy in
                             ScrollView {
-                                LazyVStack(spacing: 12) {
+                                LazyVStack(spacing: 0) {
                                     ForEach(rows) { row in
-                                        VStack(spacing: 12) {
+                                        VStack(spacing: 0) {
                                             if let day = row.dayHeading {
                                                 Text(day.formatted(date: .long, time: .omitted))
                                                     .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                                    .padding(.top, 8)
                                             }
-                                            CodingMessageBubble(row: row, providerName: session.providerName,
+                                            CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
                                                                maxWidth: maxWidth, matchedID: row.id == anchor ? hit?.messageID : nil)
                                         }.id(row.id)
                                     }

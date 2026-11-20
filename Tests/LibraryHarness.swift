@@ -891,10 +891,12 @@ import Lookback
         {"type":"assistant","uuid":"old","cwd":"/projects/fixture","message":{"content":"## Earlier decision\n\n- **The retry** used archivedterm."}}
         {"type":"system","uuid":"boundary","logicalParentUuid":"old"}
         {"type":"user","uuid":"first","parentUuid":"boundary","cwd":"/projects/fixture","message":{"content":"Document the retry behavior"}}
-        {"type":"assistant","uuid":"answer","parentUuid":"first","message":{"content":"## Current decision\n\n- **The retry** preserves the original message.\n\n````text\n```\n**literal**\n````"}}
+        {"type":"assistant","uuid":"investigate","parentUuid":"first","message":{"content":"I’ll trace how the retry works."}}
+        {"type":"assistant","uuid":"answer","parentUuid":"investigate","message":{"content":"## Current decision\n\n- **The retry** preserves the original message.\n\n````text\n```\n**literal**\n````"}}
         {"type":"assistant","uuid":"tools-1","parentUuid":"answer","message":{"content":[{"type":"tool_use","id":"t1","name":"Read"},{"type":"tool_use","id":"t2","name":"Read"}]}}
         {"type":"assistant","uuid":"tools-2","parentUuid":"tools-1","message":{"content":[{"type":"tool_use","id":"t3","name":"InspectLayout"}]}}
-        {"type":"user","uuid":"again","parentUuid":"tools-2","message":{"content":"Run the integration tests once more and tell me whether the final result matches the expected behavior."}}
+        {"type":"assistant","uuid":"reply","parentUuid":"tools-2","message":{"content":"Retries are now documented with a worked example."}}
+        {"type":"user","uuid":"again","parentUuid":"reply","message":{"content":"Run the integration tests once more and tell me whether the final result matches the expected behavior."}}
         {"type":"assistant","uuid":"tools-3","parentUuid":"again","message":{"content":[{"type":"tool_use","id":"t4","name":"Test"}]}}
         """#
         try Data(sessionText.utf8).write(to: source)
@@ -908,7 +910,9 @@ import Lookback
         let rollout = """
         {"type":"session_meta","payload":{"id":"\(thread)","cwd":"/projects/fixture"}}
         {"type":"event_msg","payload":{"type":"user_message","message":"Review the layout"}}
+        {"type":"event_msg","payload":{"type":"agent_message","id":"progress","message":"I’ll check how the cells line up."}}
         {"type":"event_msg","payload":{"type":"agent_message","id":"answer","message":"## Grid layout\\n\\nUse **hexagons** for this grid."}}
+        {"type":"event_msg","payload":{"type":"task_complete"}}
         """
         try Data(rollout.utf8).write(to: rollouts.appendingPathComponent("rollout-fixture-\(thread).jsonl"))
         try archive.setEnabled(true, for: .codex)
@@ -1012,6 +1016,30 @@ import Lookback
                     "Grouped tool calls lost their message anchors")
             require(calls[0].toolMessages.flatMap(\.tools) == ["Read", "Read", "InspectLayout"], "Tool disclosure lost the order of repeated calls")
         }
+        typealias Thread = CodingConversationRow.AssistantThread
+        let activeRows = CodingConversationRow.group(history.conversation)
+        let threads = Dictionary(uniqueKeysWithValues: activeRows.compactMap { row in row.thread.map { (row.id, $0) } })
+        require(threads == [
+            "investigate": Thread(connectsAbove: false, connectsBelow: true, isReply: false),
+            "answer": Thread(connectsAbove: true, connectsBelow: true, isReply: false),
+            "reply": Thread(connectsAbove: true, connectsBelow: false, isReply: true),
+            "tools-3": Thread(connectsAbove: false, connectsBelow: false, isReply: false)
+        ], "Assistant updates, reply, or trailing tool activity were linked incorrectly")
+        let today = Calendar.current.startOfDay(for: Date())
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today)!
+        func message(_ id: String, role: String = "Assistant", date: Date = today, tools: [String] = []) -> CodingMessage {
+            CodingMessage(id: id, role: role, text: tools.isEmpty ? id : "", parentID: nil, timestamp: date, tools: tools)
+        }
+        let boundaries = CodingConversationRow.group([
+            message("update"), message("overnight tools", date: tomorrow, tools: ["Read"]),
+            CodingMessage(id: "empty", role: "Assistant", text: " \n", parentID: nil, timestamp: tomorrow, tools: []),
+            message("interrupt", role: "Compaction summary", date: tomorrow), message("standalone", date: tomorrow)
+        ])
+        require(boundaries.map(\.id) == ["update", "overnight tools", "interrupt", "standalone"]
+                && boundaries[1].dayHeading == tomorrow, "Overnight activity lost its day heading or anchor")
+        require(boundaries.map(\.thread) == [Thread(connectsAbove: false, connectsBelow: false, isReply: false),
+                                             Thread(connectsAbove: false, connectsBelow: false, isReply: false), nil, nil],
+                "A date boundary promoted an update to a reply or a thread crossed a compaction")
         // SwiftUI exposes virtual text cells through AppKit's attribute interface.
         func visibleText(_ node: NSObject) -> [String] {
             let children = node.accessibilityAttributeValue(.children) as? [NSObject] ?? []
@@ -1040,6 +1068,13 @@ import Lookback
                         "Opening a tool search did not expand its group")
             }
             let bold = provider == "Codex" ? "hexagons" : "The retry"
+            if provider == "Codex" {
+                let rows = CodingConversationRow.group(try archive.history(id: session.id).conversation)
+                require(text.contains("I’ll check how the cells line up.") && rows.compactMap(\.thread) == [
+                    Thread(connectsAbove: false, connectsBelow: true, isReply: false),
+                    Thread(connectsAbove: true, connectsBelow: false, isReply: true)
+                ], "The Codex update and reply did not form one turn")
+            }
             require(text.contains(bold) && !text.contains("**" + bold + "**"), "Inline Markdown did not render")
             if query == "preserves" { require(text.contains("```\n**literal**"), "Code fence lost literal Markdown") }
             require(!detail.hasAmbiguousLayout, "Coding detail layout is ambiguous")
