@@ -463,69 +463,193 @@ private struct ProjectFolderCheckbox: NSViewRepresentable {
     }
 }
 
+/// A display row starts at a message and may include the assistant's following tool-only messages.
+struct CodingConversationRow: Identifiable, Sendable {
+    let message: CodingMessage
+    let dayHeading: Date?
+    private(set) var toolMessages: [CodingMessage] = []
+    private(set) var toolCount = 0
+    var id: String { message.id }
+
+    static func group(_ messages: [CodingMessage]) -> [Self] {
+        var rows: [Self] = []
+        let calendar = Calendar.current
+        var previousDay: Date?
+        for message in messages {
+            let continuesAssistant = message.role == "Assistant" && !message.tools.isEmpty
+                && message.text.allSatisfy(\.isWhitespace) && rows.last?.message.role == "Assistant"
+            if !continuesAssistant {
+                let day = message.timestamp.map { calendar.startOfDay(for: $0) }
+                rows.append(Self(message: message, dayHeading: day != previousDay ? day : nil))
+                if let day { previousDay = day }
+            }
+            if !message.tools.isEmpty {
+                let index = rows.count - 1
+                rows[index].toolMessages.append(message)
+                rows[index].toolCount += message.tools.count
+            }
+        }
+        return rows
+    }
+
+    func contains(_ messageID: String) -> Bool {
+        id == messageID || toolMessages.contains { $0.id == messageID }
+    }
+}
+
+private struct CodingConversationTimeline: Sendable {
+    let conversation: [CodingConversationRow]
+    let recorded: [CodingConversationRow]
+
+    init(_ history: CodingHistory) {
+        recorded = CodingConversationRow.group(history.messages)
+        conversation = history.messages.elementsEqual(history.conversationIDs, by: { $0.id == $1 })
+            ? recorded : CodingConversationRow.group(history.conversation)
+    }
+}
+
+private struct CodingMessageBubble: View {
+    let row: CodingConversationRow
+    let providerName: String
+    let maxWidth: CGFloat
+    let matchedID: String?
+    @State private var toolsExpanded = false
+
+    private var isUser: Bool { row.message.role == "User" }
+    private var isAgent: Bool { row.message.role == "Assistant" }
+    private var speaker: String { isUser ? "You" : isAgent ? providerName : row.message.role }
+    private var alignment: HorizontalAlignment { isUser ? .trailing : .leading }
+    private var edge: Alignment { isUser ? .trailing : .leading }
+    private var bubble: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 15, bottomLeadingRadius: isUser ? 15 : 5,
+                               bottomTrailingRadius: isUser ? 5 : 15, topTrailingRadius: 15)
+    }
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(speaker).fontWeight(.semibold)
+                if let date = row.message.timestamp {
+                    Text(date.formatted(date: .omitted, time: .shortened)).help(date.formatted())
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+
+            if row.message.text.contains(where: { !$0.isWhitespace }) {
+                let content = MarkdownContent(markdown: row.message.text, fillsWidth: false)
+                if isUser || isAgent {
+                    content
+                        .foregroundStyle(isUser ? Color.white : Color.primary)
+                        .tint(isUser ? .white : .accentColor)
+                        .padding(.horizontal, 13).padding(.vertical, 9)
+                        .background(isUser ? Color(red: 0.12, green: 0.36, blue: 0.70) : Color.primary.opacity(0.08), in: bubble)
+                } else {
+                    content.padding(.leading, 10)
+                        .overlay(alignment: .leading) { Capsule().fill(.tertiary).frame(width: 2) }
+                }
+            }
+            if row.toolCount > 0 {
+                DisclosureGroup(isExpanded: $toolsExpanded) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(row.toolMessages) { message in
+                            ForEach(message.tools.indices, id: \.self) { index in
+                                Text(verbatim: message.tools[index])
+                                    .help(message.timestamp?.formatted() ?? "")
+                            }
+                        }
+                    }
+                    .textSelection(.enabled).font(.system(.caption, design: .monospaced))
+                    .padding(.vertical, 4)
+                } label: {
+                    Text("\(row.toolCount) tool call\(row.toolCount == 1 ? "" : "s")")
+                }
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(4)
+        .overlay { if matchedID != nil { RoundedRectangle(cornerRadius: 13).strokeBorder(Color.accentColor, lineWidth: 2) } }
+        .frame(maxWidth: maxWidth, alignment: edge)
+        .frame(maxWidth: .infinity, alignment: edge)
+        .onChange(of: matchedID, initial: true) { _, id in
+            if let id, row.toolMessages.contains(where: { $0.id == id && $0.text.allSatisfy(\.isWhitespace) }) {
+                toolsExpanded = true
+            }
+        }
+    }
+}
+
 struct CodingSessionDetail: View {
     let session: CodingSession
     let directory: URL
     let hit: CodingHit?
-    @State private var history: CodingHistory?
+    @State private var timeline: CodingConversationTimeline?
     @State private var recorded = false
     @State private var issue: String?
-    @State private var anchor: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(session.title).font(.title2.bold()).textSelection(.enabled)
-            Text([session.providerName, session.project, session.branch].compactMap { $0 }.joined(separator: "  ·  "))
-                .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-            Picker("View", selection: $recorded) {
-                Text("Conversation").tag(false)
-                Text("Recorded history").tag(true)
-            }.pickerStyle(.segmented).fixedSize()
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(session.title).font(.title2.bold()).textSelection(.enabled)
+                Text([session.providerName, session.project, session.branch].compactMap { $0 }.joined(separator: "  ·  "))
+                    .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                Picker("View", selection: $recorded) {
+                    Text("Conversation").tag(false)
+                    Text("Recorded history").tag(true)
+                }.pickerStyle(.segmented).labelsHidden().fixedSize().padding(.top, 4)
+            }
+            .padding(20)
             Divider()
-            if let history {
-                let messages = recorded ? history.messages : history.conversation
-                if messages.isEmpty {
+            if let timeline {
+                let rows = recorded ? timeline.recorded : timeline.conversation
+                if rows.isEmpty {
                     ContentUnavailableView("No saved messages", systemImage: "text.bubble")
                 } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 16) {
-                                ForEach(messages) { message in
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        HStack {
-                                            Text(message.role == "User" ? "You" : message.role).font(.headline)
-                                            if let date = message.timestamp { Text(date.formatted()).font(.caption).foregroundStyle(.secondary) }
-                                        }
-                                        if !message.text.isEmpty { MarkdownContent(markdown: message.text) }
-                                        if !message.tools.isEmpty {
-                                            DisclosureGroup("\(message.tools.count) tool call\(message.tools.count == 1 ? "" : "s")") {
-                                                Text(message.tools.joined(separator: ", ")).font(.caption).textSelection(.enabled)
-                                            }.fixedSize(horizontal: false, vertical: true)
-                                        }
-                                    }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(message.id == anchor ? Color.accentColor.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                                    .id(message.id)
+                    let anchor = hit?.messageID.flatMap { id in rows.first { $0.contains(id) }?.id }
+                    GeometryReader { geometry in
+                        let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                LazyVStack(spacing: 12) {
+                                    ForEach(rows) { row in
+                                        VStack(spacing: 12) {
+                                            if let day = row.dayHeading {
+                                                Text(day.formatted(date: .long, time: .omitted))
+                                                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                            }
+                                            CodingMessageBubble(row: row, providerName: session.providerName,
+                                                               maxWidth: maxWidth, matchedID: row.id == anchor ? hit?.messageID : nil)
+                                        }.id(row.id)
+                                    }
                                 }
+                                .padding(16)
+                            }
+                            .task(id: anchor) {
+                                if let anchor { await Task.yield(); proxy.scrollTo(anchor, anchor: .top) }
                             }
                         }
-                        .task(id: anchor) { if let anchor { await Task.yield(); proxy.scrollTo(anchor, anchor: .top) } }
                     }
                 }
-            } else if let issue { Text(issue).foregroundStyle(.red) } else { ProgressView() }
-            Spacer(minLength: 0)
-        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: session.updated) {
-            let id = session.id
-            let result = await Task.detached(priority: .userInitiated) { Result { try CodingArchive.history(in: directory, id: id) } }.value
-            guard !Task.isCancelled else { return }
-            switch result {
-            case .success(let value): history = value; issue = nil
-            case .failure(let error): history = nil; issue = error.localizedDescription
+            } else if let issue {
+                Text(issue).foregroundStyle(.red).padding(20)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onChange(of: hit?.messageID, initial: true) { _, id in
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: session.updated) {
+            let id = session.id, directory = directory
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { CodingConversationTimeline(try CodingArchive.history(in: directory, id: id)) }
+            }.value
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success(let value): timeline = value; issue = nil
+            case .failure(let error): timeline = nil; issue = error.localizedDescription
+            }
+        }
+        .onChange(of: hit?.messageID, initial: true) { _, _ in
             if let hit { recorded = hit.archived }
-            anchor = id
         }
     }
 }

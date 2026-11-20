@@ -16,6 +16,7 @@ extension EnvironmentValues {
 /// Native, selectable Markdown with block spacing. No HTML or remote resources are loaded.
 struct MarkdownContent: View {
     let markdown: String
+    var fillsWidth = true
     @Environment(\.githubLibraryLinks) private var githubLinks
     private struct Block: Identifiable {
         let id: Int
@@ -84,7 +85,7 @@ struct MarkdownContent: View {
             ForEach(blocks) { block in
                 switch block.kind {
                 case "heading": inline(block.text).font(.headline).padding(.top, 6)
-                case "bullet": HStack(alignment: .top, spacing: 9) { Text("•"); inline(block.text).frame(maxWidth: .infinity, alignment: .leading) }
+                case "bullet": HStack(alignment: .top, spacing: 9) { Text("•"); inline(block.text).frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading) }
                 case "quote":
                     inline(block.text).foregroundStyle(.secondary).padding(.leading, 11)
                         .overlay(alignment: .leading) { Rectangle().fill(.quaternary).frame(width: 3) }
@@ -101,7 +102,7 @@ struct MarkdownContent: View {
                             Divider()
                         }
                     }.background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
-                default: inline(block.text).frame(maxWidth: .infinity, alignment: .leading)
+                default: inline(block.text).frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
                 }
             }
             if !githubLinks.items.isEmpty {

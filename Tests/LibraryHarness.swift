@@ -892,6 +892,10 @@ import Lookback
         {"type":"system","uuid":"boundary","logicalParentUuid":"old"}
         {"type":"user","uuid":"first","parentUuid":"boundary","cwd":"/projects/fixture","message":{"content":"Document the retry behavior"}}
         {"type":"assistant","uuid":"answer","parentUuid":"first","message":{"content":"## Current decision\n\n- **The retry** preserves the original message.\n\n````text\n```\n**literal**\n````"}}
+        {"type":"assistant","uuid":"tools-1","parentUuid":"answer","message":{"content":[{"type":"tool_use","id":"t1","name":"Read"},{"type":"tool_use","id":"t2","name":"Read"}]}}
+        {"type":"assistant","uuid":"tools-2","parentUuid":"tools-1","message":{"content":[{"type":"tool_use","id":"t3","name":"InspectLayout"}]}}
+        {"type":"user","uuid":"again","parentUuid":"tools-2","message":{"content":"Run the integration tests once more and tell me whether the final result matches the expected behavior."}}
+        {"type":"assistant","uuid":"tools-3","parentUuid":"again","message":{"content":[{"type":"tool_use","id":"t4","name":"Test"}]}}
         """#
         try Data(sessionText.utf8).write(to: source)
         let archive = try CodingArchive(directory: library.coding.directory)
@@ -999,13 +1003,22 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }
         require(library.codingHits[session.id]?.messageID == "answer", "Coding search lost the message citation")
+        let history = try archive.history(id: session.id)
+        for messages in [history.conversation, history.messages] {
+            let rows = CodingConversationRow.group(messages)
+            let calls = rows.filter { $0.toolCount > 0 }
+            require(calls.map(\.toolCount) == [3, 1], "Tool groups lost calls or crossed a user turn")
+            require(calls[0].id == "answer" && calls[0].contains("tools-2") && calls[1].id == "tools-3",
+                    "Grouped tool calls lost their message anchors")
+            require(calls[0].toolMessages.flatMap(\.tools) == ["Read", "Read", "InspectLayout"], "Tool disclosure lost the order of repeated calls")
+        }
         // SwiftUI exposes virtual text cells through AppKit's attribute interface.
         func visibleText(_ node: NSObject) -> [String] {
             let children = node.accessibilityAttributeValue(.children) as? [NSObject] ?? []
             let text = node.accessibilityAttributeValue(.value) as? String
             return (text.map { [$0] } ?? []) + children.flatMap(visibleText)
         }
-        for (query, heading, provider) in [("preserves", "Current decision", "Claude Code"), ("archivedterm", "Earlier decision", "Claude Code"), ("hexagons", "Grid layout", "Codex")] {
+        for (query, heading, provider) in [("preserves", "Current decision", "Claude Code"), ("archivedterm", "Earlier decision", "Claude Code"), ("InspectLayout", "Current decision", "Claude Code"), ("hexagons", "Grid layout", "Codex")] {
             library.search = query
             await library.updateSearch(debounce: false)?.value
             guard let session = library.selectedCoding, let hit = library.codingHits[session.id] else { throw RecorderError.message("Missing coding search hit") }
@@ -1018,10 +1031,14 @@ import Lookback
                 await pump(0.05)
                 detail.layoutSubtreeIfNeeded()
                 text = visibleText(detail).joined(separator: "\n")
-                if text.contains(heading) { break }
+                if text.contains(heading) && (query != "InspectLayout" || text.contains("InspectLayout")) { break }
             }
             require(text.contains(heading) && !text.contains("## " + heading), "Coding message heading did not render: " + text)
             require(text.contains(provider), "The detail is missing its coding provider")
+            if query == "InspectLayout" {
+                require(hit.messageID == "tools-2" && text.contains("InspectLayout") && text.contains("Read"),
+                        "Opening a tool search did not expand its group")
+            }
             let bold = provider == "Codex" ? "hexagons" : "The retry"
             require(text.contains(bold) && !text.contains("**" + bold + "**"), "Inline Markdown did not render")
             if query == "preserves" { require(text.contains("```\n**literal**"), "Code fence lost literal Markdown") }
