@@ -559,7 +559,8 @@ private struct CodingMessageBubble: View {
                         }
                     }
                     .textSelection(.enabled).font(.system(.caption, design: .monospaced))
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 4).padding(.leading, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } label: {
                     Text("\(row.toolCount) tool call\(row.toolCount == 1 ? "" : "s")")
                 }
@@ -568,7 +569,9 @@ private struct CodingMessageBubble: View {
             }
         }
         .padding(4)
-        .overlay { if matchedID != nil { RoundedRectangle(cornerRadius: 13).strokeBorder(Color.accentColor, lineWidth: 2) } }
+        .overlay(alignment: edge) {
+            if matchedID != nil { Capsule().fill(Color.accentColor).frame(width: 2).accessibilityHidden(true) }
+        }
         .frame(maxWidth: maxWidth, alignment: edge)
         .frame(maxWidth: .infinity, alignment: edge)
         .onChange(of: matchedID, initial: true) { _, id in
