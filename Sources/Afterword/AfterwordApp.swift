@@ -166,7 +166,7 @@ struct RecorderView: View {
                         .font(.caption).foregroundStyle(recorder.state == .recording ? .red : .secondary)
                 }
                 Spacer()
-                Text(recorder.elapsed).font(.system(.title2, design: .monospaced)).monospacedDigit()
+                ElapsedRecordingTime(clock: recorder.telemetry.clock)
             }
             if !recorder.noticesAccepted {
                 Text("Save your microphone and system audio as separate tracks, plus a mixed recording for playback. macOS will ask for each permission when you start or test.")
@@ -175,10 +175,7 @@ struct RecorderView: View {
                 Button("Got it") { recorder.acceptNotices() }
             }
             SourcePicker(recorder: recorder)
-            VStack(spacing: 10) {
-                LevelMeter(title: "Microphone", level: recorder.snapshot.microphonePeak, off: !recorder.recordMicrophone)
-                LevelMeter(title: "System audio", level: recorder.snapshot.systemPeak, off: false)
-            }
+            RecordingMeters(telemetry: recorder.telemetry, microphoneEnabled: recorder.recordMicrophone)
             Toggle("Personal recording", isOn: Binding(get: { recorder.personalRecording }, set: recorder.setPersonalRecording))
                 .help("Keep this call in Recordings → Personal and out of work history. Applies to this recording only.")
                 .disabled(recorder.savingScope || (recorder.locked && recorder.state != .recording))
@@ -286,6 +283,26 @@ private struct SourcePicker: View {
                 }
             }
         }.disabled(recorder.locked)
+    }
+}
+
+private struct ElapsedRecordingTime: View {
+    @ObservedObject var clock: RecordingClock
+
+    var body: some View {
+        Text(clock.text).font(.system(.title2, design: .monospaced)).monospacedDigit()
+    }
+}
+
+private struct RecordingMeters: View {
+    @ObservedObject var telemetry: RecordingTelemetry
+    let microphoneEnabled: Bool
+
+    var body: some View {
+        VStack(spacing: 10) {
+            LevelMeter(title: "Microphone", level: telemetry.snapshot.microphonePeak, off: !microphoneEnabled)
+            LevelMeter(title: "System audio", level: telemetry.snapshot.systemPeak, off: false)
+        }
     }
 }
 

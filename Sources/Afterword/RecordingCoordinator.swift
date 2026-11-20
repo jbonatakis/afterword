@@ -5,6 +5,37 @@ import CoreAudio
 import IOKit.pwr_mgt
 import RecorderCore
 
+@MainActor final class RecordingClock: ObservableObject {
+    @Published private(set) var seconds = 0
+
+    var text: String {
+        if seconds >= 3600 {
+            return String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+        }
+        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+
+    fileprivate func update(frames: Int64) {
+        let next = Int(frames / 48_000)
+        if next != seconds { seconds = next }
+    }
+}
+
+/// Meter frames and elapsed seconds have separate observers. Neither invalidates the library.
+@MainActor final class RecordingTelemetry: ObservableObject {
+    let clock = RecordingClock()
+    @Published var snapshot = PipelineSnapshot() {
+        didSet { clock.update(frames: snapshot.frames) }
+    }
+
+    func clearPeaks() {
+        var quiet = snapshot
+        quiet.microphonePeak = 0
+        quiet.systemPeak = 0
+        snapshot = quiet
+    }
+}
+
 @MainActor final class RecordingCoordinator: ObservableObject {
     let transcription: TranscriptionCoordinator
     lazy var shortcut = RecordingShortcut(register: false)
@@ -27,7 +58,7 @@ import RecorderCore
     @Published private(set) var savingScope = false
     @Published var recordMicrophone = true { didSet { engine?.setMicrophoneEnabled(recordMicrophone) } }
     @Published var resolved: InputDevice?
-    @Published var snapshot = PipelineSnapshot()
+    let telemetry = RecordingTelemetry()
     @Published var message: String?
     @Published var savedFile: URL?
     @Published var recoveries: [RecoveryCandidate] = []
@@ -52,10 +83,6 @@ import RecorderCore
     var isPreview: Bool { preview && locked }
     var selection: MicrophoneSelection { selectedUID.map { .device(uid: $0) } ?? .systemDefault }
     var channelRequired: Bool { (resolved?.channels.count ?? 0) > 1 || resolved?.needsExplicitVerification == true || (resolved != nil && selectedChannel < 0) }
-    var elapsed: String {
-        let seconds = Int(snapshot.frames / 48_000)
-        return seconds >= 3600 ? String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60) : String(format: "%02d:%02d", seconds / 60, seconds % 60)
-    }
     var title: String {
         switch state {
         case .idle: return savedFile == nil ? "Ready to record" : "Saved"
@@ -185,7 +212,7 @@ import RecorderCore
             details?.scope = .personal
         }
         guard lifecycle.begin() else { return }
-        state = lifecycle.state; self.preview = preview; engineStarted = false; snapshot = PipelineSnapshot()
+        state = lifecycle.state; self.preview = preview; engineStarted = false; telemetry.snapshot = PipelineSnapshot()
         Task {
             do {
                 try await PermissionService.requestMicrophone()
@@ -225,17 +252,17 @@ import RecorderCore
         }
     }
     func panelClosed() { if isPreview { stop() } }
-    private func receive(_ event: EngineEvent) {
+    func receive(_ event: EngineEvent) {
         switch event {
         case .prepared(let formats, let layout): lastFormats = formats; lastLayout = layout
         case .started:
             if lifecycle.started(preview: preview) { state = lifecycle.state; acquireSleepAssertion() }
-        case .levels(let snapshot): self.snapshot = snapshot
+        case .levels(let snapshot): telemetry.snapshot = snapshot
         case .finalizing:
             _ = lifecycle.stop(); state = .finalizing; releaseSleepAssertion()
         case .finished(let file, let reason, let recovery, let needsPermission):
             releaseSleepAssertion(); savedFile = file; message = reason
-            snapshot.microphonePeak = 0; snapshot.systemPeak = 0
+            telemetry.clearPeaks()
             if !preview { personalRecording = false }
             engineStarted = false; preview = false
             lifecycle.finish(needsPermission ? .needsPermission : recovery != nil ? .recoverable : reason != nil && file == nil ? .error : .idle)
@@ -265,6 +292,7 @@ import RecorderCore
         NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
     }
     func copyDiagnostics() {
+        let snapshot = telemetry.snapshot
         let formatJSON = (try? JSONEncoder().encode(lastFormats)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         let text = """
         Afterword \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development") (local diagnostics; no audio)

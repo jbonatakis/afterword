@@ -35,6 +35,41 @@ import Lookback
         }
         require(playback.availability != .preparing, "Timed out preparing playback")
     }
+    @MainActor static func checkRecordingTelemetry(_ root: URL) {
+        let recorder = RecordingCoordinator(enabled: false, recoveryRoot: root.appendingPathComponent("Sessions"))
+        let telemetry = recorder.telemetry
+        var recorderUpdates = 0, meterUpdates = 0
+        var seconds: [Int] = []
+        let state = recorder.objectWillChange.sink { recorderUpdates += 1 }
+        let meters = telemetry.$snapshot.dropFirst().sink { _ in meterUpdates += 1 }
+        let clock = telemetry.clock.$seconds.sink { seconds.append($0) }
+        defer { state.cancel(); meters.cancel(); clock.cancel() }
+
+        var sample = PipelineSnapshot()
+        for tick in 1...25 {
+            sample.frames += 4800
+            sample.callbacks += 1
+            sample.microphonePeak = Float(tick) / 25
+            sample.systemPeak = 0.5
+            recorder.receive(.levels(sample))
+        }
+        require(recorderUpdates == 0 && meterUpdates == 25, "Meter updates reached the library or skipped the meters")
+        require(seconds == [0, 1, 2] && telemetry.clock.text == "00:02", "Clock did not follow whole seconds of captured audio")
+        require(telemetry.snapshot.microphonePeak == 1 && telemetry.snapshot.systemPeak == 0.5, "Latest meter levels were lost")
+        sample.frames = 48_000 * 3601
+        recorder.receive(.levels(sample))
+        require(telemetry.clock.text == "1:00:01", "Hour rollover changed")
+        recorder.receive(.finalizing)
+        require(recorderUpdates > 0 && recorder.state == .finalizing, "Finalizing did not reach the library")
+        recorder.receive(.finished(file: nil, reason: nil, recovery: nil, needsPermission: false))
+        require(recorder.state == .idle && telemetry.snapshot.systemPeak == 0 && telemetry.snapshot.microphonePeak == 0, "Finish left a meter active")
+        require(telemetry.snapshot.callbacks == 25 && telemetry.snapshot.frames == sample.frames && seconds == [0, 1, 2, 3601],
+                "Finishing lost final diagnostics or advanced the clock")
+        recorder.receive(.levels(PipelineSnapshot()))
+        require(telemetry.clock.text == "00:00" && seconds.last == 0, "A fresh stream did not reset the clock")
+        print("PASS independent recorder state, 10 Hz audio meters, whole-second clock, and final diagnostics")
+    }
+
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-ui-" + UUID().uuidString)
         setenv("CLAUDE_CONFIG_DIR", root.appendingPathComponent("ClaudeConfig").path, 1)
@@ -43,6 +78,7 @@ import Lookback
         guard Bundle.main.bundleIdentifier == name else { throw RecorderError.message("Run this harness in the Library Check test bundle") }
         UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
+        checkRecordingTelemetry(root)
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
         if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }
         let folder = root.appendingPathComponent("Call-2026-11-14_09-30-00")

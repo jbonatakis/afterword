@@ -32,7 +32,7 @@ import RecorderCore
         item.button?.action = #selector(togglePopover)
         item.button?.imagePosition = .imageLeading
         refreshLabel()
-        changes = recorder.objectWillChange.sink { [weak self] in
+        changes = recorder.objectWillChange.merge(with: recorder.telemetry.clock.objectWillChange).sink { [weak self] in
             // Published properties send before their new values are installed.
             DispatchQueue.main.async { self?.refreshLabel() }
         }
@@ -57,7 +57,8 @@ import RecorderCore
     private func refreshLabel() {
         guard let button = item.button else { return }
         let symbol = recorder.state == .recording ? "record.circle.fill" : recorder.state == .previewing ? "waveform" : "waveform.circle"
-        let label = recorder.state == .recording ? "Afterword, Recording, \(recorder.elapsed)" : "Afterword, \(recorder.title)"
+        let elapsed = recorder.telemetry.clock.text
+        let label = recorder.state == .recording ? "Afterword, Recording, \(elapsed)" : "Afterword, \(recorder.title)"
         if previousSymbol != symbol {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             image?.isTemplate = true
@@ -65,7 +66,7 @@ import RecorderCore
             previousSymbol = symbol
         }
         if previousLabel != label {
-            button.title = recorder.state == .recording ? recorder.elapsed : ""
+            button.title = recorder.state == .recording ? elapsed : ""
             button.toolTip = label
             button.setAccessibilityLabel(label)
             previousLabel = label
