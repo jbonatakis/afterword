@@ -108,9 +108,9 @@ final class LibrarySearchTests: XCTestCase {
         XCTAssertTrue(try index.hybridSearch("deployment delay \"nonexistent phrase\"").hits.isEmpty)
         XCTAssertEqual(try index.hybridSearch("deployment delay \"database migration\"").hits.count, 1)
         XCTAssertEqual(try index.hybridSearch("deployment delay \"CallA\"").hits.count, 1)
-        XCTAssertEqual(try index.hybridSearch("deployment delay \"Recorder\"").hits.count, 1)
+        XCTAssertEqual(try index.hybridSearch("deployment delay \"You\"").hits.count, 1)
         XCTAssertTrue(try index.hybridSearch("deployment delay", speaker: "Other participants").hits.isEmpty)
-        XCTAssertEqual(try index.hybridSearch("deployment delay", speaker: "Recorder").hits.count, 1)
+        XCTAssertEqual(try index.hybridSearch("deployment delay", speaker: "You").hits.count, 1)
         let otherID = index.calls.first { $0.recording.sourceName == "CallB" }!.id
         XCTAssertTrue(try index.hybridPassages("deployment delay", allVersions: true, allowed: [otherID]).passages.isEmpty)
         XCTAssertTrue(try index.hybridSearch("coastal tower").hits.isEmpty)
@@ -121,14 +121,14 @@ final class LibrarySearchTests: XCTestCase {
     func testSpeakerFilterMatchesSpeechAndKeepsContextSeparate() throws {
         try fixture(text: ["Approve the launch", "Send the budget", "Launch tomorrow"])
         let service = try service()
-        let own = try service.call("search_transcripts", arguments: ["query": "launch", "speaker": "Recorder"])
+        let own = try service.call("search_transcripts", arguments: ["query": "launch", "speaker": "You"])
         let items = own["items"] as! [[String: Any]]
         XCTAssertEqual(items.count, 1)
         let matches = items[0]["matches"] as! [[String: Any]]
-        XCTAssertTrue(matches.allSatisfy { $0["speaker"] as? String == "Recorder" })
+        XCTAssertTrue(matches.allSatisfy { $0["speaker"] as? String == "You" })
         let other = try service.call("search_transcripts", arguments: ["query": "launch", "speaker": "Other participants"])
         XCTAssertEqual(other["total"] as? Int, 0)
-        let combined = try service.call("search_transcripts", arguments: ["query": "launch budget", "speaker": "Recorder"])
+        let combined = try service.call("search_transcripts", arguments: ["query": "launch budget", "speaker": "You"])
         XCTAssertEqual(combined["total"] as? Int, 0)
         let status = own["search_status"] as! [String: Any]
         XCTAssertEqual(status["mode"] as? String, "keyword")
@@ -188,7 +188,7 @@ final class LibrarySearchTests: XCTestCase {
         XCTAssertTrue(try index.search("\"proj\"").isEmpty)
         XCTAssertTrue(try index.search("title:unknown OR *").isEmpty)
         let service = try service()
-        for query in ["  PROJECT cafe  ", "\"cafe project\"", "proj*", "proj", "rec"] {
+        for query in ["  PROJECT cafe  ", "\"cafe project\"", "proj*", "proj", "yo"] {
             XCTAssertEqual(try service.call("list_calls", arguments: ["query": query])["total"] as? Int, 1)
             XCTAssertEqual(try service.call("search_transcripts", arguments: ["query": query])["total"] as? Int, 1)
         }

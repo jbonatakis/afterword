@@ -155,10 +155,10 @@ final class AgentAccessTests: XCTestCase {
         let original = try first(), callID = try id()
         XCTAssertEqual(original["title"] as? String, "Planning")
         let transcript = try service.call("get_transcript", arguments: ["call_id": callID])
-        XCTAssertEqual(items(transcript).map { $0["speaker"] as? String }, ["Recorder", "Corinne", "Recorder"])
+        XCTAssertEqual(items(transcript).map { $0["speaker"] as? String }, ["You", "Corinne", "You"])
         XCTAssertTrue(try XCTUnwrap(items(transcript)[1]["reference"] as? String).contains("00:00:02"))
         XCTAssertEqual(try items(service.call("search_transcripts", arguments: ["query": "CAFE", "participant": "cor", "tag": "roadmap"])).count, 1)
-        XCTAssertEqual(try items(service.call("search_transcripts", arguments: ["query": "Recorder"])).count, 1)
+        XCTAssertEqual(try items(service.call("search_transcripts", arguments: ["query": "You"])).count, 1)
         let details = try service.call("get_call", arguments: ["call_id": callID])
         let versionID = try XCTUnwrap((details["versions"] as? [[String: Any]])?.first?["version_id"] as? String)
         try fixture(text: "A revised plan.", run: "second", created: "2026-11-14T15:00:00Z")
@@ -385,7 +385,7 @@ final class AgentAccessTests: XCTestCase {
         XCTAssertEqual(items(search).count, 1)
         XCTAssertEqual(items(search)[0]["match_source"] as? String, "summary")
         XCTAssertTrue(try items(service.call("search_transcripts", arguments: ["query": "cobalt", "mode": "keyword"])).isEmpty)
-        XCTAssertTrue(try items(service.call("list_calls", arguments: ["query": "cobalt", "speaker": "Recorder", "mode": "keyword"])).isEmpty)
+        XCTAssertTrue(try items(service.call("list_calls", arguments: ["query": "cobalt", "speaker": "You", "mode": "keyword"])).isEmpty)
         let changed = try service.call("get_changes", arguments: ["cursor": baseline["cursor"]!])
         XCTAssertEqual((changed["changes"] as? [[String: Any]])?.first?["change"] as? String, "updated")
         _ = try service.call("save_call_summary", arguments: summaryArguments("Updated summary"))
@@ -455,6 +455,11 @@ final class AgentAccessTests: XCTestCase {
         let folder = try fixture(); try enableSummaryWrites()
         try CallDetailsStore.writeInitial(.init(participants: ["Avery"]), to: folder.appendingPathComponent("CallDetails.json"))
         _ = try service.call("save_call_summary", arguments: summaryArguments())
+        let document = try Transcript.read(from: folder.appendingPathComponent("Transcripts/first/Transcript.json"))
+        let previousFingerprint = AgentJSON.hash(try AgentJSON.data([
+            "transcript": AgentJSON.object(document), "speakers": ["Recorder", "Avery", "Recorder"]
+        ]))
+        XCTAssertEqual(try CallSummaryStore.load(for: folder, isDirectory: true)?.current?.sourceFingerprint, previousFingerprint)
         func stale() throws -> Bool { (try service.call("get_call", arguments: ["call_id": id()])["summary"] as! [String: Any])["source_changed"] as! Bool }
         try CallDetailsStore.writeInitial(.init(title: "Renamed", participants: ["Avery"]), to: folder.appendingPathComponent("CallDetails.json"))
         XCTAssertFalse(try stale())

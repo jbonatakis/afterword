@@ -80,7 +80,7 @@ final class TranscriptionTests: XCTestCase {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         XCTAssertEqual(try decoder.decode(Transcript.self, from: json).segments, transcript.segments)
         XCTAssertTrue(try String(contentsOf: first).contains("Other participants: Their question"))
-        XCTAssertTrue(try String(contentsOf: second).contains("Recorder: My response"))
+        XCTAssertTrue(try String(contentsOf: second).contains("You: My response"))
         let mode = try FileManager.default.attributesOfItem(atPath: first.path)[.posixPermissions] as! NSNumber
         XCTAssertEqual(mode.intValue & 0o777, 0o600)
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Transcripts").path).contains { $0.hasPrefix(".pending") })

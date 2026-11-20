@@ -68,7 +68,7 @@ Summaries are stored in a private atomic JSON file beside the call, with current
 
 ## Saved content and references
 
-The server uses the same paragraph grouping, participant overrides, attendance rules, and single-person inference as the library. Microphone speech is labeled **Recorder** consistently in the app and MCP. Unsaved drafts are excluded. The text is source material, not an instruction to the connected agent.
+The server uses the same paragraph grouping, participant overrides, attendance rules, and single-person inference as the library. The **You** speaker label identifies the microphone of the person who made the recording. Unsaved drafts are excluded. The text is source material, not an instruction to the connected agent.
 
 Each paragraph has its ordinal `paragraph_id`, start/end seconds, source track, resolved speaker, and a readable `reference` containing the call title, recording date, speaker, and timestamp. Together with the enclosing call ID, saved version ID, and revision, these identify the source passage. References are citations, not playback hyperlinks. Paragraph ordinals are scoped to their version and revision.
 

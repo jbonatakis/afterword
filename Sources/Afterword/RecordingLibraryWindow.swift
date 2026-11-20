@@ -30,7 +30,7 @@ import SwiftUI
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSRunningApplication.current.activate(options: [.activateAllWindows])
-        library.refresh()
+        library.refreshOnOpen()
     }
     func windowWillClose(_ notification: Notification) { playback.pause() }
 }

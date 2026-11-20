@@ -146,7 +146,8 @@ private struct LibrarySourceChooser: View {
 
 struct LibrarySidebar: View {
     @Binding var selection: LibraryFilter
-    var sources = Set(ActivitySource.allCases)
+    let sources: Set<ActivitySource>
+    @ObservedObject var coding: CodingCoordinator
     @State private var expanded: Set<LibraryFilter> = [.activity, .coding, .recordings]
 
     private var root: LibraryFilter {
@@ -154,28 +155,22 @@ struct LibrarySidebar: View {
         return .activity
     }
 
-    private var rootChildren: [LibraryFilter] {
-        guard root == .activity else { return root.children }
-        return root.children.filter { child in
-            guard let source = child.source else { return false }
-            return sources.contains(source)
-        }
-    }
-
     var body: some View {
         List(selection: $selection) {
-            LibrarySidebarRow(filter: root, children: rootChildren, selection: $selection, expanded: $expanded)
+            LibrarySidebarRow(filter: root, sources: sources, providers: coding.providers, selection: $selection, expanded: $expanded)
         }.listStyle(.sidebar)
     }
 }
 
 private struct LibrarySidebarRow: View {
     let filter: LibraryFilter
-    let children: [LibraryFilter]
+    let sources: Set<ActivitySource>
+    let providers: Set<CodingProvider>
     @Binding var selection: LibraryFilter
     @Binding var expanded: Set<LibraryFilter>
 
     var body: some View {
+        let children = filter.children(sources: sources, providers: providers)
         let label = Label { Text(filter.rawValue) } icon: { filter.icon }
         if children.isEmpty {
             label.tag(filter)
@@ -189,9 +184,18 @@ private struct LibrarySidebarRow: View {
                 }
             })) {
                 ForEach(children) { child in
-                    LibrarySidebarRow(filter: child, children: child.children, selection: $selection, expanded: $expanded)
+                    LibrarySidebarRow(filter: child, sources: sources, providers: providers, selection: $selection, expanded: $expanded)
                 }
             } label: { label }.tag(filter)
+        }
+    }
+}
+
+private struct SidebarActionLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.frame(width: 18)
+            configuration.title
         }
     }
 }
@@ -270,7 +274,7 @@ struct RecordingLibraryView: View {
     private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
-                LibrarySidebar(selection: $library.filter, sources: library.sources)
+                LibrarySidebar(selection: $library.filter, sources: library.sources, coding: library.coding)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     if library.sources.contains(.recordings) {
@@ -285,13 +289,23 @@ struct RecordingLibraryView: View {
                                         .disabled(folder == recorder.destination?.resolvingSymlinksInPath().standardizedFileURL)
                                 }
                             }
-                        } label: { Label("Recording folders", systemImage: "folder") }
-                            .menuStyle(.borderlessButton)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Label("Recording folders", systemImage: "folder")
+                                Image(systemName: "chevron.down")
+                                    .font(.caption2.weight(.semibold))
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .menuIndicator(.hidden)
                         Button { recorder.calendar.showUpcoming() } label: { Label("Upcoming calls", systemImage: "calendar") }.buttonStyle(.plain)
                         Button { recorder.calendar.showPeople() } label: { Label("People & groups", systemImage: "person.2") }.buttonStyle(.plain)
                     }
                     SettingsLink { Label("Settings", systemImage: "gearshape") }.buttonStyle(.plain)
-                }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                }.labelStyle(SidebarActionLabelStyle())
+                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(16)
             }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
         } content: {
             VStack(spacing: 0) {
@@ -884,7 +898,7 @@ struct ReadableTranscript: View {
                             .listRowInsets(EdgeInsets(top: 13, leading: 28, bottom: 13, trailing: 28))
                             .listRowSeparator(.hidden)
                     }
-                    Text("“Recorder” follows the microphone track. Other speaker names use the call’s participant assignments.")
+                    Text("“\(TranscriptSource.microphone.label)” follows the microphone track. Other speaker names use the call’s participant assignments.")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
                         .listRowInsets(EdgeInsets(top: 13, leading: 28, bottom: 28, trailing: 28))

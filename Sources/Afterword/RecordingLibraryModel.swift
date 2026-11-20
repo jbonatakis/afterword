@@ -92,6 +92,7 @@ enum GitHubPeriod: String, CaseIterable {
     @Published private(set) var visibleRecordings: [LibraryRecording] = []
     @Published var filter: LibraryFilter = .activity {
         didSet {
+            if oldValue != filter { pendingInitialSelection = nil }
             configureCodingPage()
             if oldValue.callScope != filter.callScope {
                 searchTask?.cancel(); searchGeneration = UUID()
@@ -131,6 +132,7 @@ enum GitHubPeriod: String, CaseIterable {
     private var searchTask: Task<Void, Never>?
     private var searchGeneration = UUID()
     private var matchedRecordings: [LibraryRecording] = []
+    private var pendingInitialSelection: String?
     private var generation = UUID()
     private var subscriptions: Set<AnyCancellable> = []
     private let defaults: UserDefaults
@@ -169,12 +171,16 @@ enum GitHubPeriod: String, CaseIterable {
             initial = []
             sourceError = error.localizedDescription
         }
+        coding.$providers.removeDuplicates().sink { [weak self] providers in
+            guard let self, let selected = filter.codingProvider, !providers.contains(selected) else { return }
+            filter = .coding
+        }.store(in: &subscriptions)
         coding.changed = { [weak self] in
             guard let self, sources.contains(.coding) else { return }
             browseOrder = nil
             if !codingProject.isEmpty && !coding.projects.contains(codingProject) { codingProject = "" }
             if !codingBranch.isEmpty && !coding.branches.contains(codingBranch) { codingBranch = "" }
-            refresh()
+            requestRefresh()
         }
         coding.pageChanged = { [weak self] in
             guard let self, sources.contains(.coding) else { return }
@@ -188,7 +194,7 @@ enum GitHubPeriod: String, CaseIterable {
             matchedGitHub.removeAll { !allowed.contains($0.item.repositoryID) }
             searchGeneration = UUID(); searchTask?.cancel()
             applyFilter()
-            refresh()
+            requestRefresh()
         }
         recorder.$destination.dropFirst().removeDuplicates().sink { [weak self] folder in
             guard let self, sources.contains(.recordings) else { return }
@@ -203,9 +209,12 @@ enum GitHubPeriod: String, CaseIterable {
             self?.embeddings.setBusy([.preparing, .recording, .previewing, .finalizing].contains(state) || transcribing)
         }.store(in: &subscriptions)
         applySources(initial)
-        if !initial.isEmpty { selection = savedSelection }
+        if !initial.isEmpty {
+            pendingInitialSelection = savedSelection
+            selection = savedSelection
+        }
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
-            .sink { [weak self] _ in self?.refresh() }.store(in: &subscriptions)
+            .sink { [weak self] _ in self?.refreshOnOpen() }.store(in: &subscriptions)
     }
     func setSources(_ next: Set<ActivitySource>, recordingDestination: URL? = nil) {
         guard sources != next, let recorder else { return }
@@ -225,6 +234,7 @@ enum GitHubPeriod: String, CaseIterable {
 
     private func applySources(_ next: Set<ActivitySource>) {
         guard let recorder else { return }
+        pendingInitialSelection = nil
         let previous = sources
         browseOrder = nil
         scan?.cancel(); generation = UUID(); refreshing = false
@@ -323,6 +333,13 @@ enum GitHubPeriod: String, CaseIterable {
         guard needsRefresh, !refreshing, !managing, !stopped else { return }
         refresh()
     }
+    private func requestRefresh() {
+        needsRefresh = true
+        refreshIfNeeded()
+    }
+    func refreshOnOpen() {
+        if !refreshing { refresh() }
+    }
     @discardableResult func refresh() -> Task<Void, Never>? {
         guard !stopped, !sources.isEmpty, !managing else { return nil }
         summaryMonitor.watch(roots)
@@ -340,7 +357,8 @@ enum GitHubPeriod: String, CaseIterable {
             embeddingDirectory.deletingLastPathComponent().appendingPathComponent("Search")
         let existing = indexRoots == roots ? searchIndex : nil
         if existing == nil { searchIndex?.stopSemanticSearch() }
-        let task = Task.detached(priority: .utility) { () -> LibraryRefresh in
+        let showRecordingsFirst = recordings.isEmpty && sources.contains(.recordings) && !roots.isEmpty
+        let task = Task.detached(priority: .utility) { [weak self] () -> LibraryRefresh in
             // SQLite cannot switch a fresh database to WAL from two concurrent opens.
             // A cancelled scan can still be finishing its current filesystem operation.
             _ = await previousScan?.value
@@ -348,10 +366,15 @@ enum GitHubPeriod: String, CaseIterable {
                 try Task.checkCancellation()
                 let index = try existing ?? LibrarySearchIndex(roots: roots, directory: cacheDirectory, embeddingDirectory: embeddingDirectory, peopleURL: peopleURL, callScope: callScope)
                 try Task.checkCancellation()
+                let recordings = try index.synchronize(prepareSemanticSearch: false)
+                if showRecordingsFirst && !recordings.isEmpty {
+                    await self?.showInitialRecordings(recordings, generation: id)
+                }
+                try Task.checkCancellation()
                 try index.useCodingArchive(in: codingDirectory)
+                try Task.checkCancellation()
                 try index.useGitHubArchive(in: githubDirectory, shared: false)
                 let githubItems = try index.githubSearch("", keywordOnly: true).hits
-                let recordings = try index.synchronize()
                 let order = activityOrder(recordings, sessions, githubItems, query: "")
                 return LibraryRefresh(
                     index: index, recordings: recordings, error: nil, issues: index.issues, speakers: index.speakerNames,
@@ -366,6 +389,11 @@ enum GitHubPeriod: String, CaseIterable {
             defer { self.refreshIfNeeded() }
             if let error = result.error { self.issues = [error]; return }
             self.searchIndex = result.index; self.indexRoots = roots
+            if self.needsRefresh {
+                await self.refresh()?.value
+                return
+            }
+            self.pendingInitialSelection = nil
             self.browseOrder = self.coding.pageGeneration == pageGeneration ? result.order : nil
             self.githubHistory = result.github; self.recordings = result.recordings; self.issues = result.issues
             if self.speakerNames != result.speakers { self.speakerNames = result.speakers }
@@ -373,10 +401,17 @@ enum GitHubPeriod: String, CaseIterable {
             await self.updateSearch(debounce: false)?.value
         }
     }
+    private func showInitialRecordings(_ verified: [LibraryRecording], generation: UUID) {
+        guard self.generation == generation, !stopped else { return }
+        recordings = verified
+        if browsing {
+            browseOrder = coding.sessions.isEmpty && githubHistory.isEmpty ? verified.map(\.id) : nil
+            updateSearch(debounce: false)
+        }
+    }
     private func configureCodingPage() {
         guard filter.showsCoding else { return }
-        let provider: CodingProvider? = filter == .codex ? .codex : filter == .claudeCode ? .claudeCode : nil
-        coding.setBrowseFilter(.init(provider: provider, project: codingProject.isEmpty ? nil : codingProject,
+        coding.setBrowseFilter(.init(provider: filter.codingProvider, project: codingProject.isEmpty ? nil : codingProject,
                                      branch: codingBranch.isEmpty ? nil : codingBranch))
     }
     private var browsing: Bool {
@@ -469,7 +504,10 @@ enum GitHubPeriod: String, CaseIterable {
             order = matchedOrder
         }
         activity = order.compactMap { byID[$0] }
-        if selection.flatMap({ byID[$0] }) == nil { selection = activity.first?.id }
+        if let selection, byID[selection] != nil { return }
+        // Another source may publish first while the saved item is still loading.
+        if refreshing, browsing, let pendingInitialSelection, selection == pendingInitialSelection { return }
+        selection = activity.first?.id
     }
     private func beginManagement() throws {
         guard !managing else { throw RecorderError.message("Another change is still saving. Try again in a moment.") }
@@ -817,10 +855,18 @@ enum LibraryFilter: String, Identifiable {
         }
     }
 
-    var children: [Self] {
+    var codingProvider: CodingProvider? {
         switch self {
-        case .activity: return [.coding, .recordings, .github]
-        case .coding: return [.codex, .claudeCode]
+        case .codex: return .codex
+        case .claudeCode: return .claudeCode
+        default: return nil
+        }
+    }
+
+    func children(sources: Set<ActivitySource>, providers: Set<CodingProvider>) -> [Self] {
+        switch self {
+        case .activity: return [ActivitySource.coding, .recordings, .github].filter(sources.contains).map(\.libraryFilter)
+        case .coding: return [Self.codex, .claudeCode].filter { $0.codingProvider.map(providers.contains) == true }
         case .recordings: return [.transcribed, .untranscribed, .needsSummary, .personal]
         default: return []
         }
@@ -844,11 +890,8 @@ enum LibraryFilter: String, Identifiable {
         }
     }
     func includes(_ session: CodingSession) -> Bool {
-        switch self {
-        case .codex: return session.source == CodingProvider.codex.rawValue
-        case .claudeCode: return session.source == CodingProvider.claudeCode.rawValue
-        default: return showsCoding
-        }
+        if let codingProvider { return session.source == codingProvider.rawValue }
+        return showsCoding
     }
 
     var emptyTitle: String {

@@ -67,7 +67,7 @@ async def main():
                     assert result['items'][0]['match']['speaker']=='Mixed audio'
                     assert (await call('search_transcripts',{'query':query,'mode':'keyword'}))['total']==0
                     assert (await call('search_transcripts',{'query':query+' "nonexistent phrase"'}))['total']==0
-                    assert (await call('search_transcripts',{'query':query,'speaker':'Recorder'}))['total']==0
+                    assert (await call('search_transcripts',{'query':query,'speaker':'You'}))['total']==0
                     with (embedding/'priority.lock').open('a') as lease:
                         fcntl.flock(lease,fcntl.LOCK_SH)
                         paused=await call('search_transcripts',{'query':query})

@@ -78,13 +78,13 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         self.roots = roots; self.confined = confined
         let scope = AgentJSON.hash(roots.map { $0.standardizedFileURL.path }.sorted().joined(separator: "\n") + ":\(confined)" + (callScope.map { ":" + $0.rawValue } ?? ""))
         try PrivateFiles.directory(directory)
-        db = try SearchDatabase(url: directory.appendingPathComponent("v2-" + scope + ".sqlite"))
+        db = try SearchDatabase(url: directory.appendingPathComponent("v3-" + scope + ".sqlite"))
     }
 
     deinit { semantic.stop() }
 
     /// Stat every saved delivery, decode/hash only changed calls. No source writes.
-    @discardableResult public func synchronize() throws -> [LibraryRecording] {
+    @discardableResult public func synchronize(prepareSemanticSearch: Bool = true) throws -> [LibraryRecording] {
         lock.lock(); defer { lock.unlock() }
         // Classify before enumerating transcripts so an inaccessible personal
         // transcript cannot prevent a work search. Decode unchanged details once.
@@ -147,8 +147,9 @@ public final class LibrarySearchIndex: @unchecked Sendable {
             for id in byID.keys where next[id] == nil { try remove(id) }
             try db.execute("COMMIT")
             cached = next
-            semantic.refresh(calls, codingArchive: codingArchive, github: githubArchive, shared: githubShared)
-            return calls.map(\.recording)
+            let verified = calls
+            if prepareSemanticSearch { semantic.refresh(verified, codingArchive: codingArchive, github: githubArchive, shared: githubShared) }
+            return verified.map(\.recording)
         } catch { try? db.execute("ROLLBACK"); throw error }
     }
     var calls: [AgentCall] {

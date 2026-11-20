@@ -219,14 +219,16 @@ public final class CodingArchive {
         try bumpRevision()
     }
 
-    public func refresh(discoverProjects: Bool, readers: [any SessionReader]? = nil) throws -> (projects: [String], issues: [String], accounts: [LocalCodexAccount]) {
+    public func refresh(discoverProjects: Bool, provider requested: CodingProvider? = nil,
+                        readers: [any SessionReader]? = nil) throws -> (projects: [String], issues: [String], accounts: [LocalCodexAccount]) {
         let options = try settings()
         var projects = Set<String>(), issues: [String] = []
         var accounts: [LocalCodexAccount] = []
         guard discoverProjects || options.projectSelection.hasIncludes else { return ([], [], []) }
         let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true)]
         for var reader in sources {
-            guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider) else { continue }
+            guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider),
+                  requested == nil || requested == provider else { continue }
             do {
                 try Task.checkCancellation()
                 if let codex = reader as? CodexReader {
@@ -254,7 +256,9 @@ public final class CodingArchive {
     }
 
     private func synchronize(_ infos: [SessionInfo], reader: any SessionReader, provider: CodingProvider, options: CodingImportSettings) throws {
-        let known = try Dictionary(uniqueKeysWithValues: db.rows("SELECT id,info FROM sessions").map { ($0[0], $0[1]) })
+        guard !infos.isEmpty else { return }
+        let rows = try db.rows("SELECT id,info FROM sessions WHERE json_extract(info,'$.source')=?", [provider.rawValue])
+        let known = Dictionary(uniqueKeysWithValues: rows.map { ($0[0], $0[1]) })
         var failures = 0
         for info in infos {
             try Task.checkCancellation()

@@ -17,7 +17,12 @@ struct AgentCall {
         payload["summary_readable"] = recording.summaryError == nil
         payload["versions"] = try recording.transcripts.map { version -> [String: Any] in
             var item: [String: Any] = ["id": version.runName, "date": AgentJSON.date(version.date), "readable": version.document != nil]
-            if let document = version.document { item["document"] = try AgentJSON.object(document) }
+            if let document = version.document {
+                item["document"] = try AgentJSON.object(document)
+                if document.segments.contains(where: { $0.source == .microphone }) {
+                    item["microphone_label"] = TranscriptSource.microphone.label
+                }
+            }
             return item
         }
         self.init(recording: recording, id: id, revision: AgentJSON.hash(try AgentJSON.data(payload)))

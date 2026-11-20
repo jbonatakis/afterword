@@ -37,7 +37,10 @@ import Lookback
     }
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-ui-" + UUID().uuidString)
-        let name = Bundle.main.bundleIdentifier!
+        setenv("CLAUDE_CONFIG_DIR", root.appendingPathComponent("ClaudeConfig").path, 1)
+        setenv("CODEX_HOME", root.appendingPathComponent("CodexHome").path, 1)
+        let name = "io.local.afterword.librarycheck"
+        guard Bundle.main.bundleIdentifier == name else { throw RecorderError.message("Run this harness in the Library Check test bundle") }
         UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
@@ -76,6 +79,8 @@ import Lookback
             return
         }
         let sourcesOnly = CommandLine.arguments.contains("--sources")
+        try await checkRecordingStartup(root: root.appendingPathComponent("RecordingStartup"),
+                                        audio: folder.appendingPathComponent(RecordingTrack.mixed.filename))
         if !sourcesOnly {
             playback.select(recording)
             require(playback.canPlay && playback.duration > 0, "Initial scrubber duration missing")
@@ -557,7 +562,8 @@ import Lookback
         for source in [ActivitySource.github, .coding] {
             library.setSources([source])
             await library.refresh()?.value
-            let rowCount = source.libraryFilter.children.count + 1
+            // GitHub and unconfigured Coding each have only their root row.
+            let rowCount = 1
             for _ in 0..<30 {
                 await pump(0.05)
                 host.layoutSubtreeIfNeeded()
@@ -743,9 +749,69 @@ import Lookback
         print("PASS repository picker native list and search across 603 repositories")
     }
 
-    @MainActor static func checkCodingPages(_ root: URL) async throws {
+    @MainActor static func checkRecordingStartup(root: URL, audio: URL) async throws {
+        let calls = root.appendingPathComponent("Calls").resolvingSymlinksInPath()
+        let embeddings = root.appendingPathComponent("Embeddings")
+        let people = root.appendingPathComponent("People.json")
+        func makeCall(_ day: Int) throws -> URL {
+            let folder = calls.appendingPathComponent("Call-2026-11-\(day)_09-30-00")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.linkItem(at: audio, to: folder.appendingPathComponent(RecordingTrack.mixed.filename))
+            return folder
+        }
+        let saved = try makeCall(10), newer = try makeCall(11), personal = try makeCall(12), removed = try makeCall(13)
+        let index = try LibrarySearchIndex(roots: [calls], directory: root.appendingPathComponent("Search"),
+                                           embeddingDirectory: embeddings, peopleURL: people, callScope: .work)
+        let cached = try index.synchronize()
+        require(cached.count == 4, "Expected four cached Work recordings")
+        guard let moved = cached.first(where: { $0.url.path == personal.path }) else {
+            throw RecorderError.message("Missing cached recording for the scope change")
+        }
+        try CallDetailsStore.setScope(.personal, for: moved)
+        try FileManager.default.removeItem(at: removed)
+
         let directory = root.appendingPathComponent("CodingSessions")
         _ = try CodingArchive(directory: directory)
+        let db = try SearchDatabase(url: directory.appendingPathComponent("History.sqlite"), durable: true)
+        // Force the shared search index to wait on the coding archive during launch.
+        try db.execute("DROP INDEX sessions_branch_recent")
+        try db.execute("BEGIN IMMEDIATE")
+        try ActivitySourceStore.save([.recordings, .coding], directory: root.appendingPathComponent("MCP"))
+        let suite = "io.local.afterword.recordingstartup." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set([calls.path], forKey: "libraryFolders")
+        defaults.set(true, forKey: "migratedImplicitRecordingFolder")
+        defaults.set(saved.path, forKey: "librarySelection")
+        let recorder = RecordingCoordinator(peopleURL: people, enabled: false, recoveryRoot: root.appendingPathComponent("Sessions"))
+        let previousDestination = recorder.destination
+        recorder.destination = calls
+        defer { recorder.destination = previousDestination }
+        let library = RecordingLibraryModel(recorder: recorder, defaults: defaults, embeddingDirectory: embeddings)
+        defer { library.shutdown(); recorder.setSourceEnabled(false); recorder.transcription.shutdown() }
+        library.refreshOnOpen()
+        library.refreshOnOpen()
+        for _ in 0..<100 {
+            if !library.visibleRecordings.isEmpty { break }
+            await pump(0.02)
+        }
+        require(library.refreshing && library.visibleRecordings.map(\.id) == [newer.path, saved.path],
+                "Opening the library waited for coding search or displayed stale recordings")
+        require(library.selectedRecording?.id == saved.path, "Opening the library lost the selected recording")
+        library.search = "no such recording"
+        try db.execute("COMMIT")
+        for _ in 0..<200 {
+            if library.resultQuery == library.search { break }
+            await pump(0.02)
+        }
+        require(library.resultQuery == library.search && library.visibleRecordings.isEmpty,
+                "A search entered during startup did not finish")
+        print("PASS recording startup during blocked indexing, saved selection, current scope, and queued search")
+    }
+
+    @MainActor static func checkCodingPages(_ root: URL) async throws {
+        let directory = root.appendingPathComponent("CodingSessions")
+        try CodingArchive(directory: directory).setEnabled(true, for: .claudeCode)
         let db = try SearchDatabase(url: directory.appendingPathComponent("History.sqlite"), durable: true)
         try db.execute("""
             WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<450)
@@ -817,7 +883,7 @@ import Lookback
         defer { try? FileManager.default.removeItem(at: pending) }
         let mixed = library.recordings[0].url.appendingPathComponent("Mixed.m4a")
         try FileManager.default.copyItem(at: mixed, to: pending.appendingPathComponent("Mixed.m4a"))
-        let projects = root.appendingPathComponent("ClaudeProjects")
+        let projects = root.appendingPathComponent("ClaudeConfig/projects")
         let project = projects.appendingPathComponent("fixture")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let source = project.appendingPathComponent(UUID().uuidString + ".jsonl")
@@ -831,7 +897,6 @@ import Lookback
         let archive = try CodingArchive(directory: library.coding.directory)
         try archive.setEnabled(true); try archive.addProject("/projects/fixture")
         try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: projects))
-        try archive.setEnabled(false)
         let codexHome = root.appendingPathComponent("CodexHome")
         let rollouts = codexHome.appendingPathComponent("sessions/2026/01/02")
         try FileManager.default.createDirectory(at: rollouts, withIntermediateDirectories: true)
@@ -844,11 +909,11 @@ import Lookback
         try Data(rollout.utf8).write(to: rollouts.appendingPathComponent("rollout-fixture-\(thread).jsonl"))
         try archive.setEnabled(true, for: .codex)
         try archive.synchronize(reader: CodexReader(homeDirectory: codexHome))
-        try archive.setEnabled(false, for: .codex)
         library.coding.refresh()
         for _ in 0..<100 { if !library.coding.busy { break }; await pump(0.02) }
         await library.refresh()?.value
-        let sidebar = NSHostingView(rootView: LibrarySidebar(selection: Binding(get: { library.filter }, set: { library.filter = $0 })))
+        let sidebar = NSHostingView(rootView: LibrarySidebar(selection: Binding(get: { library.filter }, set: { library.filter = $0 }),
+                                                           sources: library.sources, coding: library.coding))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 235, height: 320),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = sidebar; window.displayIfNeeded()
@@ -909,6 +974,27 @@ import Lookback
         require(library.selectedCoding?.providerName == "Codex", "Switching providers lost the matching search result")
         print("PASS native sidebar hierarchy, branch selection, disclosure, and provider-scoped search")
 
+        func setImport(_ provider: CodingProvider, enabled: Bool, expectedRows: Int) async {
+            library.coding.refresh(.enabled(provider, enabled), discover: true)
+            for _ in 0..<100 {
+                await pump(0.02)
+                if !library.coding.busy && tree.numberOfRows == expectedRows { break }
+            }
+            require(!library.coding.busy && tree.numberOfRows == expectedRows, "Wrong sidebar after changing \(provider.name) import")
+        }
+        library.search = ""
+        library.filter = .claudeCode
+        await setImport(.claudeCode, enabled: false, expectedRows: rows.count - 1)
+        require(library.filter == .coding, "Disabling the selected provider left its filter active")
+        tree.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false); await pump(0.05)
+        require(library.filter == .codex, "Claude Code was visible with only Codex enabled")
+        await setImport(.codex, enabled: false, expectedRows: rows.count - 2)
+        require(library.filter == .coding && library.visibleCoding.count == 2, "Pausing both providers hid saved sessions")
+        await setImport(.claudeCode, enabled: true, expectedRows: rows.count - 1)
+        tree.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false); await pump(0.05)
+        require(library.filter == .claudeCode, "Re-enabling Claude Code did not restore its sidebar row")
+        print("PASS provider sidebar visibility follows the import toggles and preserves saved sessions")
+
         library.filter = .coding; library.search = "preserves"
         await library.updateSearch(debounce: false)?.value
         guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }
@@ -943,6 +1029,57 @@ import Lookback
             window.orderOut(nil)
         }
         print("PASS coding search opens labeled Claude Code and Codex sessions with rendered Markdown")
+        try await checkProviderToggles(project: project, coding: library.coding)
+    }
 
+    @MainActor static func checkProviderToggles(project: URL, coding: CodingCoordinator) async throws {
+        func addProject(_ name: String) throws {
+            let row = #"{"type":"user","uuid":"first","cwd":"/fixture/\#(name)","message":{"content":"fixture"}}"#
+            try Data(row.utf8).write(to: project.appendingPathComponent(UUID().uuidString + ".jsonl"))
+        }
+        for n in 0..<400 { try addProject("project-\(n)") }
+        let settings = NSHostingView(rootView: CodingSettingsView(coding: coding))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 620, height: 640),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = settings; window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        func settle() async throws {
+            for _ in 0..<250 {
+                await pump(0.02)
+                window.displayIfNeeded()
+                if !coding.busy { return }
+            }
+            throw RecorderError.message("Timed out waiting for coding preferences")
+        }
+        func renderedCheckboxes(_ view: NSView) -> Int {
+            let folder = (view as? NSButton)?.toolTip?.hasPrefix("/fixture") == true
+            return (folder ? 1 : 0) + view.subviews.reduce(0) { $0 + renderedCheckboxes($1) }
+        }
+        try await settle()
+        func projects() -> [CodingProjectFolder] { coding.folders.first { $0.path == "/fixture" }?.children ?? [] }
+        require(projects().count == 400, "Settings did not discover the fixture projects")
+        let visible = renderedCheckboxes(settings)
+        require(visible > 0 && visible < 100, "Settings created \(visible) checkboxes for 400 projects")
+        try addProject("discovered-on-refresh")
+        let db = try SearchDatabase(url: coding.directory.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("BEGIN IMMEDIATE")
+        for enabled in [true, false, true] {
+            coding.refresh(.enabled(.codex, enabled), discover: true)
+            require(coding.providers.contains(.codex) == enabled, "Toggle waited for the database or a scan")
+            await pump(0.02)
+        }
+        try db.execute("COMMIT")
+        try await settle()
+        let archive = try CodingArchive(directory: coding.directory)
+        let saved = try archive.settings()
+        require(saved.providers == [.codex, .claudeCode], "Rapid toggles did not persist the final choice")
+        require(projects().count == 400, "Enabling Codex rescanned Claude or discarded its project list")
+        coding.refresh(.enabled(.codex, false), discover: true)
+        try await settle()
+        require(projects().count == 400, "Disabling Codex rescanned Claude")
+        coding.refresh(discover: true)
+        try await settle()
+        require(projects().contains { $0.name == "discovered-on-refresh" }, "Explicit discovery missed a new project")
+        print("PASS bounded project controls, responsive rapid toggles, persistence, and provider-scoped discovery")
     }
 }

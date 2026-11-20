@@ -61,7 +61,8 @@ public enum CallSummaryStore {
     }
     static func fingerprint(recording: LibraryRecording, version: LibraryTranscript) -> String? {
         guard recording.detailsError == nil, let document = version.document else { return nil }
-        let speakers = document.paragraphs.map { recording.speakerLabel(for: $0, version: version) }
+        // Existing summary fingerprints use this token for the microphone regardless of its display label.
+        let speakers = document.paragraphs.map { $0.source == .microphone ? "Recorder" : recording.speakerLabel(for: $0, version: version) }
         guard let data = try? AgentJSON.data(["transcript": AgentJSON.object(document), "speakers": speakers]) else { return nil }
         return AgentJSON.hash(data)
     }

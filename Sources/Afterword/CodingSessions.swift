@@ -1,7 +1,7 @@
 import SwiftUI
 import RecorderCore
 
-struct ProjectFolderChanges: Equatable {
+struct ProjectFolderChanges: Equatable, Sendable {
     let original, selection: CodingProjectSelection
 }
 
@@ -17,39 +17,58 @@ private struct CodingSnapshot {
 
 private actor CodingImportWorker {
     let directory: URL
-    private var available: [String] = []
+    private var available: [CodingProvider: [String]] = [:]
+    private var accounts: [LocalCodexAccount] = []
     init(directory: URL) { self.directory = directory }
 
-    func refresh(change: CodingCoordinator.Change?, discover: Bool) throws -> CodingSnapshot {
+    func refresh(providers: Set<CodingProvider>, discover: Bool,
+                 showProviders: @MainActor @Sendable (Set<CodingProvider>) -> Void) async throws -> CodingSnapshot {
         try Task.checkCancellation()
-        if change == nil && !CodingArchive.exists(in: directory) {
-            available = []
+        if !CodingArchive.exists(in: directory) {
+            available = [:]; accounts = []
             return .init(settings: nil, folders: [], projects: [], accounts: [], branches: [], revision: "", issue: nil)
         }
         let archive = try CodingArchive(directory: directory)
         var issues: [String] = []
-        switch change {
-        case .enabled(let provider, let value): try archive.setEnabled(value, for: provider)
-        case .account(let selection): try archive.setCodexAccount(selection)
-        case .folders(let changes):
-            do { try archive.applyProjectSelection(changes.selection, replacing: changes.original) }
-            catch { issues.append(error.localizedDescription) }
-        case nil: break
-        }
-        let result = try archive.refresh(discoverProjects: discover)
-        issues += result.issues
         let settings = try archive.settings()
+        await showProviders(settings.providers)
+        available = available.filter { settings.providers.contains($0.key) }
+        if !settings.providers.contains(.codex) { accounts = [] }
+        for provider in CodingProvider.allCases where providers.contains(provider) && settings.providers.contains(provider) {
+            try Task.checkCancellation()
+            let result = try archive.refresh(discoverProjects: discover, provider: provider)
+            try Task.checkCancellation()
+            issues += result.issues
+            if discover { available[provider] = result.projects }
+            if provider == .codex, discover || !settings.projectSelection.exact.isEmpty || !settings.projectSelection.folders.isEmpty {
+                accounts = result.accounts
+            }
+        }
+        try Task.checkCancellation()
         let projects = try Set(archive.sessionProjects()).union(settings.projectSelection.exact)
-        if discover || settings.providers.isEmpty { available = result.projects }
-        let paths = projects.union(available).union(settings.projectSelection.folders.keys)
+        let paths = projects.union(available.values.joined()).union(settings.projectSelection.folders.keys)
         return try .init(settings: settings, folders: CodingProjectFolder.tree(paths: paths), projects: projects.sorted(),
-                     accounts: result.accounts, branches: archive.sessionBranches(), revision: archive.revision,
+                     accounts: accounts, branches: archive.sessionBranches(), revision: archive.revision,
                      issue: issues.isEmpty ? nil : issues.joined(separator: "\n"))
     }
 }
 
+// Preference writes must be able to finish while a reader is walking transcript files.
+private actor CodingSettingsWriter {
+    func save(_ change: CodingCoordinator.Change, in directory: URL) throws -> CodingImportSettings {
+        try Task.checkCancellation()
+        let archive = try CodingArchive(directory: directory)
+        switch change {
+        case .enabled(let provider, let value): try archive.setEnabled(value, for: provider)
+        case .account(let account): try archive.setCodexAccount(account)
+        case .folders(let changes): try archive.applyProjectSelection(changes.selection, replacing: changes.original)
+        }
+        return try archive.settings()
+    }
+}
+
 @MainActor final class CodingCoordinator: ObservableObject {
-    enum Change: Equatable {
+    enum Change: Equatable, Sendable {
         case enabled(CodingProvider, Bool), account(CodexAccountSelection)
         case folders(ProjectFolderChanges)
 
@@ -60,13 +79,15 @@ private actor CodingImportWorker {
     }
     let directory: URL
     private let worker: CodingImportWorker
+    private let writer = CodingSettingsWriter()
     @Published private(set) var providers: Set<CodingProvider> = []
+    private var savedProviders: Set<CodingProvider> = []
     @Published private(set) var codexAccount = CodexAccountSelection.automatic
     @Published private(set) var accounts: [LocalCodexAccount] = []
     var enabled: Bool { !providers.isEmpty }
     @Published private var selection = CodingProjectSelection()
     var effectiveSelection: CodingProjectSelection {
-        pendingChanges.reversed().lazy.compactMap(\.folderSelection).first ?? activeChange?.folderSelection ?? selection
+        pendingChanges.reversed().lazy.compactMap(\.folderSelection).first ?? selection
     }
     @Published private(set) var projects: [String] = []
     @Published private(set) var folders: [CodingProjectFolder] = []
@@ -81,14 +102,18 @@ private actor CodingImportWorker {
     private var pageTask: Task<Void, Never>?
     var pageChanged: (() -> Void)?
     private static let pageSize = 200
-    @Published private(set) var busy = false
+    @Published private var scanning = false
+    var busy: Bool { scanning || !pendingChanges.isEmpty }
+    var checkingSessions: Bool { scanning && !requestedProviders.isDisjoint(with: providers) }
     @Published private(set) var issue: String?
     var changed: (() -> Void)?
     private var timer: Timer?
     private var task: Task<Void, Never>?
+    private var saveTask: Task<Void, Never>?
+    private var requestedProviders: Set<CodingProvider> = []
     private var wantsDiscovery = false
-    @Published private var activeChange: Change?
     @Published private var pendingChanges: [Change] = []
+    private var saveIssue: String?
 
     init(directory: URL) {
         self.directory = directory
@@ -104,46 +129,103 @@ private actor CodingImportWorker {
     }
     func stop() {
         timer?.invalidate(); timer = nil
-        task?.cancel(); task = nil; busy = false
+        task?.cancel(); task = nil; scanning = false
+        saveTask?.cancel(); saveTask = nil
         pageTask?.cancel(); pageTask = nil
         cursor = nil; pageRevision = nil; importRevision = nil; sessions = []
-        wantsDiscovery = false; pendingChanges = []; activeChange = nil
+        savedProviders = []; providers = []
+        wantsDiscovery = false; requestedProviders = []; pendingChanges = []; saveIssue = nil
     }
     func refresh(_ change: Change? = nil, discover: Bool = false) {
         guard timer != nil else { return }
-        guard !busy else {
-            if let change { pendingChanges.append(change) }
+        let oldProviders = requestedProviders, oldDiscovery = wantsDiscovery
+        switch change {
+        case .enabled(let provider, false): requestedProviders.remove(provider)
+        case .enabled(let provider, true): requestedProviders.insert(provider); wantsDiscovery = true
+        case .account: requestedProviders.insert(.codex); wantsDiscovery = true
+        case .folders, nil:
+            requestedProviders.formUnion(CodingProvider.allCases)
             wantsDiscovery = wantsDiscovery || discover
+        }
+        if let change {
+            pendingChanges.append(change)
+            updateProviders()
+        } else if task != nil && requestedProviders == oldProviders && wantsDiscovery == oldDiscovery {
             return
         }
-        busy = true
-        activeChange = change
+        // Superseded scans may still be returning from a filesystem read. Only the
+        // latest scan can publish, and interrupted providers stay scheduled.
+        task?.cancel(); task = nil; scanning = false
+        if !pendingChanges.isEmpty {
+            savePendingChanges()
+        } else {
+            scan()
+        }
+    }
+
+    private func updateProviders() {
+        var next = savedProviders
+        for case .enabled(let provider, let enabled) in pendingChanges {
+            if enabled { next.insert(provider) } else { next.remove(provider) }
+        }
+        if next != providers { providers = next }
+    }
+
+    private func applySettings(_ settings: CodingImportSettings?) {
+        savedProviders = settings?.providers ?? []
+        updateProviders()
+        let rules = settings?.projectSelection ?? CodingProjectSelection()
+        if selection != rules { selection = rules }
+        let account = settings?.codexAccount ?? .automatic
+        if codexAccount != account { codexAccount = account }
+    }
+
+    private func savePendingChanges() {
+        guard saveTask == nil else { return }
+        saveTask = Task {
+            while let change = pendingChanges.first {
+                do {
+                    let settings = try await writer.save(change, in: directory)
+                    guard !Task.isCancelled else { return }
+                    pendingChanges.removeFirst()
+                    applySettings(settings)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    pendingChanges.removeFirst()
+                    updateProviders()
+                    saveIssue = error.localizedDescription
+                    issue = saveIssue
+                }
+            }
+            saveTask = nil
+            scan()
+        }
+    }
+
+    private func scan() {
+        scanning = true
+        let targets = requestedProviders, discover = wantsDiscovery
         task = Task(priority: .utility) {
             do {
-                let next = try await worker.refresh(change: change, discover: discover)
+                let next = try await worker.refresh(providers: targets, discover: discover) { enabled in
+                    guard !Task.isCancelled else { return }
+                    self.savedProviders = enabled
+                    self.updateProviders()
+                }
                 guard !Task.isCancelled else { return }
-                let nextProviders = next.settings?.providers ?? []
-                let rules = next.settings?.projectSelection ?? CodingProjectSelection()
-                if selection != rules { selection = rules }
-                let updated = importRevision != next.revision || projects != next.projects || providers != nextProviders
+                applySettings(next.settings)
+                let updated = importRevision != next.revision || projects != next.projects
                 importRevision = next.revision
-                providers = nextProviders; projects = next.projects; folders = next.folders; issue = next.issue
-                branches = next.branches
+                projects = next.projects; folders = next.folders; branches = next.branches
+                accounts = next.accounts; issue = saveIssue ?? next.issue
                 if next.revision != pageRevision { loadPage() }
-                codexAccount = next.settings?.codexAccount ?? .automatic
-                if discover || !rules.folders.isEmpty || !projects.isEmpty || !providers.contains(.codex) { accounts = next.accounts }
                 if updated { changed?() }
             } catch {
                 guard !Task.isCancelled else { return }
                 issue = error.localizedDescription
             }
-            busy = false
-            activeChange = nil
-            if !pendingChanges.isEmpty || wantsDiscovery {
-                let next = pendingChanges.isEmpty ? nil : pendingChanges.removeFirst()
-                let discover = wantsDiscovery
-                wantsDiscovery = false; refresh(next, discover: discover)
-            }
+            requestedProviders = []; wantsDiscovery = false; saveIssue = nil
+            task = nil; scanning = false
         }
     }
 
@@ -204,11 +286,15 @@ struct CodingSettingsView: View {
 
     var body: some View {
         let selection = draft?.selection ?? coding.effectiveSelection
-        Form {
-            Section {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(CodingProvider.allCases, id: \.self) { provider in
-                    Toggle("Import \(provider.name) sessions", isOn: Binding(get: { coding.providers.contains(provider) },
-                        set: { coding.refresh(.enabled(provider, $0), discover: true) }))
+                    Toggle(isOn: Binding(get: { coding.providers.contains(provider) },
+                                         set: { coding.refresh(.enabled(provider, $0), discover: true) })) {
+                        Text("Import \(provider.name) sessions").font(.body).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
                 }
                 if coding.providers.contains(.codex), !coding.accounts.isEmpty || coding.codexAccount != .automatic {
                     Picker("Codex account", selection: Binding(get: { coding.codexAccount }, set: { coding.refresh(.account($0), discover: true) })) {
@@ -230,29 +316,30 @@ struct CodingSettingsView: View {
                 }
                 Text("Folder selections apply to every enabled source and include future projects beneath each checked folder. Afterword saves prompts, replies, and tool names locally. Pausing a source keeps its saved sessions available.")
                     .font(.caption).foregroundStyle(.secondary)
-            }.disabled(coding.busy)
-            Section("Projects") {
-                ForEach(coding.folders) { folder in
-                    ProjectFolderRow(folder: folder, selection: selection, importing: coding.enabled, depth: 0) { path, included in
-                        let original = draft?.original ?? coding.effectiveSelection
-                        let next = selection.settingFolder(path, included: included)
-                        draft = next == original ? nil : ProjectFolderChanges(original: original, selection: next)
-                    }
-                }
+            }
+            Divider()
+            HStack {
+                Text("Projects").font(.headline)
+                Spacer()
                 if coding.enabled {
                     Button("Refresh projects") { coding.refresh(discover: true) }.disabled(coding.busy)
-                    if coding.folders.isEmpty && !coding.busy {
-                        Text("No local sessions with a project directory were found.").foregroundStyle(.secondary)
-                    }
                 }
+            }
+            if coding.enabled && coding.folders.isEmpty && !coding.busy {
+                Text("No local sessions with a project directory were found.").foregroundStyle(.secondary)
+            }
+            ProjectFolderList(folders: coding.folders, selection: selection, importing: coding.enabled) { path, included in
+                let original = draft?.original ?? coding.effectiveSelection
+                let next = selection.settingFolder(path, included: included)
+                draft = next == original ? nil : ProjectFolderChanges(original: original, selection: next)
             }
             if let issue = coding.issue { Text(issue).foregroundStyle(.red) }
         }
-        .formStyle(.grouped)
+        .padding()
         .safeAreaInset(edge: .bottom) {
-            if coding.busy || draft != nil {
+            if coding.checkingSessions || draft != nil {
                 HStack {
-                    if coding.busy { ProgressView("Checking coding sessions…").controlSize(.small) }
+                    if coding.checkingSessions { ProgressView("Checking coding sessions…").controlSize(.small) }
                     Spacer()
                     if let changes = draft {
                         Button("Discard") { draft = nil }
@@ -277,43 +364,65 @@ struct CodingSettingsView: View {
     }
 }
 
-private struct ProjectFolderRow: View {
-    let folder: CodingProjectFolder
+private struct ProjectFolderList: View {
+    let folders: [CodingProjectFolder]
     let selection: CodingProjectSelection
     let importing: Bool
-    let depth: Int
     let change: (String, Bool) -> Void
-    @State private var expanded: Bool?
+    @State private var expanded: [String: Bool] = [:]
 
-    var body: some View {
-        let open = expanded ?? (depth < 2)
-        let state = selection.state(at: folder.path, hasChildren: !folder.children.isEmpty)
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 4) {
-                if folder.children.isEmpty {
-                    Color.clear.frame(width: 16, height: 1)
-                } else {
-                    Button { expanded = !open } label: {
-                        Image(systemName: open ? "chevron.down" : "chevron.right")
-                            .font(.caption.bold()).frame(width: 16, height: 20)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(open ? "Collapse \(folder.name)" : "Expand \(folder.name)")
-                }
-                ProjectFolderCheckbox(name: folder.name, path: folder.path, state: state) {
-                    change(folder.path, importing && state != .on)
-                }.fixedSize().disabled(!importing && state == .off)
-                    .contextMenu {
-                        if importing && state != .on { Button("Include folder and subfolders") { change(folder.path, true) } }
-                        if state != .off { Button("Exclude folder and subfolders") { change(folder.path, false) } }
-                    }
-            }
-            if open {
-                ForEach(folder.children) { child in
-                    ProjectFolderRow(folder: child, selection: selection, importing: importing, depth: depth + 1, change: change)
-                }.padding(.leading, 18)
+    private struct Row: Identifiable {
+        let folder: CodingProjectFolder
+        let depth: Int
+        let open: Bool
+        var id: String { folder.path }
+    }
+
+    private var rows: [Row] {
+        var result: [Row] = []
+        func append(_ folders: [CodingProjectFolder], depth: Int) {
+            for folder in folders {
+                let open = expanded[folder.path] ?? (depth < 2)
+                result.append(Row(folder: folder, depth: depth, open: open))
+                if open && !folder.children.isEmpty { append(folder.children, depth: depth + 1) }
             }
         }
+        append(folders, depth: 0)
+        return result
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(rows) { row in
+                    folderRow(row)
+                }
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func folderRow(_ row: Row) -> some View {
+        let folder = row.folder
+        let state = selection.state(at: folder.path, hasChildren: !folder.children.isEmpty)
+        return HStack(spacing: 4) {
+            if folder.children.isEmpty {
+                Color.clear.frame(width: 16, height: 1)
+            } else {
+                Button { expanded[folder.path] = !row.open } label: {
+                    Image(systemName: row.open ? "chevron.down" : "chevron.right")
+                        .font(.caption.bold()).frame(width: 16, height: 20)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(row.open ? "Collapse \(folder.name)" : "Expand \(folder.name)")
+            }
+            ProjectFolderCheckbox(name: folder.name, path: folder.path, state: state) {
+                change(folder.path, importing && state != .on)
+            }.fixedSize().disabled(!importing && state == .off)
+                .contextMenu {
+                    if importing && state != .on { Button("Include folder and subfolders") { change(folder.path, true) } }
+                    if state != .off { Button("Exclude folder and subfolders") { change(folder.path, false) } }
+                }
+        }.padding(.leading, CGFloat(row.depth) * 18).frame(height: 26)
     }
 }
 
