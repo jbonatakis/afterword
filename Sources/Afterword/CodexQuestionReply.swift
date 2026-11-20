@@ -138,7 +138,7 @@ struct CodexQuestionAnswers: View {
     }
 }
 
-struct OriginalQuestionReplyButton: View {
+struct OriginalMessageButton: View {
     let original: String
     @State private var showingOriginal = false
 

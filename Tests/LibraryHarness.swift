@@ -935,6 +935,7 @@ import Lookback
         {"type":"assistant","uuid":"reply","parentUuid":"tools-2","message":{"content":"Retries are now documented with a worked example."}}
         {"type":"user","uuid":"again","parentUuid":"reply","message":{"content":"Run the integration tests once more and tell me whether the final result matches the expected behavior."}}
         {"type":"assistant","uuid":"tools-3","parentUuid":"again","message":{"content":[{"type":"tool_use","id":"t4","name":"Test"}]}}
+        {"type":"user","uuid":"review","parentUuid":"tools-3","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><status>completed</status><summary>Review finished</summary><result>```json\n[{\"file\":\"App.swift\",\"line\":17,\"summary\":\"Check the reviewneedle result.\",\"severity\":\"warning\",\"failure_scenario\":\"A saved setting is lost.\"}]\n```</result></task-notification>"}}
         """#
         // Alternate short prompts and tall replies so the lazy stack's estimated height changes as it scrolls.
         let prompt = "Review this section."
@@ -943,7 +944,7 @@ import Lookback
             let user = index.isMultiple(of: 2)
             let body = user ? prompt : String(repeating: paragraph + "\n\n", count: index % 7 + 8) + "End of reply \(index)."
             let event: [String: Any] = ["type": user ? "user" : "assistant", "uuid": "turn-\(index)",
-                                        "parentUuid": index == 0 ? "tools-3" : "turn-\(index - 1)", "message": ["content": body]]
+                                        "parentUuid": index == 0 ? "review" : "turn-\(index - 1)", "message": ["content": body]]
             return String(decoding: try JSONSerialization.data(withJSONObject: event), as: UTF8.self)
         }
         try Data(([sessionText] + turns).joined(separator: "\n").utf8).write(to: source)
@@ -1094,7 +1095,7 @@ import Lookback
             let text = node.accessibilityAttributeValue(.value) as? String
             return (text.map { [$0] } ?? []) + children.flatMap(visibleText)
         }
-        for (query, heading, provider) in [("preserves", "Current decision", "Claude Code"), ("archivedterm", "Earlier decision", "Claude Code"), ("InspectLayout", "Current decision", "Claude Code"), ("hexagons", "Grid layout", "Codex")] {
+        for (query, heading, provider) in [("preserves", "Current decision", "Claude Code"), ("archivedterm", "Earlier decision", "Claude Code"), ("InspectLayout", "Current decision", "Claude Code"), ("hexagons", "Grid layout", "Codex"), ("reviewneedle", "Check the reviewneedle result.", "Claude Code")] {
             library.search = query
             await library.updateSearch(debounce: false)?.value
             guard let session = library.selectedCoding, let hit = library.codingHits[session.id] else { throw RecorderError.message("Missing coding search hit") }
@@ -1114,6 +1115,13 @@ import Lookback
             if query == "InspectLayout" {
                 require(hit.messageID == "tools-2" && text.contains("InspectLayout") && text.contains("Read"),
                         "Opening a tool search did not expand its group")
+            }
+            if query == "reviewneedle" {
+                require(hit.messageID == "review" && text.contains("App.swift:17 · warning") && text.contains("A saved setting is lost."),
+                        "Opening a review finding did not expand and render its location and scenario")
+                require(!text.contains("<task-notification>"), "The task wrapper appeared in the conversation")
+                window.orderOut(nil)
+                continue
             }
             let bold = provider == "Codex" ? "hexagons" : "The retry"
             if provider == "Codex" {

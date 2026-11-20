@@ -116,6 +116,50 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertTrue(try store.embeddingChunks().isEmpty)
     }
 
+    func testClaudeTaskNotificationsRepairAttributionAndKeepSearchCitations() throws {
+        func event(_ id: String, parent: String, status: String, summary: String, result: String = "", generated: Bool = true) throws -> String {
+            let payload = "<task-notification><status>\(status)</status><summary>\(summary)</summary><result>\(result)</result></task-notification>"
+            var row: [String: Any] = ["type": "user", "uuid": id, "parentUuid": parent, "message": ["content": payload]]
+            if generated { row["origin"] = ["kind": "task-notification"] }
+            return String(decoding: try JSONSerialization.data(withJSONObject: row), as: UTF8.self)
+        }
+        let rows = try [
+            event("notice", parent: "reply", status: "completed", summary: "Review finished", result: "Review evidence"),
+            event("paste", parent: "notice", status: "completed", summary: "Review finished", result: "Review evidence", generated: false),
+            event("empty", parent: "paste", status: "completed", summary: "Routine background completion"),
+            event("failure", parent: "empty", status: "failed", summary: "Worker interrupted")
+        ]
+        try Data(([transcript] + rows).joined(separator: "\n").utf8).write(to: file)
+        let store = try imported()
+        let id = try XCTUnwrap(store.sessions().first).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        // Simulate the legacy payload and unchanged source timestamp for the same session.
+        var legacy = try store.history(id: id)
+        legacy = CodingHistory(session: legacy.session, messages: legacy.messages.map {
+            CodingMessage(id: $0.id, role: $0.taskNotification == nil ? $0.role : "User", text: $0.text,
+                          parentID: $0.parentID, timestamp: $0.timestamp, tools: $0.tools)
+        }, conversationIDs: legacy.conversationIDs + ["empty"])
+        let json = String(decoding: try JSONEncoder().encode(legacy), as: UTF8.self)
+        try db.execute("UPDATE sessions SET history=?, info=json_remove(info,'$.transcriptVersion') WHERE id=?", [json, id])
+        try db.execute("DELETE FROM settings WHERE key='claudeTaskNotificationsV1'")
+        try store.synchronize(reader: reader)
+        let history = try store.history(id: id)
+        let notice = try XCTUnwrap(history.messages.first { $0.id == "notice" })
+        let paste = try XCTUnwrap(history.messages.first { $0.id == "paste" })
+        XCTAssertEqual(notice.text, paste.text)
+        XCTAssertEqual(notice.role, "Task notification")
+        XCTAssertEqual(notice.taskNotification?.result, "Review evidence")
+        XCTAssertEqual(paste.role, "User")
+        XCTAssertNil(paste.taskNotification)
+        XCTAssertEqual(Array(history.conversationIDs.suffix(3)), ["notice", "paste", "failure"])
+        let hit = try store.matches(query: "routine background completion", semantic: [], from: nil, to: nil, project: project, branch: nil).first
+        XCTAssertEqual(hit?.messageID, "empty")
+        XCTAssertEqual(hit?.archived, true)
+        let revision = try store.revision
+        try store.synchronize(reader: reader)
+        XCTAssertEqual(try store.revision, revision)
+    }
+
     func testCodexCompactionRepairsExistingConversationAndSearchCitations() throws {
         let rows = #"""
         {"type":"event_msg","payload":{"type":"user_message","id":"prompt","message":"Build the app"}}

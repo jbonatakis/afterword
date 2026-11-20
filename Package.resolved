@@ -5,7 +5,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jbonatakis/lookback.git",
       "state" : {
-        "revision" : "6efe9c992b66df3df4d363e410a74c603b6fc78c"
+        "revision" : "6cbbacc934d34d37fe6949540f4fdbad232c17a1"
       }
     }
   ],

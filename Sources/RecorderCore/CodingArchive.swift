@@ -6,16 +6,26 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
     public let branch: String?
     public let started: Date?
     public let updated: Date
-    // Legacy sessions omit this field. Zero marks a compacted-context import queued for replay.
+    // Legacy sessions omit this field. Zero marks a session queued for replay.
     var transcriptVersion: Int? = nil
     public var providerName: String { CodingProvider(rawValue: source)?.name ?? source }
 }
+
+public typealias CodingTaskNotification = SessionTaskNotification
 
 public struct CodingMessage: Codable, Identifiable, Sendable {
     public let id, role, text: String
     public let parentID: String?
     public let timestamp: Date?
     public let tools: [String]
+
+    public internal(set) var taskNotification: CodingTaskNotification? = nil
+
+    fileprivate var searchText: String {
+        guard let taskNotification else { return text }
+        let fields = [taskNotification.summary, taskNotification.status, taskNotification.result].compactMap { $0 }
+        return fields.isEmpty ? text : fields.joined(separator: "\n\n")
+    }
 
     fileprivate var hasText: Bool { text.contains { !$0.isWhitespace } }
 }
@@ -259,7 +269,7 @@ public final class CodingArchive {
 
     private func synchronize(_ infos: [SessionInfo], reader: any SessionReader, provider: CodingProvider, options: CodingImportSettings) throws {
         guard !infos.isEmpty else { return }
-        if provider == .codex { try scheduleCodexTranscriptRepairs() }
+        try scheduleTranscriptRepairs(for: provider)
         let rows = try db.rows("SELECT id,info FROM sessions WHERE json_extract(info,'$.source')=?", [provider.rawValue])
         let known = Dictionary(uniqueKeysWithValues: rows.map { ($0[0], $0[1]) })
         var failures = 0
@@ -275,7 +285,7 @@ public final class CodingArchive {
                 session.transcriptVersion = old?.transcriptVersion
                 // Codex can rename a thread in its index without modifying the rollout.
                 if old == session && session.transcriptVersion != 0 { continue }
-                if provider == .codex { session.transcriptVersion = 1 }
+                session.transcriptVersion = 1
                 let source = try reader.readSession(info.id)
                 if let metadata = source.info, metadata.workingDirectory != project { continue }
                 let imported = Self.project(source, session: session)
@@ -308,17 +318,21 @@ public final class CodingArchive {
         if failures > 0 { throw RecorderError.message("Could not import \(failures) coding session(s). Afterword will retry.") }
     }
 
-    private func scheduleCodexTranscriptRepairs() throws {
-        let flag = "codexBranchTranscriptV1"
+    private func scheduleTranscriptRepairs(for provider: CodingProvider) throws {
+        let flag = provider == .codex ? "codexBranchTranscriptV1" : "claudeTaskNotificationsV1"
         guard try db.rows("SELECT 1 FROM settings WHERE key=?", [flag]).isEmpty else { return }
         try db.transaction {
-            // Only sessions with archived passages could have lost replies. Scan the index once,
-            // then let the regular scoped importer replay each candidate when its source is available.
+            // Replay only candidate sessions, through the scoped importer, when their source is available.
+            let candidates: String
+            switch provider {
+            case .codex: candidates = "id IN (SELECT DISTINCT session FROM coding_text WHERE archived='1')"
+            case .claudeCode: candidates = "instr(history, '<task-notification>') > 0"
+            }
             try db.execute("""
                 UPDATE sessions SET info=json_set(info,'$.transcriptVersion',0)
-                WHERE json_extract(info,'$.source')='codex' AND json_extract(info,'$.transcriptVersion') IS NULL
-                  AND id IN (SELECT DISTINCT session FROM coding_text WHERE archived='1')
-                """)
+                WHERE json_extract(info,'$.source')=? AND json_extract(info,'$.transcriptVersion') IS NULL
+                  AND \(candidates)
+                """, [provider.rawValue])
             try db.execute("INSERT OR IGNORE INTO settings VALUES (?, '1')", [flag])
         }
     }
@@ -339,7 +353,7 @@ public final class CodingArchive {
                 }
             }
             let parent = message.parentID.flatMap { nearestVisible[$0] }
-            guard !text.isEmpty || !tools.isEmpty else {
+            guard !text.isEmpty || !tools.isEmpty || message.taskNotification != nil else {
                 nearestVisible[message.id] = parent
                 continue
             }
@@ -355,12 +369,13 @@ public final class CodingArchive {
             nearestVisible[message.id] = id
             let role: String
             switch message.role {
-            case .user: role = "User"
+            case .user: role = message.taskNotification == nil ? "User" : "Task notification"
             case .assistant: role = "Assistant"
             case .system: role = message.isCompactionSummary ? "Compaction summary" : "System"
             case .tool: role = "Tool"
             }
-            messages.append(.init(id: id, role: role, text: text.joined(separator: "\n\n"), parentID: parent, timestamp: message.timestamp, tools: tools))
+            messages.append(.init(id: id, role: role, text: text.joined(separator: "\n\n"), parentID: parent, timestamp: message.timestamp, tools: tools,
+                                  taskNotification: message.taskNotification))
         }
         var conversationIDs: [String] = []
         var activeParents: [String: String] = [:]
@@ -368,6 +383,7 @@ public final class CodingArchive {
         for message in source.transcript {
             if message.isCompactionSummary { previous = nil }
             guard let position = message.recordedIndex, let id = idsByPosition[position] else { continue }
+            if let notice = message.taskNotification, notice.status == "completed", notice.result == nil { continue }
             conversationIDs.append(id)
             activeParents[id] = previous
             previous = id
@@ -406,7 +422,7 @@ public final class CodingArchive {
             } else if message.role == "User", message.text.count < 60, let proposal = previous(message, role: "Assistant") {
                 context = String(proposal.text.suffix(220))
             }
-            var pieces = SemanticChunker.split(message.text)
+            var pieces = SemanticChunker.split(message.searchText)
             if pieces.isEmpty && !message.tools.isEmpty { pieces = [""] }
             for piece in pieces {
                 let body = [context, piece, message.tools.joined(separator: " ")].filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -510,7 +526,7 @@ public final class CodingArchive {
             let choices = [prose.first, prose.first { $0.role == "Assistant" }, prose.last { $0.role == "User" }]
             var seen = Set<String>()
             let passages = choices.compactMap { $0 }.filter { seen.insert($0.id).inserted }.map {
-                CodingPassage(messageID: $0.id, text: String($0.text.prefix(450)), timestamp: $0.timestamp, archived: !current.contains($0.id))
+                CodingPassage(messageID: $0.id, text: String($0.searchText.prefix(450)), timestamp: $0.timestamp, archived: !current.contains($0.id))
             }
             return CodingHit(session: session, passages: passages, lastActivity: latest.timestamp,
                              toolOnlyMessageCount: messages.count - prose.count)

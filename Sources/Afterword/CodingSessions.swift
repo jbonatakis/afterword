@@ -474,6 +474,7 @@ struct CodingConversationRow: Identifiable, Sendable {
     let message: CodingMessage
     let hasText: Bool
     let dayHeading: Date?
+    let taskReport: CodingTaskReport?
     private(set) var toolMessages: [CodingMessage] = []
     private(set) var toolCount = 0
     private(set) var thread: AssistantThread?
@@ -491,7 +492,8 @@ struct CodingConversationRow: Identifiable, Sendable {
             let heading = day != previousDay ? day : nil
             let continuesAssistant = message.role == "Assistant" && !hasText && rows.last?.message.role == "Assistant" && heading == nil
             if !continuesAssistant {
-                rows.append(Self(message: message, hasText: hasText, dayHeading: heading))
+                rows.append(Self(message: message, hasText: hasText, dayHeading: heading,
+                                 taskReport: message.taskNotification.map(CodingTaskReport.init)))
             }
             if let day { previousDay = day }
             if !message.tools.isEmpty {
@@ -560,7 +562,7 @@ private struct CodingMessageBubble: View {
                         Text(date.formatted(date: .omitted, time: .shortened)).help(date.formatted())
                     }
                     if case .answers = row.questionReply {
-                        OriginalQuestionReplyButton(original: row.message.text)
+                        OriginalMessageButton(original: row.message.text)
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -792,9 +794,14 @@ struct CodingSessionDetail: View {
                     .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                     .padding(.top, 8)
             }
-            CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
-                                maxWidth: width, matchedID: row.id == anchor ? hit?.messageID : nil) { questionID in
-                proxy.scrollTo(questionID, anchor: .top)
+            if let report = row.taskReport {
+                CodingTaskNotificationView(report: report, message: row.message, recorded: recorded, matched: row.id == anchor)
+                    .frame(maxWidth: width, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
+                                    maxWidth: width, matchedID: row.id == anchor ? hit?.messageID : nil) { questionID in
+                    proxy.scrollTo(questionID, anchor: .top)
+                }
             }
         }.id(row.id)
     }
