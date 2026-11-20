@@ -1153,7 +1153,20 @@ import Lookback
             if isTextVisible("End of reply 31.") { break }
         }
         require(isTextVisible("End of reply 31."), "The last paragraph must be visible when the chat opens")
-        print("PASS last paragraph visible when opening a long agent session")
+
+        // Click the floating control through this window's event handler.
+        let location = NSPoint(x: detail.bounds.width - 65, y: 26)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            window.sendEvent(event)
+        }
+        for _ in 0..<60 {
+            await pump(0.05)
+            if isTextVisible("Document the retry behavior") { break }
+        }
+        require(isTextVisible("Document the retry behavior"), "Jump to top must reveal the first message")
+        print("PASS last paragraph visible on open and first prompt visible after the floating Jump to top")
     }
 
     static func checkQuestionReplies() throws {
