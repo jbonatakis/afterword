@@ -477,9 +477,10 @@ struct CodingConversationRow: Identifiable, Sendable {
     private(set) var toolMessages: [CodingMessage] = []
     private(set) var toolCount = 0
     private(set) var thread: AssistantThread?
+    var questionReply: CodexQuestionReply?
     var id: String { message.id }
 
-    static func group(_ messages: [CodingMessage]) -> [Self] {
+    static func group(_ messages: [CodingMessage], provider: CodingProvider? = nil) -> [Self] {
         var rows: [Self] = []
         let calendar = Calendar.current
         var previousDay: Date?
@@ -510,6 +511,7 @@ struct CodingConversationRow: Identifiable, Sendable {
                                                 isReply: !precedesAgent && !hasTools)
             }
         }
+        if provider == .codex { CodexQuestionReply.link(in: &rows) }
         return rows
     }
 
@@ -523,9 +525,10 @@ private struct CodingConversationTimeline: Sendable {
     let recorded: [CodingConversationRow]
 
     init(_ history: CodingHistory) {
-        recorded = CodingConversationRow.group(history.messages)
+        let provider = CodingProvider(rawValue: history.session.source)
+        recorded = CodingConversationRow.group(history.messages, provider: provider)
         conversation = history.messages.elementsEqual(history.conversationIDs, by: { $0.id == $1 })
-            ? recorded : CodingConversationRow.group(history.conversation)
+            ? recorded : CodingConversationRow.group(history.conversation, provider: provider)
     }
 }
 
@@ -535,6 +538,7 @@ private struct CodingMessageBubble: View {
     let providerName: String
     let maxWidth: CGFloat
     let matchedID: String?
+    let jumpToQuestion: (String) -> Void
     @State private var toolsExpanded = false
 
     private var isUser: Bool { row.message.role == "User" }
@@ -555,13 +559,15 @@ private struct CodingMessageBubble: View {
                     if let date = row.message.timestamp {
                         Text(date.formatted(date: .omitted, time: .shortened)).help(date.formatted())
                     }
+                    if case .answers = row.questionReply {
+                        OriginalQuestionReplyButton(original: row.message.text)
+                    }
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
             }
             VStack(alignment: alignment, spacing: 5) {
                 if row.hasText {
-                    let content = MarkdownContent(markdown: row.message.text, fillsWidth: false)
                     if let thread, !thread.isReply {
                         content.foregroundStyle(.primary.opacity(0.8))
                     } else if isUser || isAgent {
@@ -601,6 +607,17 @@ private struct CodingMessageBubble: View {
             if let id, row.toolMessages.contains(where: { $0.id == id && $0.text.allSatisfy(\.isWhitespace) }) {
                 toolsExpanded = true
             }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch row.questionReply {
+        case .answers(let answers):
+            CodexQuestionAnswers(answers: answers, jumpToQuestion: jumpToQuestion)
+        case .unrecognized:
+            Text(verbatim: row.message.text).textSelection(.enabled)
+        case nil:
+            MarkdownContent(markdown: row.message.text, fillsWidth: false)
         }
     }
 
@@ -692,7 +709,9 @@ struct CodingSessionDetail: View {
                                                     .padding(.top, 8)
                                             }
                                             CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
-                                                               maxWidth: maxWidth, matchedID: row.id == anchor ? hit?.messageID : nil)
+                                                               maxWidth: maxWidth, matchedID: row.id == anchor ? hit?.messageID : nil) { questionID in
+                                                proxy.scrollTo(questionID, anchor: .top)
+                                            }
                                         }.id(row.id)
                                     }
                                 }

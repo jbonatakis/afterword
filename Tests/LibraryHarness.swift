@@ -878,6 +878,7 @@ import Lookback
     }
 
     @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {
+        try checkQuestionReplies()
         let pending = root.appendingPathComponent("Call-2026-11-14_10-00-00")
         try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: pending) }
@@ -1082,6 +1083,57 @@ import Lookback
         }
         print("PASS coding search opens labeled Claude Code and Codex sessions with rendered Markdown")
         try await checkProviderToggles(project: project, coding: library.coding)
+    }
+
+    static func checkQuestionReplies() throws {
+        func message(_ id: String, _ role: String, _ text: String) -> CodingMessage {
+            .init(id: id, role: role, text: text, parentID: nil, timestamp: nil, tools: [])
+        }
+        func entry(_ question: String, _ answer: String, _ call: String, _ index: Int) throws -> [String: String] {
+            let id = try JSONSerialization.data(withJSONObject: ["request_user_input_async", call, index] as [Any])
+            return ["question": question, "answer": answer, "questionItemId": String(decoding: id, as: UTF8.self)]
+        }
+        func wrap(_ entries: [[String: String]]) throws -> String {
+            let json = try JSONEncoder().encode(entries)
+            return "<send_user_message_question_reply>\n" + String(decoding: json, as: UTF8.self) + "\n</send_user_message_question_reply>"
+        }
+        let first = try entry("Which branch?", "New branch", "call_a", 0)
+        let second = try entry("Which tests?", "All tests", "call_a", 1)
+        let missing = try entry("Which files?", "Both", "call_missing", 0)
+        let one = try wrap([first])
+        let plain = message("prompt", "Assistant", "Which branch?")
+        let question = message("call_a", "Assistant", "Which branch?\n- New branch")
+        let reply = message("reply", "User", one)
+        func answers(_ messages: [CodingMessage]) throws -> [CodexQuestionReply.Answer] {
+            guard case .answers(let answers) = CodingConversationRow.group(messages, provider: .codex).last?.questionReply else {
+                throw RecorderError.message("Structured Codex answers were not recognized")
+            }
+            return answers
+        }
+        let direct = try answers([question, reply])
+        require(direct.map(\.reference) == [.adjacent] && direct.map(\.answer) == ["New branch"], "Adjacent prompt repeated its question")
+        let delayed = try answers([question, plain, reply])
+        require(delayed.map(\.reference) == [.earlier("call_a")], "A newer message with the same text stole the link")
+        let orphan = try answers([plain, reply])
+        require(orphan.map(\.reference) == [.embedded], "A missing original linked by text alone")
+        let batch = try answers([message("call_a", "Assistant", "Which branch?\n\nWhich tests?"),
+                                 message("batch", "User", try wrap([second, missing, first]))])
+        require(batch.map(\.reference) == [.earlier("call_a"), .embedded, .earlier("call_a")] &&
+                batch.map(\.answer) == ["All tests", "Both", "New branch"], "Batched answers lost their questions or order")
+        let repeated = message("call_a#2", "Assistant", question.text)
+        let ambiguous = try answers([question, repeated, reply])
+        let selected = try answers([repeated, plain, reply])
+        require(ambiguous.map(\.reference) == [.embedded] && selected.map(\.reference) == [.earlier("call_a#2")],
+                "Rolled-back questions must link only to an unambiguous occurrence")
+        let bad = one.replacingOccurrences(of: "\"answer\"", with: "\"unknown\"")
+        guard case .unrecognized = CodingConversationRow.group([message("bad", "User", bad)], provider: .codex).first?.questionReply else {
+            throw RecorderError.message("An unfamiliar envelope failed to fall back to the original")
+        }
+        let example = message("example", "User", "For example:\n```\n" + one + "\n```")
+        require(CodingConversationRow.group([example], provider: .codex)[0].questionReply == nil &&
+                CodingConversationRow.group([reply], provider: .claudeCode)[0].questionReply == nil,
+                "Ordinary messages containing protocol examples were reinterpreted")
+        print("PASS Codex question replies, exact links, multiple answers, and original-text fallback")
     }
 
     @MainActor static func checkProviderToggles(project: URL, coding: CodingCoordinator) async throws {
