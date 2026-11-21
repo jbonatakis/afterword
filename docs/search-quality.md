@@ -9,7 +9,7 @@ From the repository root, freeze the sample once. Keep the directory for subsequ
 ```sh
 python3 Scripts/benchmark-search.py freeze build/search-quality/sample
 
-helper=build/coding-sessions/Afterword.app/Contents/Helpers/AfterwordMCP
+helper=build/Afterword.app/Contents/Helpers/AfterwordMCP
 python3 Scripts/benchmark-search.py run build/search-quality/sample \
   --executable "$helper" --split dev --report build/search-quality/before.json
 ```
