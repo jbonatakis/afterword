@@ -4,7 +4,6 @@ import RecorderCore
 
 struct CalendarSettings: View {
     @ObservedObject var calendar: CalendarCoordinator
-    var showPeople: (() -> Void)?
     @State private var emails = ""
     @State private var emailError: String?
     @State private var savingEmails = false
@@ -86,10 +85,6 @@ struct CalendarSettings: View {
                 }
                 if let emailError { Text(emailError).foregroundStyle(.red) }
             }
-            Section {
-                Button("People & groups…", action: showPeople ?? calendar.showPeople)
-                Text("Remember preferred names, email aliases, and group rosters locally on this Mac. Calendar events are never edited.").font(.caption).foregroundStyle(.secondary)
-            }
             CalendarError(calendar: calendar)
         }.formStyle(.grouped)
             .onAppear { emails = calendar.directory.selfEmails.joined(separator: "\n"); calendar.refresh() }
@@ -135,7 +130,7 @@ struct UpcomingMeetingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if !calendar.enabled || calendar.selected.isEmpty {
-                CalendarSettings(calendar: calendar, showPeople: showPeople)
+                CalendarSettings(calendar: calendar)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
