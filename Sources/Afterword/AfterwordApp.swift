@@ -113,15 +113,14 @@ private struct AfterwordSettings: View {
         TabView(selection: $library.settingsTab) {
             Form {
                 Section("Library sources") {
-                    SourceToggles(selection: Binding(get: { library.sources }, set: { library.setSources($0) }),
-                                  destination: $recorder.destination, recordingLocked: recorder.locked)
+                    SourceToggles(selection: Binding(get: { library.sources }, set: { library.setSources($0) }))
                     Text("Turning off a source pauses its background work and hides it from the library and connected agents. Turn it on again to restore your setup.")
                         .font(.caption).foregroundStyle(.secondary)
                     if let error = library.sourceError { Text(error).foregroundStyle(.red) }
                 }
             }.formStyle(.grouped).tabItem { Label("Sources", systemImage: "rectangle.stack") }.tag("sources")
             if library.sources.contains(.recordings) {
-                RecorderSettings(recorder: recorder).tabItem { Label("Recording", systemImage: "waveform") }.tag("recordings")
+                RecorderSettings(recorder: recorder, library: library).tabItem { Label("Recording", systemImage: "waveform") }.tag("recordings")
                 TranscriptionSettings(transcription: recorder.transcription).tabItem { Label("Transcription", systemImage: "text.bubble") }.tag("transcription")
                 CalendarSettings(calendar: recorder.calendar).tabItem { Label("Calendar", systemImage: "calendar") }.tag("calendar")
             }
@@ -333,6 +332,7 @@ private struct LevelMeter: View {
 
 struct RecorderSettings: View {
     @ObservedObject var recorder: RecordingCoordinator
+    @ObservedObject var library: RecordingLibraryModel
     var body: some View {
         Form {
             SourcePicker(recorder: recorder)
@@ -341,6 +341,28 @@ struct RecorderSettings: View {
             }
             Text("Each recording gets a dated folder with Microphone.m4a, System.m4a, and Mixed.m4a. The tracks share the same start time and duration.").font(.caption).foregroundStyle(.secondary)
             Text("Audio stays local. Your selected folder may be synced or backed up by another service.").font(.caption).foregroundStyle(.secondary)
+            Section("Library folders") {
+                ForEach(library.roots, id: \.path) { folder in
+                    let path = (folder.path as NSString).abbreviatingWithTildeInPath
+                    let isDestination = folder == library.currentDestination
+                    HStack {
+                        Label {
+                            VStack(alignment: .leading) {
+                                Text(verbatim: path).lineLimit(1).truncationMode(.middle).help(folder.path)
+                                if isDestination { Text("Save destination").font(.caption).foregroundStyle(.secondary) }
+                            }
+                        } icon: { Image(systemName: "folder") }
+                        Spacer()
+                        Menu {
+                            Button("Show in Finder") { recorder.reveal(folder) }
+                            Button("Remove from library") { library.removeFolder(folder) }
+                                .disabled(isDestination)
+                        } label: { Label("Actions for \(path)", systemImage: "ellipsis.circle").labelStyle(.iconOnly) }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    }
+                }
+                Button("Add recordings folder…", action: library.addFolder)
+            }
             Toggle("Balance voice volume in the saved mix", isOn: $recorder.balanceMix).disabled(recorder.locked)
             Text("Brings quiet microphone speech and louder call audio to similar listening levels, with gentle compression and peak protection. The separate tracks keep their original levels for transcription.")
                 .font(.caption).foregroundStyle(.secondary)

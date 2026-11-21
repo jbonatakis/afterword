@@ -91,8 +91,7 @@ struct RecordingFolderPicker: View {
 
 struct SourceToggles: View {
     @Binding var selection: Set<ActivitySource>
-    @Binding var destination: URL?
-    var recordingLocked = false
+    var setupDestination: Binding<URL?>? = nil
 
     var body: some View {
         ForEach(ActivitySource.allCases, id: \.self) { source in
@@ -114,9 +113,9 @@ struct SourceToggles: View {
                     }
                 } icon: { source.libraryFilter.icon }
             }
-            if source == .recordings && selection.contains(.recordings) {
-                RecordingFolderPicker(destination: $destination).disabled(recordingLocked)
-                if destination == nil {
+            if source == .recordings, selection.contains(.recordings), let setupDestination {
+                RecordingFolderPicker(destination: setupDestination)
+                if setupDestination.wrappedValue == nil {
                     Text("You can also choose a folder when you start your first recording.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -135,7 +134,7 @@ private struct LibrarySourceChooser: View {
             Text("Choose your sources").font(.title.bold())
             Text("What would you like to see in Afterword? You can change this in Settings.")
                 .foregroundStyle(.secondary)
-            SourceToggles(selection: $selection, destination: $destination)
+            SourceToggles(selection: $selection, setupDestination: $destination)
             if let error = library.sourceError { Text(error).foregroundStyle(.red) }
             Button("Open library") { library.setSources(selection, recordingDestination: destination) }
                 .keyboardShortcut(.defaultAction).disabled(selection.isEmpty)
@@ -298,28 +297,6 @@ struct RecordingLibraryView: View {
             VStack(alignment: .leading, spacing: 8) {
                 if library.sources.contains(.recordings) {
                     TranscriptionActivity(transcription: recorder.transcription)
-                    Menu {
-                        Button("Add recordings folder…") { library.addFolder() }
-                        Divider()
-                        ForEach(library.roots, id: \.path) { folder in
-                            Menu(folder.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")) {
-                                Button("Show in Finder") { recorder.reveal(folder) }
-                                Button("Remove from library") { library.removeFolder(folder) }
-                                    .disabled(folder == recorder.destination?.resolvingSymlinksInPath().standardizedFileURL)
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Label("Recording folders", systemImage: "folder")
-                            Image(systemName: "chevron.down")
-                                .font(.caption2.weight(.semibold))
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    .menuStyle(.button)
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .foregroundStyle(.secondary)
                 }
                 SettingsLink { Label("Settings", systemImage: "gearshape") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)

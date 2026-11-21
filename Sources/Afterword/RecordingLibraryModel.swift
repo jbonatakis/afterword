@@ -138,7 +138,7 @@ enum GitHubPeriod: String, CaseIterable {
     @Published private(set) var renameError: String?
     @Published private(set) var renaming = false
     private weak var recorder: RecordingCoordinator?
-    private var currentDestination: URL?
+    private(set) var currentDestination: URL?
     private var scan: Task<LibraryRefresh, Never>?
     private var searchIndex: LibrarySearchIndex?
     private var indexRoots: [URL] = []
