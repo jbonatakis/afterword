@@ -968,11 +968,14 @@ import Lookback
         library.coding.refresh()
         for _ in 0..<100 { if !library.coding.busy { break }; await pump(0.02) }
         await library.refresh()?.value
+        var opened: [String] = []
         let sidebar = NSHostingView(rootView: LibrarySidebar(selection: Binding(get: { library.filter }, set: { library.filter = $0 }),
-                                                           sources: library.sources, coding: library.coding))
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 235, height: 320),
+                                                           sources: library.sources, coding: library.coding,
+                                                           showUpcoming: { opened.append("Upcoming calls") },
+                                                           showPeople: { opened.append("People & groups") }))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 235, height: 520),
                               styleMask: [.titled], backing: .buffered, defer: false)
-        window.contentView = sidebar; window.displayIfNeeded()
+        window.contentView = sidebar; window.orderBack(nil); window.displayIfNeeded()
         defer { window.orderOut(nil) }
         await pump()
         func outline(in view: NSView) -> NSOutlineView? {
@@ -985,7 +988,8 @@ import Lookback
             (.codex, 0, ["Codex"]), (.claudeCode, 0, ["Claude Code"]),
             (.recordings, 2, []), (.transcribed, 1, []), (.untranscribed, 1, []), (.needsSummary, 1, []), (.personal, 0, []), (.github, 0, [])
         ]
-        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 2, 2, 1], "Incorrect sidebar hierarchy")
+        let totalRows = rows.count + 2
+        require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 2, 2, 1, 0, 0], "Incorrect sidebar hierarchy")
         for (index, (filter, recordings, providers)) in rows.enumerated() {
             tree.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             await pump(0.05)
@@ -993,6 +997,19 @@ import Lookback
                     library.visibleCoding.map(\.providerName).sorted() == providers, "Wrong contents for \(filter.rawValue)")
             if filter == .untranscribed { require(library.selectedRecording?.url.lastPathComponent == pending.lastPathComponent, "Expected the recording awaiting transcription") }
         }
+        // Both destinations open auxiliary windows and preserve the current activity selection.
+        for row in rows.count..<totalRows {
+            let rect = tree.rect(ofRow: row)
+            let point = tree.convert(NSPoint(x: rect.maxX - 24, y: rect.midY), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                window.sendEvent(event)
+            }
+            await pump(0.05)
+        }
+        require(opened == ["Upcoming calls", "People & groups"], "Expected both sidebar windows to open in order, got \(opened)")
+        require(library.filter == .github && tree.selectedRow == rows.count - 1, "Opening a sidebar window changed the library selection")
         tree.selectRowIndexes(IndexSet(integer:7),byExtendingSelection:false); await pump()
         guard let awaitingSummary = library.selectedRecording, awaitingSummary.hasTranscript else {
             throw RecorderError.message("Needs summary should select the transcribed call")
@@ -1020,9 +1037,9 @@ import Lookback
         await library.refresh()?.value
         require(library.selectedRecording?.id == awaitingSummary.id, "Moving to Work failed to restore the call to Needs summary")
         tree.collapseItem(tree.item(atRow: 4)); await pump()
-        require(tree.numberOfRows == 6 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
+        require(tree.numberOfRows == totalRows - 4 && library.filter == .recordings, "Collapsing Recordings lost the active filter")
         tree.expandItem(tree.item(atRow: 4)); await pump()
-        require(tree.numberOfRows == rows.count, "Expanding Recordings did not restore its children")
+        require(tree.numberOfRows == totalRows, "Expanding Recordings did not restore its children")
         library.filter = .claudeCode; library.search = "hexagons"
         await library.updateSearch(debounce: false)?.value
         require(library.visibleCoding.isEmpty, "A Codex search result leaked into Claude Code")
@@ -1040,13 +1057,13 @@ import Lookback
         }
         library.search = ""
         library.filter = .claudeCode
-        await setImport(.claudeCode, enabled: false, expectedRows: rows.count - 1)
+        await setImport(.claudeCode, enabled: false, expectedRows: totalRows - 1)
         require(library.filter == .coding, "Disabling the selected provider left its filter active")
         tree.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false); await pump(0.05)
         require(library.filter == .codex, "Claude Code was visible with only Codex enabled")
-        await setImport(.codex, enabled: false, expectedRows: rows.count - 2)
+        await setImport(.codex, enabled: false, expectedRows: totalRows - 2)
         require(library.filter == .coding && library.visibleCoding.count == 2, "Pausing both providers hid saved sessions")
-        await setImport(.claudeCode, enabled: true, expectedRows: rows.count - 1)
+        await setImport(.claudeCode, enabled: true, expectedRows: totalRows - 1)
         tree.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false); await pump(0.05)
         require(library.filter == .claudeCode, "Re-enabling Claude Code did not restore its sidebar row")
         print("PASS provider sidebar visibility follows the import toggles and preserves saved sessions")

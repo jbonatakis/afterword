@@ -148,6 +148,8 @@ struct LibrarySidebar: View {
     @Binding var selection: LibraryFilter
     let sources: Set<ActivitySource>
     @ObservedObject var coding: CodingCoordinator
+    let showUpcoming: () -> Void
+    let showPeople: () -> Void
     @State private var expanded: Set<LibraryFilter> = [.activity, .coding, .recordings]
 
     private var root: LibraryFilter {
@@ -158,7 +160,21 @@ struct LibrarySidebar: View {
     var body: some View {
         List(selection: $selection) {
             LibrarySidebarRow(filter: root, sources: sources, providers: coding.providers, selection: $selection, expanded: $expanded)
+            if sources.contains(.recordings) {
+                destination("Upcoming calls", systemImage: "calendar", action: showUpcoming)
+                destination("People & groups", systemImage: "person.2", action: showPeople)
+            }
         }.listStyle(.sidebar)
+    }
+
+    private func destination(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .selectionDisabled()
     }
 }
 
@@ -280,9 +296,9 @@ struct RecordingLibraryView: View {
     private var libraryContent: some View {
         NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
             VStack(spacing: 0) {
-                LibrarySidebar(selection: $library.filter, sources: library.sources, coding: library.coding)
-                Divider()
-                VStack(alignment: .leading, spacing: 12) {
+                LibrarySidebar(selection: $library.filter, sources: library.sources, coding: library.coding,
+                               showUpcoming: { recorder.calendar.showUpcoming() }, showPeople: { recorder.calendar.showPeople() })
+                VStack(alignment: .leading, spacing: 8) {
                     if library.sources.contains(.recordings) {
                         TranscriptionActivity(transcription: recorder.transcription)
                         Menu {
@@ -306,12 +322,13 @@ struct RecordingLibraryView: View {
                         .menuStyle(.button)
                         .buttonStyle(.plain)
                         .menuIndicator(.hidden)
-                        Button { recorder.calendar.showUpcoming() } label: { Label("Upcoming calls", systemImage: "calendar") }.buttonStyle(.plain)
-                        Button { recorder.calendar.showPeople() } label: { Label("People & groups", systemImage: "person.2") }.buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
                     }
-                    SettingsLink { Label("Settings", systemImage: "gearshape") }.buttonStyle(.plain)
+                    SettingsLink { Label("Settings", systemImage: "gearshape") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
                 }.labelStyle(SidebarActionLabelStyle())
-                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
             }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
         } content: {
             VStack(spacing: 0) {
