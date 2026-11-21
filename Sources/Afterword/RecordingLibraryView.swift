@@ -145,11 +145,10 @@ private struct LibrarySourceChooser: View {
 }
 
 struct LibrarySidebar: View {
-    @Binding var selection: LibraryFilter
+    @Binding var selection: LibraryDestination
     let sources: Set<ActivitySource>
     @ObservedObject var coding: CodingCoordinator
-    let showUpcoming: () -> Void
-    let showPeople: () -> Void
+    let openWindow: (LibraryCalendarPage) -> Void
     @State private var expanded: Set<LibraryFilter> = [.activity, .coding, .recordings]
 
     private var root: LibraryFilter {
@@ -161,20 +160,17 @@ struct LibrarySidebar: View {
         List(selection: $selection) {
             LibrarySidebarRow(filter: root, sources: sources, providers: coding.providers, selection: $selection, expanded: $expanded)
             if sources.contains(.recordings) {
-                destination("Upcoming calls", systemImage: "calendar", action: showUpcoming)
-                destination("People & groups", systemImage: "person.2", action: showPeople)
+                ForEach(LibraryCalendarPage.allCases, id: \.self) { page in
+                    Label(page.rawValue, systemImage: page.symbol)
+                        .tag(LibraryDestination.calendar(page))
+                }
             }
         }.listStyle(.sidebar)
-    }
-
-    private func destination(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .selectionDisabled()
+            .contextMenu(forSelectionType: LibraryDestination.self) { selection in
+                if case .calendar(let page) = selection.first {
+                    Button("Open in New Window") { openWindow(page) }
+                }
+            }
     }
 }
 
@@ -182,27 +178,29 @@ private struct LibrarySidebarRow: View {
     let filter: LibraryFilter
     let sources: Set<ActivitySource>
     let providers: Set<CodingProvider>
-    @Binding var selection: LibraryFilter
+    @Binding var selection: LibraryDestination
     @Binding var expanded: Set<LibraryFilter>
 
     var body: some View {
         let children = filter.children(sources: sources, providers: providers)
         let label = Label { Text(filter.rawValue) } icon: { filter.icon }
         if children.isEmpty {
-            label.tag(filter)
+            label.tag(LibraryDestination.activity(filter))
         } else {
             DisclosureGroup(isExpanded: Binding(get: { expanded.contains(filter) }, set: { open in
                 if open {
                     expanded.insert(filter)
                 } else {
-                    if filter == .activity || children.contains(selection) { selection = filter }
+                    if case .activity(let current) = selection, filter == .activity || children.contains(current) {
+                        selection = .activity(filter)
+                    }
                     expanded.remove(filter)
                 }
             })) {
                 ForEach(children) { child in
                     LibrarySidebarRow(filter: child, sources: sources, providers: providers, selection: $selection, expanded: $expanded)
                 }
-            } label: { label }.tag(filter)
+            } label: { label }.tag(LibraryDestination.activity(filter))
         }
     }
 }
@@ -293,170 +291,204 @@ struct RecordingLibraryView: View {
         }.tag(session.id)
     }
 
-    private var libraryContent: some View {
-        NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .doubleColumn }, set: { library.sidebarVisible = $0 == .all })) {
-            VStack(spacing: 0) {
-                LibrarySidebar(selection: $library.filter, sources: library.sources, coding: library.coding,
-                               showUpcoming: { recorder.calendar.showUpcoming() }, showPeople: { recorder.calendar.showPeople() })
-                VStack(alignment: .leading, spacing: 8) {
-                    if library.sources.contains(.recordings) {
-                        TranscriptionActivity(transcription: recorder.transcription)
-                        Menu {
-                            Button("Add recordings folder…") { library.addFolder() }
-                            Divider()
-                            ForEach(library.roots, id: \.path) { folder in
-                                Menu(folder.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")) {
-                                    Button("Show in Finder") { recorder.reveal(folder) }
-                                    Button("Remove from library") { library.removeFolder(folder) }
-                                        .disabled(folder == recorder.destination?.resolvingSymlinksInPath().standardizedFileURL)
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Label("Recording folders", systemImage: "folder")
-                                Image(systemName: "chevron.down")
-                                    .font(.caption2.weight(.semibold))
-                                    .accessibilityHidden(true)
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            LibrarySidebar(selection: $library.destination, sources: library.sources, coding: library.coding,
+                           openWindow: recorder.calendar.openWindow)
+            VStack(alignment: .leading, spacing: 8) {
+                if library.sources.contains(.recordings) {
+                    TranscriptionActivity(transcription: recorder.transcription)
+                    Menu {
+                        Button("Add recordings folder…") { library.addFolder() }
+                        Divider()
+                        ForEach(library.roots, id: \.path) { folder in
+                            Menu(folder.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")) {
+                                Button("Show in Finder") { recorder.reveal(folder) }
+                                Button("Remove from library") { library.removeFolder(folder) }
+                                    .disabled(folder == recorder.destination?.resolvingSymlinksInPath().standardizedFileURL)
                             }
                         }
-                        .menuStyle(.button)
-                        .buttonStyle(.plain)
-                        .menuIndicator(.hidden)
-                        .foregroundStyle(.secondary)
-                    }
-                    SettingsLink { Label("Settings", systemImage: "gearshape") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary)
-                }.labelStyle(SidebarActionLabelStyle())
-                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-            }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
-        } content: {
-            VStack(spacing: 0) {
-                if library.activity.isEmpty {
-                    ContentUnavailableView {
-                        if library.search.isEmpty {
-                            Label { Text(library.filter.emptyTitle) } icon: { library.filter.icon }
-                        } else {
-                            Label("No results", systemImage: "magnifyingglass")
-                        }
-                    } description: {
-                        if !library.search.isEmpty {
-                            Text("Try another phrase or a different library filter.")
-                        } else if library.filter == .github {
-                            Button("Configure GitHub…") { library.settingsTab = "github"; openSettings() }
-                        } else if !library.filter.showsRecordings {
-                            Button("Choose coding projects…") { library.settingsTab = "coding"; openSettings() }
-                        } else if library.filter == .recordings {
-                            Text("Record a call or add a folder of existing recordings.")
+                    } label: {
+                        HStack(spacing: 4) {
+                            Label("Recording folders", systemImage: "folder")
+                            Image(systemName: "chevron.down")
+                                .font(.caption2.weight(.semibold))
+                                .accessibilityHidden(true)
                         }
                     }
-                } else {
-                    List(selection: $library.selection) {
-                        ForEach(library.activity) { row in
-                            switch row {
-                            case .call(let recording): recordingRow(recording)
-                            case .coding(let session):
-                                codingRow(session)
-                                    .task(id: library.hasMoreCoding && session.id == library.coding.sessions.last?.id) {
-                                        library.loadOlderCoding(after: session.id)
-                                    }
-                            case .github(let hit):
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Label(hit.item.title, systemImage: "arrow.triangle.branch").font(.headline).lineLimit(2)
-                                    Text("\(hit.repository)#\(hit.item.number) · \(hit.date.formatted())").font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if let passage = hit.citations.first {
-                                        Text([passage.kind.label, passage.text].filter { !$0.isEmpty }.joined(separator: " · ")).font(
-                                            .caption
-                                        ).lineLimit(2)
-                                    }
-                                }.tag(row.id)
-                            }
-                        }
-                    }.listStyle(.inset).focused($focus, equals: .callList)
-                        .accessibilityIdentifier("recording-list")
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .foregroundStyle(.secondary)
                 }
-                Divider()
-                LibraryIndexProgress(presentation: library.searchPresentation)
-                HStack {
-                    if library.sources.contains(.recordings) && library.filter.showsRecordings {
-                        Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
+                SettingsLink { Label("Settings", systemImage: "gearshape") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+            }.labelStyle(SidebarActionLabelStyle())
+                .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+        }.navigationSplitViewColumnWidth(min: 200, ideal: 235, max: 300)
+    }
+
+    private var activityList: some View {
+        VStack(spacing: 0) {
+            if library.activity.isEmpty {
+                ContentUnavailableView {
+                    if library.search.isEmpty {
+                        Label { Text(library.filter.emptyTitle) } icon: { library.filter.icon }
+                    } else {
+                        Label("No results", systemImage: "magnifyingglass")
                     }
-                    if !library.visibleCoding.isEmpty || (library.filter.showsCoding && !library.filter.showsRecordings) {
-                        Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")\(library.hasMoreCoding ? " loaded" : "")")
+                } description: {
+                    if !library.search.isEmpty {
+                        Text("Try another phrase or a different library filter.")
+                    } else if library.filter == .github {
+                        Button("Configure GitHub…") { library.settingsTab = "github"; openSettings() }
+                    } else if !library.filter.showsRecordings {
+                        Button("Choose coding projects…") { library.settingsTab = "coding"; openSettings() }
+                    } else if library.filter == .recordings {
+                        Text("Record a call or add a folder of existing recordings.")
                     }
-                    if library.filter == .github || !library.visibleGitHub.isEmpty {
-                        Text("\(library.visibleGitHub.count) GitHub items")
-                    }
-                    Spacer()
-                    if library.refreshing || library.searching { ProgressView().controlSize(.mini) }
-                }.font(.caption).foregroundStyle(.secondary).padding(12)
-            }
-            .navigationTitle(library.filter.rawValue)
-            .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 380)
-        } detail: {
-            if let item = library.selectedGitHub {
-                GitHubItemView(hit: item, directory: library.github.directory, revision: library.github.snapshot.revision).id(item.id)
-            } else if let session = library.selectedCoding {
-                CodingSessionDetail(session: session, directory: library.coding.directory, hit: library.codingHits[session.id]).id(session.id)
-                .environment(\.githubLibraryLinks, .init(items: library.githubReferences, open: library.openGitHub))
-            } else if let recording = library.selectedRecording {
-                RecordingDetail(recording: recording, query: library.resultQuery, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
-                                editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) }, cancelEditing: cancelInlineEditing)
-                    .id(recording.id)
-                .environment(\.githubLibraryLinks, .init(items: library.githubReferences, open: library.openGitHub))
+                }
             } else {
-                ContentUnavailableView("Select an item", systemImage: "rectangle.stack")
+                List(selection: $library.selection) {
+                    ForEach(library.activity) { row in
+                        switch row {
+                        case .call(let recording): recordingRow(recording)
+                        case .coding(let session):
+                            codingRow(session)
+                                .task(id: library.hasMoreCoding && session.id == library.coding.sessions.last?.id) {
+                                    library.loadOlderCoding(after: session.id)
+                                }
+                        case .github(let hit):
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label(hit.item.title, systemImage: "arrow.triangle.branch").font(.headline).lineLimit(2)
+                                Text("\(hit.repository)#\(hit.item.number) · \(hit.date.formatted())").font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let passage = hit.citations.first {
+                                    Text([passage.kind.label, passage.text].filter { !$0.isEmpty }.joined(separator: " · ")).font(
+                                        .caption
+                                    ).lineLimit(2)
+                                }
+                            }.tag(row.id)
+                        }
+                    }
+                }.listStyle(.inset).focused($focus, equals: .callList)
+                    .accessibilityIdentifier("recording-list")
             }
+            Divider()
+            LibraryIndexProgress(presentation: library.searchPresentation)
+            HStack {
+                if library.sources.contains(.recordings) && library.filter.showsRecordings {
+                    Text("\(library.visibleRecordings.count) recording\(library.visibleRecordings.count == 1 ? "" : "s")")
+                }
+                if !library.visibleCoding.isEmpty || (library.filter.showsCoding && !library.filter.showsRecordings) {
+                    Text("\(library.visibleCoding.count) coding session\(library.visibleCoding.count == 1 ? "" : "s")\(library.hasMoreCoding ? " loaded" : "")")
+                }
+                if library.filter == .github || !library.visibleGitHub.isEmpty {
+                    Text("\(library.visibleGitHub.count) GitHub items")
+                }
+                Spacer()
+                if library.refreshing || library.searching { ProgressView().controlSize(.mini) }
+            }.font(.caption).foregroundStyle(.secondary).padding(12)
+        }
+    }
+
+    @ViewBuilder private var activityDetail: some View {
+        if let item = library.selectedGitHub {
+            GitHubItemView(hit: item, directory: library.github.directory, revision: library.github.snapshot.revision).id(item.id)
+        } else if let session = library.selectedCoding {
+            CodingSessionDetail(session: session, directory: library.coding.directory, hit: library.codingHits[session.id]).id(session.id)
+            .environment(\.githubLibraryLinks, .init(items: library.githubReferences, open: library.openGitHub))
+        } else if let recording = library.selectedRecording {
+            RecordingDetail(recording: recording, query: library.resultQuery, library: library, recorder: recorder, transcription: recorder.transcription, playback: playback,
+                            editDetails: { detailsEditor = recording }, trash: { trashTarget = .init(recording: recording, version: $0) }, cancelEditing: cancelInlineEditing)
+                .id(recording.id)
+            .environment(\.githubLibraryLinks, .init(items: library.githubReferences, open: library.openGitHub))
+        } else {
+            ContentUnavailableView("Select an item", systemImage: "rectangle.stack")
+        }
+    }
+
+    private var libraryContent: some View {
+        NavigationSplitView(columnVisibility: Binding(get: { library.sidebarVisible ? .all : .detailOnly }, set: { library.sidebarVisible = $0 != .detailOnly })) {
+            sidebar
+        } detail: {
+            // Keep the native list and detail mounted so switching pages preserves both scroll positions.
+            HSplitView {
+                activityList.frame(minWidth: 240, idealWidth: 290, maxWidth: 380)
+                activityDetail.frame(minWidth: 330, maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .disabled(library.calendarPage != nil)
+            .allowsHitTesting(library.calendarPage == nil)
+            .accessibilityHidden(library.calendarPage != nil)
+            .overlay {
+                switch library.calendarPage {
+                case .upcoming:
+                    UpcomingMeetingsView(calendar: recorder.calendar, embedded: true) {
+                        library.destination = .calendar(.people)
+                    }
+                    .onAppear {
+                        recorder.calendar.startMonitoring(refreshImmediately: false)
+                        recorder.calendar.refresh()
+                    }
+                case .people:
+                    PeopleDirectoryView(calendar: recorder.calendar, embedded: true)
+                case nil:
+                    Color.clear.frame(width: 0, height: 0)
+                        .modifier(LibrarySearchField(presentation: library.searchPresentation, setQuery: { library.search = $0 }))
+                }
+            }
+            .navigationTitle(library.calendarPage?.rawValue ?? library.filter.rawValue)
         }
         .navigationSplitViewStyle(.balanced)
-        .modifier(LibrarySearchField(presentation: library.searchPresentation, setQuery: { library.search = $0 }))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    if library.filter == .github {
-                        Picker("Repository", selection: $library.githubRepository) {
-                            Text("Any repository").tag("")
-                            ForEach(library.github.snapshot.selections) { Text($0.repo.name).tag($0.repo.name) }
+                if library.calendarPage == nil {
+                    Menu {
+                        if library.filter == .github {
+                            Picker("Repository", selection: $library.githubRepository) {
+                                Text("Any repository").tag("")
+                                ForEach(library.github.snapshot.selections) { Text($0.repo.name).tag($0.repo.name) }
+                            }
+                            Picker("Item type", selection: $library.githubType) {
+                                Text("Issues and pull requests").tag(""); Text("Issues").tag("issue"); Text("Pull requests").tag("pr")
+                            }
+                            Picker("Activity date", selection: $library.githubPeriod) {
+                                ForEach(GitHubPeriod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                            Picker("Contribution", selection: $library.githubAction) {
+                                Text("Any contribution").tag("")
+                                ForEach(GitHubActionKind.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                            }
                         }
-                        Picker("Item type", selection: $library.githubType) {
-                            Text("Issues and pull requests").tag(""); Text("Issues").tag("issue"); Text("Pull requests").tag("pr")
+                        if library.sources.contains(.recordings) && library.filter.showsRecordings {
+                            Toggle("Search previous transcript versions", isOn: $library.searchHistory)
+                            Picker("Speaker", selection: $library.searchSpeaker) {
+                                Text("Any speaker").tag("")
+                                ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
+                            }
                         }
-                        Picker("Activity date", selection: $library.githubPeriod) {
-                            ForEach(GitHubPeriod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        if library.sources.contains(.coding) && !library.coding.projects.isEmpty && library.filter.showsCoding {
+                            Picker("Coding project", selection: $library.codingProject) {
+                                Text("Any project").tag("")
+                                ForEach(library.coding.projects, id: \.self) { Text($0).tag($0) }
+                            }
+                            Picker("Coding branch", selection: $library.codingBranch) {
+                                Text("Any branch").tag("")
+                                ForEach(library.coding.branches, id: \.self) { Text($0).tag($0) }
+                            }
                         }
-                        Picker("Contribution", selection: $library.githubAction) {
-                            Text("Any contribution").tag("")
-                            ForEach(GitHubActionKind.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
-                        }
+                        Divider()
+                        Text("Matches word beginnings · \"exact words or phrases\"")
+                    } label: { Label("Search options", systemImage: library.searchHistory || !library.searchSpeaker.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
+                        .help("Search options")
+                    Button {
+                        library.github.refresh(); library.coding.refresh(); library.refresh()
+                    } label: {
+                        Label("Refresh library", systemImage: "arrow.clockwise")
                     }
-                    if library.sources.contains(.recordings) && library.filter.showsRecordings {
-                        Toggle("Search previous transcript versions", isOn: $library.searchHistory)
-                        Picker("Speaker", selection: $library.searchSpeaker) {
-                            Text("Any speaker").tag("")
-                            ForEach(library.speakerNames, id: \.self) { Text($0).tag($0) }
-                        }
-                    }
-                    if library.sources.contains(.coding) && !library.coding.projects.isEmpty && library.filter.showsCoding {
-                        Picker("Coding project", selection: $library.codingProject) {
-                            Text("Any project").tag("")
-                            ForEach(library.coding.projects, id: \.self) { Text($0).tag($0) }
-                        }
-                        Picker("Coding branch", selection: $library.codingBranch) {
-                            Text("Any branch").tag("")
-                            ForEach(library.coding.branches, id: \.self) { Text($0).tag($0) }
-                        }
-                    }
-                    Divider()
-                    Text("Matches word beginnings · \"exact words or phrases\"")
-                } label: { Label("Search options", systemImage: library.searchHistory || !library.searchSpeaker.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
-                    .help("Search options")
-                Button {
-                    library.github.refresh(); library.coding.refresh(); library.refresh()
-                } label: {
-                    Label("Refresh library", systemImage: "arrow.clockwise")
+                        .help("Refresh enabled sources")
                 }
-                    .help("Refresh enabled sources")
                 if library.sources.contains(.recordings) {
                     Button(action: showControls) { Label("Recording controls", systemImage: "slider.horizontal.3") }
                         .help("Microphone, audio levels, and recording controls")
@@ -474,7 +506,7 @@ struct RecordingLibraryView: View {
                         Button("Recording controls", action: showControls)
                     }.font(.caption).padding(10).background(.bar)
                 }
-                if !library.issues.isEmpty {
+                if library.calendarPage == nil && !library.issues.isEmpty {
                     HStack {
                         Image(systemName: "exclamationmark.triangle")
                         Text(library.issues.joined(separator: "\n")).textSelection(.enabled)
@@ -492,8 +524,8 @@ struct RecordingLibraryView: View {
             if library.sources.isEmpty { LibrarySourceChooser(library: library, destination: recorder.destination) }
             else { libraryContent }
         }
-        .background(LibraryCommandScope(bindings: keyboardBindings, cancelEditing: .init(enabled: {
-            library.renamingID != nil || library.selectedRecording.map { library.transcriptDrafts[$0.id] != nil || library.summaryDrafts[$0.id] != nil } == true
+        .background(LibraryCommandScope(bindings: library.calendarPage == nil ? keyboardBindings : [:], cancelEditing: .init(enabled: {
+            library.calendarPage == nil && (library.renamingID != nil || library.selectedRecording.map { library.transcriptDrafts[$0.id] != nil || library.summaryDrafts[$0.id] != nil } == true)
         }, perform: cancelInlineEditing)).frame(width: 0, height: 0))
         .frame(minWidth: 940, minHeight: 600)
         .sheet(item: $detailsEditor) { recording in
@@ -524,13 +556,13 @@ struct RecordingLibraryView: View {
             else { playback.clear() }
         }
         .onChange(of: library.renamingID) { previous, current in
-            if previous != nil && current == nil { focus = .callList }
+            if previous != nil && current == nil && library.calendarPage == nil { focus = .callList }
         }
         .onChange(of: library.selectedRecording.flatMap { library.summaryDrafts[$0.id]?.id }) { previous, current in
-            if previous != nil && current == nil { focus = .callList }
+            if previous != nil && current == nil && library.calendarPage == nil { focus = .callList }
         }
         .onChange(of: library.selectedRecording.flatMap { library.transcriptDrafts[$0.id]?.version.id }) { previous, current in
-            if previous != nil && current == nil { focus = .callList }
+            if previous != nil && current == nil && library.calendarPage == nil { focus = .callList }
         }
     }
 

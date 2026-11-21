@@ -4,6 +4,7 @@ import RecorderCore
 
 struct CalendarSettings: View {
     @ObservedObject var calendar: CalendarCoordinator
+    var showPeople: (() -> Void)?
     @State private var emails = ""
     @State private var emailError: String?
     @State private var savingEmails = false
@@ -86,7 +87,7 @@ struct CalendarSettings: View {
                 if let emailError { Text(emailError).foregroundStyle(.red) }
             }
             Section {
-                Button("People & groups…") { calendar.showPeople() }
+                Button("People & groups…", action: showPeople ?? calendar.showPeople)
                 Text("Remember preferred names, email aliases, and group rosters locally on this Mac. Calendar events are never edited.").font(.caption).foregroundStyle(.secondary)
             }
             CalendarError(calendar: calendar)
@@ -101,18 +102,25 @@ struct CalendarSettings: View {
 
 struct UpcomingMeetingsView: View {
     @ObservedObject var calendar: CalendarCoordinator
+    var embedded = false
+    var showPeople: (() -> Void)?
+    @Environment(\.openSettings) private var openSettings
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text("Upcoming calls").font(.title2.weight(.semibold))
+                    if !embedded { Text("Upcoming calls").font(.title2.weight(.semibold)) }
                     Text("Next two days").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("People & groups") { calendar.showPeople() }
+                Button("People & groups", action: showPeople ?? calendar.showPeople)
                 Button { calendar.refresh() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh calendar")
                     .disabled(!calendar.connected || calendar.connecting)
-                SettingsLink { Image(systemName: "gearshape") }.help("Calendar settings")
+                Button {
+                    calendar.library?.settingsTab = "calendar"
+                    openSettings()
+                } label: { Label("Calendar settings", systemImage: "gearshape").labelStyle(.iconOnly) }
+                .help("Calendar settings")
             }
             if !calendar.connected || !calendar.authorized {
                 ContentUnavailableView {
@@ -125,8 +133,9 @@ struct UpcomingMeetingsView: View {
                         Button("Connect macOS Calendar") { Task { await calendar.connect() } }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if !calendar.enabled || calendar.selected.isEmpty {
-                CalendarSettings(calendar: calendar)
+                CalendarSettings(calendar: calendar, showPeople: showPeople)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
@@ -144,7 +153,8 @@ struct UpcomingMeetingsView: View {
                 }
             }
             CalendarError(calendar: calendar)
-        }.padding(22).frame(minWidth: 570, minHeight: 400).background(Color(nsColor: .windowBackgroundColor))
+        }.padding(22).frame(minWidth: 570, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -222,6 +232,8 @@ private struct CalendarError: View {
 struct PeopleDirectoryView: View {
     private struct ClipSelection: Identifiable { let id: String }
     @ObservedObject var calendar: CalendarCoordinator
+    var embedded = false
+    @State private var selection: String?
     @State private var search = ""
     @State private var editing: KnownIdentity?
     @State private var clipSelection: ClipSelection?
@@ -232,42 +244,107 @@ struct PeopleDirectoryView: View {
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let matches = people
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("People & groups").font(.title2.weight(.semibold))
+                if !embedded { Text("People & groups").font(.title2.weight(.semibold)) }
                 Spacer()
                 if calendar.library != nil {
-                    Button("Voice clips…") { clipSelection = ClipSelection(id: "") }
+                    Button("All voice clips…") { clipSelection = ClipSelection(id: "") }
                 }
                 Button("Add person or group") { editing = .init(name: "", emails: []) }
-            }
-            Text("Preferred names appear on matching speakers in your recording library. Group members are expected guests until you review attendance.")
-                .font(.callout).foregroundStyle(.secondary)
-            TextField("Search names and email addresses", text: $search).textFieldStyle(.roundedBorder)
-            List(people) { person in
-                HStack {
-                    Image(systemName: person.kind == .group ? "person.3" : person.kind == .resource ? "video" : "person")
-                        .frame(width: 25)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(person.name).font(.headline)
-                        if !person.emails.isEmpty { Text(person.emails.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
+            }.padding(.horizontal, 18).padding(.vertical, 12)
+            Divider()
+            HSplitView {
+                VStack(spacing: 0) {
+                    TextField("Search names or emails", text: $search)
+                        .textFieldStyle(.roundedBorder).padding(10)
+                    List(matches, selection: $selection) { person in
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(person.name).lineLimit(1)
+                                if let email = person.emails.first {
+                                    Text(email).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        } icon: { Image(systemName: person.directorySymbol) }
+                        .padding(.vertical, 3).tag(person.id)
+                    }.listStyle(.inset)
+                }.frame(minWidth: 180, idealWidth: 240, maxWidth: 320)
+                Group {
+                    if let person = matches.first(where: { $0.id == selection }) {
+                        profile(person)
+                    } else if matches.isEmpty {
+                        if search.isEmpty {
+                            ContentUnavailableView("No people or groups", systemImage: "person.2",
+                                                   description: Text("Add a person or group to remember their name and email addresses."))
+                        } else {
+                            ContentUnavailableView.search(text: search)
+                        }
+                    } else {
+                        ContentUnavailableView("Select a person or group", systemImage: "person.2")
                     }
-                    Spacer()
-                    Text(person.kind == .group ? "Group · \(person.memberIDs.count) \(person.memberIDs.count == 1 ? "member" : "members")" : person.kind == .resource ? "Ignored resource" : "Person")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if person.kind == .person, calendar.library != nil {
-                        Button { clipSelection = ClipSelection(id: "person:" + person.id) } label: { Image(systemName: "waveform") }
-                            .help("Voice clips for " + person.name).accessibilityLabel("Voice clips for " + person.name)
-                    }
-                    Button("Edit") { editing = person }
-                }.padding(.vertical, 5)
+                }.frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
             }
             CalendarError(calendar: calendar)
-        }.padding(22).frame(minWidth: 580, minHeight: 420).background(Color(nsColor: .windowBackgroundColor))
+        }.frame(minWidth: 540, minHeight: 420).background(Color(nsColor: .windowBackgroundColor))
+            .onChange(of: matches.map(\.id), initial: true) { _, ids in
+                if !ids.contains(where: { $0 == selection }) { selection = ids.first }
+            }
             .sheet(item: $clipSelection) { selection in
                 if let library = calendar.library { PersonVoiceClipsView(calendar: calendar, library: library, owner: selection.id) }
             }
-            .sheet(item: $editing) { identity in IdentityEditor(calendar: calendar, identity: identity) }
+            .sheet(item: $editing) { identity in
+                IdentityEditor(calendar: calendar, identity: identity) {
+                    if !people.contains(where: { $0.id == identity.id }) { search = "" }
+                    selection = identity.id
+                }
+            }
+    }
+
+    private func profile(_ person: KnownIdentity) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(person.name).font(.title2.weight(.semibold)).textSelection(.enabled)
+                    Text(person.kind == .group ? "Group" : person.kind == .resource ? "Ignored resource" : "Person")
+                        .foregroundStyle(.secondary)
+                }
+                if !person.emails.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Email addresses").font(.headline)
+                        ForEach(person.emails, id: \.self) { Text($0).textSelection(.enabled) }
+                    }
+                }
+                if person.kind == .group {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Members").font(.headline)
+                        let members = calendar.directory.people.filter { person.memberIDs.contains($0.id) }
+                            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                        if members.isEmpty {
+                            Text("No members added").foregroundStyle(.secondary)
+                        }
+                        ForEach(members) { member in Text(member.name) }
+                    }
+                }
+                HStack {
+                    Button("Edit…") { editing = person }
+                    if person.kind == .person && calendar.library != nil {
+                        Button("Voice clips…") { clipSelection = ClipSelection(id: "person:" + person.id) }
+                    }
+                }
+            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private extension KnownIdentity {
+    var directorySymbol: String {
+        switch kind {
+        case .person: "person"
+        case .group: "person.3"
+        case .resource: "video"
+        }
     }
 }
 
@@ -278,7 +355,9 @@ private struct IdentityEditor: View {
     @State private var emails: String
     @State private var error: String?
     @State private var saving = false
-    init(calendar: CalendarCoordinator, identity: KnownIdentity) {
+    let onSaved: () -> Void
+    init(calendar: CalendarCoordinator, identity: KnownIdentity, onSaved: @escaping () -> Void) {
+        self.onSaved = onSaved
         self.calendar = calendar; _identity = State(initialValue: identity)
         _emails = State(initialValue: identity.emails.joined(separator: "\n"))
     }
@@ -319,7 +398,7 @@ private struct IdentityEditor: View {
                     saving = true
                     Task {
                         defer { saving = false }
-                        do { try await calendar.updateIdentity(edited); dismiss() }
+                        do { try await calendar.updateIdentity(edited); onSaved(); dismiss() }
                         catch { self.error = error.localizedDescription }
                     }
                 }.keyboardShortcut(.defaultAction)

@@ -352,8 +352,14 @@ actor CalendarReader: CalendarReading {
             }
         }
     }
+    func openWindow(_ page: LibraryCalendarPage) {
+        switch page {
+        case .upcoming: showUpcoming()
+        case .people: showPeople()
+        }
+    }
     func showUpcoming() {
-        startMonitoring()
+        startMonitoring(refreshImmediately: false)
         if upcomingWindow == nil { upcomingWindow = CalendarWindows.upcoming(calendar: self) }
         upcomingWindow?.showWindow(nil); upcomingWindow?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true); refresh()

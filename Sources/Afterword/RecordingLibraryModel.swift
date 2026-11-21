@@ -114,6 +114,19 @@ enum GitHubPeriod: String, CaseIterable {
         !githubRepository.isEmpty || !githubType.isEmpty || !githubAction.isEmpty || githubPeriod != .any
     }
     @Published var sidebarVisible = true
+    @Published private(set) var calendarPage: LibraryCalendarPage?
+    var destination: LibraryDestination {
+        get { calendarPage.map(LibraryDestination.calendar) ?? .activity(filter) }
+        set {
+            switch newValue {
+            case .activity(let next):
+                if calendarPage != nil { calendarPage = nil }
+                if next != filter { filter = next }
+            case .calendar(let page):
+                if sources.contains(.recordings), calendarPage != page { calendarPage = page }
+            }
+        }
+    }
     @Published private(set) var roots: [URL] = []
     @Published private(set) var managing = false
     @Published var preferredTranscriptID: String?
@@ -243,6 +256,7 @@ enum GitHubPeriod: String, CaseIterable {
         searchPresentation.status = nil; polledSemanticStatus = nil
         let records = next.contains(.recordings)
         recorder.setSourceEnabled(records)
+        if !records && calendarPage != nil { calendarPage = nil }
         sources = next
         if records && !previous.contains(.recordings) {
             roots = Self.savedRecordingFolders(in: defaults)
@@ -843,6 +857,18 @@ extension ActivitySource {
         case .github: return .github
         }
     }
+}
+
+enum LibraryDestination: Hashable {
+    case activity(LibraryFilter)
+    case calendar(LibraryCalendarPage)
+}
+
+enum LibraryCalendarPage: String, CaseIterable {
+    case upcoming = "Upcoming calls"
+    case people = "People & groups"
+
+    var symbol: String { self == .upcoming ? "calendar" : "person.2" }
 }
 
 enum LibraryFilter: String, Identifiable {

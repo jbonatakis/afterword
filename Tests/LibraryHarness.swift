@@ -187,7 +187,7 @@ import Lookback
         library.filter = .recordings
         print("PASS async library refresh, initial selection, transcript search, and filters")
 
-        try await checkCodingSidebar(root: root, library: library)
+        try await checkCodingSidebar(root: root, library: library, recorder: recorder, playback: playback)
         try await checkGitHub(library: library)
         if sourcesOnly { return }
         library.filter = .recordings
@@ -633,8 +633,10 @@ import Lookback
         require(library.filter == .recordings && recorder.sourceEnabled && savedFolders?.count == 1, "Recordings did not start independently")
         library.setSources([.recordings, .coding])
         require(library.sources == [.recordings, .coding] && recorder.sourceEnabled, "Adding coding interrupted recording setup")
+        library.destination = .calendar(.people)
         library.setSources([.github])
         await library.refresh()?.value
+        require(library.destination == .activity(.github), "Disabling recordings left the directory selected")
         require(!recorder.sourceEnabled && recorder.devices.isEmpty && library.roots.isEmpty, "Turning off recording left capture resources active")
         require(defaults.stringArray(forKey: "libraryFolders") == savedFolders, "Turning off recording removed folder preferences")
         library.setSources([.recordings])
@@ -913,7 +915,7 @@ import Lookback
         print("PASS cached first paint and detail during a blocked import, native scrolling, concurrent removal, and archive-wide search and filters")
     }
 
-    @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel) async throws {
+    @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel, recorder: RecordingCoordinator, playback: RecordingPlayback) async throws {
         try checkQuestionReplies()
         let pending = root.appendingPathComponent("Call-2026-11-14_10-00-00")
         try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
@@ -968,21 +970,19 @@ import Lookback
         library.coding.refresh()
         for _ in 0..<100 { if !library.coding.busy { break }; await pump(0.02) }
         await library.refresh()?.value
-        var opened: [String] = []
-        let sidebar = NSHostingView(rootView: LibrarySidebar(selection: Binding(get: { library.filter }, set: { library.filter = $0 }),
-                                                           sources: library.sources, coding: library.coding,
-                                                           showUpcoming: { opened.append("Upcoming calls") },
-                                                           showPeople: { opened.append("People & groups") }))
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 235, height: 520),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.contentView = sidebar; window.orderBack(nil); window.displayIfNeeded()
+        let controller = RecordingLibraryWindow(library: library, recorder: recorder, playback: playback, showControls: {})
+        let window = controller.window!
+        let host = window.contentViewController!.view
+        defer { withExtendedLifetime(controller) {} }
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderBack(nil); window.displayIfNeeded()
         defer { window.orderOut(nil) }
         await pump()
         func outline(in view: NSView) -> NSOutlineView? {
-            if let view = view as? NSOutlineView { return view }
+            if let view = view as? NSOutlineView, view.numberOfRows > 1, view.level(forRow: 1) == 1 { return view }
             return view.subviews.lazy.compactMap { outline(in: $0) }.first
         }
-        guard let tree = outline(in: sidebar) else { throw RecorderError.message("Missing library sidebar outline") }
+        guard let tree = outline(in: host) else { throw RecorderError.message("Missing library sidebar outline") }
         let rows: [(LibraryFilter, Int, [String])] = [
             (.activity, 2, ["Claude Code", "Codex"]), (.coding, 0, ["Claude Code", "Codex"]),
             (.codex, 0, ["Codex"]), (.claudeCode, 0, ["Claude Code"]),
@@ -992,24 +992,78 @@ import Lookback
         require((0..<tree.numberOfRows).map(tree.level(forRow:)) == [0, 1, 2, 2, 1, 2, 2, 2, 2, 1, 0, 0], "Incorrect sidebar hierarchy")
         for (index, (filter, recordings, providers)) in rows.enumerated() {
             tree.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-            await pump(0.05)
+            for _ in 0..<30 {
+                await pump(0.05)
+                if library.filter == filter && library.visibleRecordings.count == recordings &&
+                    library.visibleCoding.map(\.providerName).sorted() == providers { break }
+            }
             require(library.filter == filter && library.visibleRecordings.count == recordings &&
                     library.visibleCoding.map(\.providerName).sorted() == providers, "Wrong contents for \(filter.rawValue)")
             if filter == .untranscribed { require(library.selectedRecording?.url.lastPathComponent == pending.lastPathComponent, "Expected the recording awaiting transcription") }
         }
-        // Both destinations open auxiliary windows and preserve the current activity selection.
-        for row in rows.count..<totalRows {
-            let rect = tree.rect(ofRow: row)
-            let point = tree.convert(NSPoint(x: rect.maxX - 24, y: rect.midY), to: nil)
-            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                               windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
-                window.sendEvent(event)
-            }
-            await pump(0.05)
+        tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let scroll = descendants(host).compactMap { $0 as? NSScrollView }.first {
+            ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 700 && $0.contentView.bounds.height > 100
         }
-        require(opened == ["Upcoming calls", "People & groups"], "Expected both sidebar windows to open in order, got \(opened)")
-        require(library.filter == .github && tree.selectedRow == rows.count - 1, "Opening a sidebar window changed the library selection")
+        guard let scroll else { throw RecorderError.message("Missing conversation scroll view") }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        await pump()
+        func firstVisibleParagraph() -> String? {
+            guard let document = scroll.documentView else { return nil }
+            return descendants(document).compactMap { view -> (String, CGFloat)? in
+                guard let field = view as? NSTextField, !field.stringValue.isEmpty else { return nil }
+                let rect = field.convert(field.bounds, to: document)
+                guard scroll.documentVisibleRect.contains(rect) else { return nil }
+                return (field.stringValue, rect.minY - scroll.documentVisibleRect.minY)
+            }.min { $0.1 < $1.1 }?.0
+        }
+        let paragraphAtTop = firstVisibleParagraph()
+        let offset = scroll.contentView.bounds.origin.y
+        let saved = library.selection
+        let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
+        func hasLibrarySearch() -> Bool {
+            window.toolbar?.items.contains(where: { $0 is NSSearchToolbarItem }) == true
+        }
+        require(offset > 100 && hasLibrarySearch(), "Expected a scrolled conversation and library search toolbar, offset \(offset), items \(window.toolbar?.items.map { $0.itemIdentifier.rawValue } ?? [])")
+        for (index, page) in LibraryCalendarPage.allCases.enumerated() {
+            let row = rows.count + index
+            tree.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            await pump()
+            require(tree.selectedRow == row && library.destination == .calendar(page), "Sidebar did not select \(page.rawValue) in place")
+            require(!hasLibrarySearch() && saved == library.selection && library.filter == .claudeCode, "Calendar navigation changed activity state or retained its search field")
+            require(Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber)) == visibleWindows, "Sidebar selection opened another window")
+            let rect = tree.rect(ofRow: row)
+            let point = tree.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1)!
+            guard let menu = tree.menu(for: event), let item = menu.item(withTitle: "Open in New Window") else {
+                throw RecorderError.message("Missing pop-out action for \(page.rawValue)")
+            }
+            menu.performActionForItem(at: menu.index(of: item))
+            await pump()
+            guard let popout = NSApp.windows.first(where: {
+                $0.isVisible && !visibleWindows.contains($0.windowNumber) &&
+                $0.title.localizedCaseInsensitiveCompare(page.rawValue) == .orderedSame
+            }) else { throw RecorderError.message("Context menu did not open a separate \(page.rawValue) window") }
+            require(library.destination == .calendar(page), "Opening a separate window changed the library destination")
+            popout.close()
+        }
+        tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
+        require(library.destination == .activity(.claudeCode) && library.selection == saved && hasLibrarySearch(), "Returning to activity lost selection or search")
+        require(scroll.window === window && abs(scroll.contentView.bounds.origin.y - offset) < 2 &&
+                paragraphAtTop != nil && firstVisibleParagraph() == paragraphAtTop, "Returning to activity lost the conversation scroll position: wanted \(offset), got \(scroll.contentView.bounds.origin.y), attached \(scroll.window === window)")
+        library.destination = .activity(.transcribed)
+        library.search = "clear transcript"
+        await library.updateSearch(debounce: false)?.value
+        let callID = library.selectedRecording?.id
+        library.destination = .calendar(.people); await pump()
+        library.destination = .activity(.transcribed); await pump()
+        require(callID != nil && library.selectedRecording?.id == callID && library.search == "clear transcript",
+                "Visiting the directory lost the selected call or its search")
+        library.search = ""; await library.updateSearch(debounce: false)?.value
+        print("PASS inline calendar navigation, independent windows, and activity scroll restoration")
         tree.selectRowIndexes(IndexSet(integer:7),byExtendingSelection:false); await pump()
         guard let awaitingSummary = library.selectedRecording, awaitingSummary.hasTranscript else {
             throw RecorderError.message("Needs summary should select the transcribed call")

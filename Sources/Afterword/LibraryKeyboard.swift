@@ -69,11 +69,13 @@ struct LibraryCommandBinding {
 /// The bindings stay with the rendered view, including its selected transcript
 /// version. AppKit asks for availability at the moment a key/menu is used.
 struct LibraryCommandScope: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     var bindings: [LibraryCommand: LibraryCommandBinding]
     var cancelEditing: LibraryCommandBinding? = nil
     func makeNSView(context: Context) -> LibraryCommandView { LibraryCommandView() }
     func updateNSView(_ view: LibraryCommandView, context: Context) {
-        view.bindings = bindings; view.cancelEditing = cancelEditing
+        view.bindings = isEnabled ? bindings : [:]
+        view.cancelEditing = isEnabled ? cancelEditing : nil
     }
 }
 

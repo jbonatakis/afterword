@@ -71,8 +71,11 @@ import RecorderCore
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Show Library") { delegate.showLibrary() }.keyboardShortcut("1", modifiers: .command)
-                RecordingMenuCommands(library: delegate.library, recorder: delegate.recorder)
+                Button("Show Library") {
+                    delegate.library.destination = .activity(delegate.library.filter)
+                    delegate.showLibrary()
+                }.keyboardShortcut("1", modifiers: .command)
+                RecordingMenuCommands(library: delegate.library, showLibrary: delegate.showLibrary)
             }
             CommandGroup(replacing: .sidebar) {
                 Button("Toggle Sidebar") { delegate.library.sidebarVisible.toggle() }
@@ -87,13 +90,18 @@ import RecorderCore
 
 private struct RecordingMenuCommands: View {
     @ObservedObject var library: RecordingLibraryModel
-    let recorder: RecordingCoordinator
+    let showLibrary: () -> Void
 
     var body: some View {
         if library.sources.contains(.recordings) {
-            Button("Upcoming Calls") { recorder.calendar.showUpcoming() }.keyboardShortcut("2", modifiers: .command)
-            Button("People & Groups") { recorder.calendar.showPeople() }
+            Button("Upcoming Calls") { open(.upcoming) }.keyboardShortcut("2", modifiers: .command)
+            Button("People & Groups") { open(.people) }
         }
+    }
+
+    private func open(_ page: LibraryCalendarPage) {
+        library.destination = .calendar(page)
+        showLibrary()
     }
 }
 
