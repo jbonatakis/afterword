@@ -9,7 +9,8 @@ import Lookback
 /// Own-window rendering and silent playback fixtures. Never starts capture or
 /// changes the production app's defaults, files, or shortcut.
 @main struct LibraryHarness {
-    static let interactive = CommandLine.arguments.contains("--interactive")
+    static let checkBoardDrag = CommandLine.arguments.contains("--board-drag")
+    static let interactive = CommandLine.arguments.contains("--interactive") || checkBoardDrag
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(interactive ? .accessory : .prohibited)
@@ -81,6 +82,7 @@ import Lookback
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
         checkRecordingTelemetry(root)
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
+        if checkBoardDrag { try await checkSourceSelection(root); return }
         if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }
         let folder = root.appendingPathComponent("Call-2026-11-14_09-30-00")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -560,6 +562,46 @@ import Lookback
         print("PASS 375-paragraph reader mounted \(mounted.count) rows, revealed offscreen matches and editors, preserved edits on scroll, and handled resizing during playback")
     }
 
+    /// Use the window server for this opt-in check. App-local NSEvents don't drive a native drag session.
+    @MainActor static func pointerDrag(from start: NSPoint, to end: NSPoint, in window: NSWindow, slowStart: Bool = false) async throws {
+        let points = [start, end].map { window.convertPoint(toScreen: $0) }
+        func unobscured() -> Bool {
+            points.allSatisfy { NSWindow.windowNumber(at: $0, belowWindowWithWindowNumber: 0) == window.windowNumber }
+        }
+        for _ in 0..<12 where !unobscured() { await pump(0.1) }
+        guard unobscured(), !CGEventSource.buttonState(.combinedSessionState, button: .left), let screen = NSScreen.screens.first else {
+            throw RecorderError.message("The drag fixture must be unobscured with the mouse button released.")
+        }
+        let a = CGPoint(x: points[0].x, y: screen.frame.maxY - points[0].y)
+        let b = CGPoint(x: points[1].x, y: screen.frame.maxY - points[1].y)
+        // AppKit can enter a tracking loop on mouse-down, so drive the pointer off the main thread.
+        await withCheckedContinuation { done in
+            DispatchQueue.global(qos: .userInitiated).async {
+                func post(_ type: CGEventType, _ point: CGPoint) {
+                    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+                }
+                post(.mouseMoved, a)
+                Thread.sleep(forTimeInterval: 0.15)
+                post(.leftMouseDown, a)
+                if slowStart {
+                    Thread.sleep(forTimeInterval: 0.45)
+                    for i in 1...6 {
+                        post(.leftMouseDragged, CGPoint(x: a.x, y: a.y + CGFloat(i) / 2))
+                        Thread.sleep(forTimeInterval: 0.03)
+                    }
+                }
+                for i in 1...18 {
+                    Thread.sleep(forTimeInterval: 0.016)
+                    let fraction = CGFloat(i) / 18
+                    post(.leftMouseDragged, CGPoint(x: a.x + (b.x - a.x) * fraction, y: a.y + (b.y - a.y) * fraction))
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+                post(.leftMouseUp, b)
+                done.resume()
+            }
+        }
+    }
+
     @MainActor static func checkSourceSelection(_ root: URL) async throws {
         let support = root.appendingPathComponent("SourceSelection")
         let embeddings = support.appendingPathComponent("Embeddings")
@@ -648,7 +690,9 @@ import Lookback
                 }
                 if result[target] != nil || alternate.flatMap({ result[$0] }) != nil { break }
             }
-            require(result[target] != nil || alternate.flatMap({ result[$0] }) != nil, "Missing \(target) in rendered labels \(result.keys.sorted())")
+            guard result[target] != nil || alternate.flatMap({ result[$0] }) != nil else {
+                throw RecorderError.message("Missing \(target) in rendered labels \(result.keys.sorted())")
+            }
             return result
         }
         func click(_ point: NSPoint, in window: NSWindow) {
@@ -669,6 +713,80 @@ import Lookback
         func notesEditor(in view: NSView) -> NSTextView? {
             if let text = view as? NSTextView, text.isEditable && !text.isFieldEditor { return text }
             return view.subviews.lazy.compactMap(notesEditor).first
+        }
+        if checkBoardDrag {
+            guard CGPreflightPostEventAccess() else { throw RecorderError.message("The pointer fixture needs event-posting access.") }
+            let previousApp = NSWorkspace.shared.frontmostApplication
+            let previousPointer = CGEvent(source: nil)?.location
+            defer {
+                window.orderOut(nil)
+                if let previousPointer { CGWarpMouseCursorPosition(previousPointer) }
+                previousApp?.activate(options: [])
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            func checkDrags(in window: NSWindow, content: NSView, location: String) async throws {
+                window.setContentSize(NSSize(width: 1050, height: 670))
+                window.center()
+                window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
+                await pump()
+                let first = try await labels(in: content, waitingFor: "planlaunchreview")
+                guard let firstCard = first["planlaunchreview"] else { throw RecorderError.message("Missing fixture ticket") }
+                for (column, heading, padding) in [("in-progress", "inprogress", false), ("todo", "todo", true)] {
+                    var current = try await labels(in: content, waitingFor: "planlaunchreview")
+                    // The store can finish a move before SwiftUI displays the card in its new column.
+                    for _ in 0..<10 where padding {
+                        if let card = current["planlaunchreview"], let middle = current["inprogress"], card.x > middle.x { break }
+                        current = try await labels(in: content, waitingFor: "planlaunchreview")
+                    }
+                    guard var start = current["planlaunchreview"], let nextHeading = current["done"],
+                          let targetHeading = current[heading] else { throw RecorderError.message("Missing fixture column") }
+                    // On the return trip, grab the blank space near the right edge of the middle card.
+                    if padding {
+                        guard let middle = current["inprogress"], start.x > middle.x else { throw RecorderError.message("Ticket did not appear in its new column") }
+                        start.x = nextHeading.x - 55
+                    }
+                    let end = NSPoint(x: targetHeading.x + 8, y: firstCard.y)
+                    let before = NSPasteboard(name: .drag).changeCount
+                    try await pointerDrag(from: start, to: end, in: window)
+                    for _ in 0..<30 {
+                        if try library.boardStore.read().ticket(localTicket.id).columnID == column { break }
+                        await pump(0.05)
+                    }
+                    let saved = try library.boardStore.read().ticket(localTicket.id)
+                    let origin = padding ? "card padding" : "title"
+                    guard saved.columnID == column else {
+                        let lifted = before != NSPasteboard(name: .drag).changeCount
+                        throw RecorderError.message("Drag from \(origin) in the \(location) left ticket in \(saved.columnID), expected \(column). Drag pasteboard changed: \(lifted).")
+                    }
+                    print("PASS drag from \(origin) to \(column) in the \(location)")
+                }
+            }
+            try await checkDrags(in: window, content: host, location: "library")
+            library.boardWindows.openBoard(library: library)
+            defer { library.boardWindows.closeAll() }
+            guard let detached = NSApp.windows.first(where: { $0 !== window && $0.title == "Task board" }),
+                  let content = detached.contentView else { throw RecorderError.message("Missing separate board window") }
+            try await checkDrags(in: detached, content: content, location: "separate board window")
+            _ = try library.boardStore.change(expectedRevision: library.boardStore.read().revision) { board in
+                let lane = try board.saveGroup(.swimlane, name: "Ready")
+                _ = try board.saveTicket(BoardTicket(title: "Ready target", columnID: "todo", swimlaneID: lane))
+            }
+            let grid = try await labels(in: content, waitingFor: "readytarget")
+            guard let start = grid["planlaunchreview"], let end = grid["readytarget"] else { throw RecorderError.message("Missing swimlane target") }
+            click(start, in: detached)
+            _ = try await labels(in: content, waitingFor: "openinseparatewindow")
+            let lift = NSPasteboard(name: .drag).changeCount
+            try await pointerDrag(from: start, to: end, in: detached, slowStart: true)
+            for _ in 0..<30 {
+                if try library.boardStore.read().ticket(localTicket.id).swimlaneID != nil { break }
+                await pump(0.05)
+            }
+            guard try library.boardStore.read().ticket(localTicket.id).swimlaneID != nil else {
+                throw RecorderError.message("Selected card did not move to the next swimlane. Drag pasteboard changed: \(lift != NSPasteboard(name: .drag).changeCount).")
+            }
+            print("PASS slow drag of a selected card to another swimlane with the reader open")
+            return
         }
         let boardLabels = try await labels(in: host, waitingFor: "planlaunchreview")
         require(boardLabels["newticket"] != nil && boardLabels["addticket"] == nil, "Ticket creation should appear only in the board header")

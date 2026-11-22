@@ -389,13 +389,15 @@ struct TaskBoardView: View {
                                 }
                             }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.background, in: RoundedRectangle(cornerRadius: 8))
+                                .contentShape(Rectangle())
+                                .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
+                                .draggable(ticket.id)
                         }.buttonStyle(.plain)
                         .overlay {
                             if selectedID == ticket.id { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false) }
                         }
                         .accessibilityAddTraits(selectedID == ticket.id ? .isSelected : [])
                         .accessibilityLabel(ticket.title)
-                        .draggable(ticket.id)
                         .contextMenu {
                             ForEach([(-1, "Move up"), (1, "Move down")], id: \.0) { step, title in
                                 let index = (tickets.firstIndex { $0.id == ticket.id } ?? 0) + step
@@ -410,7 +412,11 @@ struct TaskBoardView: View {
                 .frame(minHeight: 90, alignment: .topLeading)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(Rectangle())
-                .overlay { if dropTarget == key { RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor, lineWidth: 2) } }
+                .overlay {
+                    if dropTarget == key {
+                        RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
+                    }
+                }
                 .dropDestination(for: String.self) { ids, _ in
                     guard let id = ids.first, let ticket = try? board.ticket(id) else { return false }
                     Task {
