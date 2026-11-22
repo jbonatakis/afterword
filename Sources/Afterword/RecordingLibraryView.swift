@@ -42,14 +42,17 @@ private extension CodingProvider {
     }()
 
     static let images: [Self: NSImage] = [
-        Self.codex: "Codex", .claudeCode: "ClaudeCode"
+        Self.codex: "Codex", .claudeCode: "ClaudeCode", .pi: "Pi"
     ].compactMapValues { name in
         iconBundle.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
     }
 
     @ViewBuilder var icon: some View {
         if let image = Self.images[self] {
-            Image(nsImage: image).renderingMode(.original).resizable().scaledToFit().frame(width: 18, height: 18)
+            // The Pi badge is edge-to-edge. Codex already has about two points of inset at this size.
+            Image(nsImage: image).renderingMode(self == .pi ? .template : .original)
+                .resizable().scaledToFit().padding(self == .pi ? 2 : 0)
+                .frame(width: 18, height: 18).accessibilityHidden(true)
         } else {
             Image(systemName: "terminal")
         }
@@ -61,6 +64,7 @@ private extension LibraryFilter {
         switch self {
         case .codex: CodingProvider.codex.icon
         case .claudeCode: CodingProvider.claudeCode.icon
+        case .pi: CodingProvider.pi.icon
         case .activity: Image(systemName: "rectangle.stack")
         case .github: Image(systemName: "arrow.triangle.branch")
         case .coding: Image(systemName: "terminal")
@@ -106,7 +110,7 @@ struct SourceToggles: View {
                         Group {
                             switch source {
                             case .recordings: Text("Record calls and transcribe them locally.")
-                            case .coding: Text("Import Claude Code and Codex sessions.")
+                            case .coding: Text("Import Claude Code, Codex, and Pi sessions.")
                             case .github: Text("Import your issues, pull requests, and reviews.")
                             case .board: Text("Track follow-ups in columns and swimlanes.")
                             }

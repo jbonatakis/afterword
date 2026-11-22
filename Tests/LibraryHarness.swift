@@ -1459,6 +1459,30 @@ import Lookback
         }
         print("PASS coding search opens labeled Claude Code and Codex sessions with rendered Markdown")
         try await checkProviderToggles(project: project, coding: library.coding)
+
+        let piStore = root.appendingPathComponent("PiStore", isDirectory: true)
+        try FileManager.default.createDirectory(at: piStore, withIntermediateDirectories: true)
+        let piLog = #"""
+        {"type":"session","version":3,"id":"fixture","cwd":"/projects/fixture"}
+        {"type":"message","id":"prompt","parentId":null,"message":{"role":"user","content":"Pi sidebar fixture"}}
+        """#
+        try Data(piLog.utf8).write(to: piStore.appendingPathComponent("session.jsonl"))
+        library.search = ""
+        library.filter = .coding
+        let pausedRows = tree.numberOfRows
+        library.coding.refresh(.piDirectory(piStore))
+        await setImport(.pi, enabled: true, expectedRows: pausedRows + 1)
+        require(library.coding.piSessionsDirectory == piStore, "Pi store selection was lost")
+        // Claude is the only other enabled provider and precedes Pi in the outline.
+        tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        for _ in 0..<50 {
+            await pump(0.02)
+            if library.filter == .pi && library.visibleCoding.count == 1 { break }
+        }
+        require(library.filter == .pi && library.visibleCoding.map(\.providerName) == ["Pi"], "Pi sidebar filter did not show its session")
+        await setImport(.pi, enabled: false, expectedRows: pausedRows)
+        require(library.filter == .coding, "Pausing Pi left its sidebar filter selected")
+        print("PASS Pi folder selection, import, and provider sidebar navigation")
     }
 
     @MainActor static func checkSessionScrolling(session: CodingSession, directory: URL) async throws {

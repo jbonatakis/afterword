@@ -79,6 +79,75 @@ final class CodingIntegrationTests: XCTestCase {
         try (first + Data(("\n" + rows).utf8)).write(to: folder.appendingPathComponent("rollout-2026-01-02-\(id).jsonl"))
     }
 
+    func testPiStoreSelectionBranchCitationsAndPause() throws {
+        let store = try CodingArchive(directory: archived)
+        let folder = root.appendingPathComponent("PiStore", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("custom.jsonl")
+        let log = #"""
+        {"type":"session","version":3,"id":"named","cwd":"/projects/example"}
+        {"type":"message","id":"ask","parentId":null,"message":{"role":"user","content":"Describe the sundial."}}
+        {"type":"message","id":"draft","parentId":"ask","message":{"role":"assistant","content":[{"type":"text","text":"Try a pendulum."}]}}
+        {"type":"model_change","id":"meta","parentId":"ask"}
+        {"type":"message","id":"tool","parentId":"meta","message":{"role":"assistant","content":[{"type":"thinking","thinking":"PrivateThought"},{"type":"toolCall","id":"t","name":"inspect","arguments":{"q":"PrivateArg"}}]}}
+        {"type":"message","id":"result","parentId":"tool","message":{"role":"toolResult","toolCallId":"t","content":[{"type":"text","text":"PrivateOutput"}]}}
+        {"type":"compaction","id":"summary","parentId":"result","firstKeptEntryId":"summary","summary":"Measured the dial."}
+        {"type":"message","id":"reply","parentId":"summary","message":{"role":"assistant","content":[{"type":"text","text":"Use the gnomon."}]}}
+        {"type":"session_info","id":"name","parentId":"reply","name":"Dial"}
+        """#
+        try Data(log.utf8).write(to: file)
+        try Data(log.replacingOccurrences(of: project, with: "/projects/excluded").utf8)
+            .write(to: folder.appendingPathComponent("excluded.jsonl"))
+        try store.setPiSessionsDirectory(folder)
+        try store.addProject(project)
+        func refresh() throws -> [String] {
+            let result = try store.refresh(discoverProjects: true, provider: .pi)
+            XCTAssertTrue(result.issues.isEmpty)
+            return result.projects
+        }
+        XCTAssertTrue(try refresh().isEmpty)
+        try store.setEnabled(true, for: .pi)
+        XCTAssertEqual(try refresh(), [project, "/projects/excluded"])
+        let sessions = try store.sessions()
+        XCTAssertEqual(sessions.map(\.providerName), ["Pi"])
+        let id = try XCTUnwrap(sessions.first).id
+        let history = try store.history(id: id)
+        XCTAssertEqual(history.conversationIDs, ["ask", "tool", "summary", "reply"])
+        XCTAssertEqual(history.conversation[1].tools, ["inspect"])
+        XCTAssertEqual(history.conversation[1].parentID, "ask")
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(history), as: UTF8.self).contains("Private"))
+        XCTAssertEqual(try CodingArchive.sessionPage(in: archived, filter: .init(provider: .pi)).sessions.map(\.id), [id])
+        let revision = try store.revision
+        _ = try refresh()
+        XCTAssertEqual(try store.revision, revision)
+
+        try AgentAccessStore.save(.init(enabled: true, allowCodingSessions: true), directory: root)
+        let agent = AgentLibrary(directory: root)
+        for (term, view, anchor) in [("pendulum", "recorded", "draft"), ("gnomon", "conversation", "reply")] {
+            let result = try agent.call("search_activity", arguments: ["source": "coding", "query": term, "mode": "keyword"])
+            let hit = try XCTUnwrap((result["items"] as? [[String: Any]])?.first)
+            XCTAssertEqual(hit["source"] as? String, "pi")
+            XCTAssertEqual(hit["view"] as? String, view)
+            XCTAssertEqual(hit["message_id"] as? String, anchor)
+            let page = try agent.call("get_coding_session", arguments: ["session_id": id, "view": view, "message_id": anchor, "limit": 1])
+            XCTAssertTrue(((page["items"] as? [[String: Any]])?.first?["text"] as? String)?.contains(term) == true)
+        }
+        try store.setEnabled(true, for: .codex)
+        try store.setEnabled(true, for: .claudeCode)
+        try store.setEnabled(false, for: .pi)
+        let rename = #"{"type":"session_info","id":"rename","parentId":"name","name":"Renamed dial"}"#
+        try Data((log + "\n" + rename).utf8).write(to: file)
+        XCTAssertTrue(try refresh().isEmpty)
+        XCTAssertEqual(try store.sessions().first?.title, "Dial")
+        XCTAssertEqual(try store.settings().providers, [.claudeCode, .codex])
+        try store.setEnabled(true, for: .pi)
+        _ = try refresh()
+        XCTAssertEqual(try store.sessions().first?.title, "Renamed dial")
+        XCTAssertEqual(try store.history(id: id).conversationIDs, history.conversationIDs)
+        try store.setPiSessionsDirectory(nil)
+        XCTAssertNil(try store.settings().piSessionsDirectory)
+    }
+
     func testCodexRollbackSearchCitationsAndIndependentOptIn() throws {
         let rows = #"""
         {"type":"event_msg","payload":{"type":"task_started","turn_id":"initial"}}

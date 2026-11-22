@@ -44,15 +44,23 @@ public struct CodingHistory: Codable, Sendable {
 public enum CodingProvider: String, CaseIterable, Sendable {
     case claudeCode = "claude-code"
     case codex
+    case pi
 
     public var name: String {
         switch self {
         case .claudeCode: return "Claude Code"
         case .codex: return "Codex"
+        case .pi: return "Pi"
         }
     }
     // Keep the original Claude preference for existing archives.
-    fileprivate var enabledKey: String { self == .claudeCode ? "enabled" : "codexEnabled" }
+    fileprivate var enabledKey: String {
+        switch self {
+        case .claudeCode: return "enabled"
+        case .codex: return "codexEnabled"
+        case .pi: return "piEnabled"
+        }
+    }
 }
 
 public struct CodexScope: Hashable, Sendable {
@@ -85,6 +93,7 @@ public enum CodexAccountSelection: Hashable, Sendable {
 public struct CodingImportSettings: Sendable {
     public let providers: Set<CodingProvider>
     public let codexAccount: CodexAccountSelection
+    public let piSessionsDirectory: URL?
     public let projectSelection: CodingProjectSelection
 }
 
@@ -160,6 +169,7 @@ public final class CodingArchive {
             (scope.accountID.isEmpty ? .automatic : .account(scope))
         return try .init(providers: Set(CodingProvider.allCases.filter { values[$0.enabledKey] == "1" }),
                          codexAccount: account,
+                         piSessionsDirectory: values["piSessionsDirectory"].map { URL(fileURLWithPath: $0, isDirectory: true) },
                          projectSelection: projectSelection())
     }
 
@@ -170,6 +180,14 @@ public final class CodingArchive {
     }
     public func setEnabled(_ value: Bool, for provider: CodingProvider = .claudeCode) throws {
         try db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", [provider.enabledKey, value ? "1" : "0"])
+    }
+    public func setPiSessionsDirectory(_ directory: URL?) throws {
+        if let directory {
+            guard directory.isFileURL else { throw RecorderError.message("Choose a local Pi session folder.") }
+            try db.execute("INSERT OR REPLACE INTO settings VALUES ('piSessionsDirectory',?)", [directory.standardizedFileURL.path])
+        } else {
+            try db.execute("DELETE FROM settings WHERE key='piSessionsDirectory'")
+        }
     }
     public func setCodexAccount(_ selection: CodexAccountSelection) throws {
         try db.transaction {
@@ -237,7 +255,7 @@ public final class CodingArchive {
         var projects = Set<String>(), issues: [String] = []
         var accounts: [LocalCodexAccount] = []
         guard discoverProjects || options.projectSelection.hasIncludes else { return ([], [], []) }
-        let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true)]
+        let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true), PiReader(sessionsDirectory: options.piSessionsDirectory)]
         for var reader in sources {
             guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider),
                   requested == nil || requested == provider else { continue }
@@ -252,6 +270,8 @@ public final class CodingArchive {
                     reader = catalog.scoped(accountID: scope?.accountID, userID: scope?.userID)
                 } else if let claude = reader as? ClaudeCodeReader {
                     reader = try claude.catalogSnapshot()
+                } else if let pi = reader as? PiReader {
+                    reader = try pi.catalogSnapshot()
                 }
                 let infos = try reader.listSessions()
                 if discoverProjects { projects.formUnion(infos.compactMap(\.workingDirectory).filter { $0.hasPrefix("/") }) }
@@ -293,7 +313,8 @@ public final class CodingArchive {
                 try db.transaction {
                     let current = try settings()
                     guard current.providers.contains(provider), current.projectSelection.includes(project),
-                          provider != .codex || current.codexAccount == options.codexAccount else { return }
+                          provider != .codex || current.codexAccount == options.codexAccount,
+                          provider != .pi || current.piSessionsDirectory == options.piSessionsDirectory else { return }
                     let previous = try db.rows("SELECT info FROM sessions WHERE id=?", [id]).first?.first
                     guard previous == known[id] else { return } // A newer import won the race.
                     var history = imported
@@ -319,15 +340,19 @@ public final class CodingArchive {
     }
 
     private func scheduleTranscriptRepairs(for provider: CodingProvider) throws {
-        let flag = provider == .codex ? "codexBranchTranscriptV1" : "claudeTaskNotificationsV1"
+        let flag: String, candidates: String
+        switch provider {
+        case .codex:
+            flag = "codexBranchTranscriptV1"
+            candidates = "id IN (SELECT DISTINCT session FROM coding_text WHERE archived='1')"
+        case .claudeCode:
+            flag = "claudeTaskNotificationsV1"
+            candidates = "instr(history, '<task-notification>') > 0"
+        case .pi: return
+        }
         guard try db.rows("SELECT 1 FROM settings WHERE key=?", [flag]).isEmpty else { return }
         try db.transaction {
             // Replay only candidate sessions, through the scoped importer, when their source is available.
-            let candidates: String
-            switch provider {
-            case .codex: candidates = "id IN (SELECT DISTINCT session FROM coding_text WHERE archived='1')"
-            case .claudeCode: candidates = "instr(history, '<task-notification>') > 0"
-            }
             try db.execute("""
                 UPDATE sessions SET info=json_set(info,'$.transcriptVersion',0)
                 WHERE json_extract(info,'$.source')=? AND json_extract(info,'$.transcriptVersion') IS NULL

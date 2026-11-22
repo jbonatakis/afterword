@@ -61,6 +61,7 @@ private actor CodingSettingsWriter {
         switch change {
         case .enabled(let provider, let value): try archive.setEnabled(value, for: provider)
         case .account(let account): try archive.setCodexAccount(account)
+        case .piDirectory(let directory): try archive.setPiSessionsDirectory(directory)
         case .folders(let changes): try archive.applyProjectSelection(changes.selection, replacing: changes.original)
         }
         return try archive.settings()
@@ -70,6 +71,7 @@ private actor CodingSettingsWriter {
 @MainActor final class CodingCoordinator: ObservableObject {
     enum Change: Equatable, Sendable {
         case enabled(CodingProvider, Bool), account(CodexAccountSelection)
+        case piDirectory(URL?)
         case folders(ProjectFolderChanges)
 
         var folderSelection: CodingProjectSelection? {
@@ -83,6 +85,7 @@ private actor CodingSettingsWriter {
     @Published private(set) var providers: Set<CodingProvider> = []
     private var savedProviders: Set<CodingProvider> = []
     @Published private(set) var codexAccount = CodexAccountSelection.automatic
+    @Published private(set) var piSessionsDirectory: URL?
     @Published private(set) var accounts: [LocalCodexAccount] = []
     var enabled: Bool { !providers.isEmpty }
     @Published private var selection = CodingProjectSelection()
@@ -143,6 +146,7 @@ private actor CodingSettingsWriter {
         case .enabled(let provider, false): requestedProviders.remove(provider)
         case .enabled(let provider, true): requestedProviders.insert(provider); wantsDiscovery = true
         case .account: requestedProviders.insert(.codex); wantsDiscovery = true
+        case .piDirectory: requestedProviders.insert(.pi); wantsDiscovery = true
         case .folders, nil:
             requestedProviders.formUnion(CodingProvider.allCases)
             wantsDiscovery = wantsDiscovery || discover
@@ -178,6 +182,7 @@ private actor CodingSettingsWriter {
         if selection != rules { selection = rules }
         let account = settings?.codexAccount ?? .automatic
         if codexAccount != account { codexAccount = account }
+        if piSessionsDirectory != settings?.piSessionsDirectory { piSessionsDirectory = settings?.piSessionsDirectory }
     }
 
     private func savePendingChanges() {
@@ -314,6 +319,18 @@ struct CodingSettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                if coding.providers.contains(.pi) {
+                    HStack {
+                        Text("Pi session folder")
+                        Text(coding.piSessionsDirectory?.path ?? "Automatic").foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button("Choose…") { choosePiDirectory() }
+                        if coding.piSessionsDirectory != nil {
+                            Button("Use default") { coding.refresh(.piDirectory(nil)) }
+                        }
+                    }.controlSize(.small)
+                }
                 Text("Folder selections apply to every enabled source and include future projects beneath each checked folder. Afterword saves prompts, replies, and tool names locally. Pausing a source keeps its saved sessions available.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -361,6 +378,16 @@ struct CodingSettingsView: View {
     private func apply(_ changes: ProjectFolderChanges) {
         coding.refresh(.folders(changes))
         draft = nil
+    }
+
+    private func choosePiDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Pi session folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.showsHiddenFiles = true
+        panel.directoryURL = coding.piSessionsDirectory
+        if panel.runModal() == .OK, let url = panel.url { coding.refresh(.piDirectory(url)) }
     }
 }
 
