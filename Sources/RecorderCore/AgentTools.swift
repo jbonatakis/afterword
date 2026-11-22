@@ -12,15 +12,15 @@ enum AgentTools {
         "to": string("Exclusive recording date, ISO 8601 with timezone."),
         "participant": string("Case-insensitive partial active participant name."),
         "tag": string("Case-insensitive exact tag.")]
-    static func definition(_ name: String, _ description: String, _ properties: [String: Any], required: [String] = [], readOnly: Bool = true) -> [String: Any] {
+    static func definition(_ name: String, _ description: String, _ properties: [String: Any], required: [String] = [], readOnly: Bool = true, scoped: Bool = true, destructive: Bool = false) -> [String: Any] {
         var properties = properties
-        if !["get_coding_session", "get_github_item"].contains(name) {
+        if scoped && !["get_coding_session", "get_github_item"].contains(name) {
             properties["scope"] = ["type": "string", "enum": ["work", "personal"],
                 "description": "Defaults to work. Use personal only when the user explicitly requests personal calls. Personal requires a separate grant and searches recordings only. Use the same scope to read a result or save its summary."]
         }
         return ["name": name, "description": description,
          "inputSchema": ["type": "object", "properties": properties, "required": required, "additionalProperties": false],
-         "annotations": ["readOnlyHint": readOnly, "destructiveHint": false, "idempotentHint": readOnly, "openWorldHint": false]]
+         "annotations": ["readOnlyHint": readOnly, "destructiveHint": destructive, "idempotentHint": readOnly, "openWorldHint": false]]
     }
     static var definitions: [[String: Any]] {
         let searchOptions: [String: Any] = [
@@ -80,13 +80,23 @@ enum AgentTools {
         ]
     }
     static func validate(_ name: String, arguments: [String: Any]) throws {
-        guard let tool = definitions.first(where: { $0["name"] as? String == name }),
+        guard let tool = (BoardTools.names.contains(name) ? BoardTools.definitions : definitions).first(where: { $0["name"] as? String == name }),
               let schema = tool["inputSchema"] as? [String: Any], let properties = schema["properties"] as? [String: [String: Any]] else { throw AgentFailure("Unknown tool: \(name).") }
+        try validateObject(arguments, schema: schema, properties: properties)
+    }
+
+    private static func validateObject(_ arguments: [String: Any], schema: [String: Any], properties: [String: [String: Any]]) throws {
         for key in schema["required"] as? [String] ?? [] where arguments[key] == nil { throw AgentFailure("Missing argument: \(key).") }
         for (key, value) in arguments {
             guard let property = properties[key] else { throw AgentFailure("Unknown argument: \(key).") }
             let type = property["type"] as? String
-            if type == "string" {
+            if type == "array" {
+                guard let items = value as? [[String: Any]], items.count <= (property["maxItems"] as? Int ?? 0),
+                      let item = property["items"] as? [String: Any], let fields = item["properties"] as? [String: [String: Any]] else {
+                    throw AgentFailure("Invalid list for \(key).")
+                }
+                for entry in items { try validateObject(entry, schema: item, properties: fields) }
+            } else if type == "string" {
                 let maximum = property["maxLength"] as? Int ?? 8192
                 guard let string = value as? String, string.count <= maximum else { throw AgentFailure("\(key) must be a string of at most \(maximum) characters.") }
                 if let choices = property["enum"] as? [String], !choices.contains(string) { throw AgentFailure("Invalid value for \(key).") }
@@ -112,6 +122,14 @@ public final class AgentRPCServer {
     private let library: AgentLibrary
     private var initialized = false
     private var ready = false
+    private var listedBoard: Bool?
+    public func toolsChangedNotification() -> Data? {
+        guard ready, let previous = listedBoard else { return nil }
+        let enabled = library.boardAvailable
+        guard previous != enabled else { return nil }
+        listedBoard = enabled
+        return try? AgentJSON.data(["jsonrpc": "2.0", "method": "notifications/tools/list_changed"])
+    }
     public init(directory: URL = AgentAccessStore.directory) { library = AgentLibrary(directory: directory) }
     public func handle(_ data: Data) -> Data? {
         func encode(_ value: [String: Any]) -> Data { (try? AgentJSON.data(value)) ?? Data() }
@@ -141,8 +159,9 @@ public final class AgentRPCServer {
             // existing connection intact. Access is still checked on every call.
             initialized = true
             ready = false
+            listedBoard = nil
             return result(["protocolVersion": requested == "2025-06-18" ? requested : "2025-11-25",
-                           "capabilities": ["tools": ["listChanged": false]],
+                           "capabilities": ["tools": ["listChanged": true]],
                            "serverInfo": ["name": "afterword", "title": "Afterword", "version": "1.4.0"]])
         }
         guard method == "tools/list" || method == "tools/call" else { return error(id, -32601, "Method not found") }
@@ -150,10 +169,12 @@ public final class AgentRPCServer {
         switch method {
         case "tools/list":
             guard params["cursor"] == nil else { return error(id, -32602, "No tool-list cursor is supported") }
-            return result(["tools": AgentTools.definitions])
+            let enabled = library.boardAvailable
+            listedBoard = enabled
+            return result(["tools": AgentTools.definitions + (enabled ? BoardTools.definitions : [])])
         case "tools/call":
             guard let name = params["name"] as? String, params["arguments"] == nil || params["arguments"] is [String: Any] else { return error(id, -32602, "Invalid tool call") }
-            guard AgentTools.definitions.contains(where: { $0["name"] as? String == name }) else { return error(id, -32602, "Unknown tool") }
+            guard BoardTools.names.contains(name) ? library.boardAvailable : AgentTools.definitions.contains(where: { $0["name"] as? String == name }) else { return error(id, -32602, "Unknown tool") }
             do {
                 let value = try library.call(name, arguments: params["arguments"] as? [String: Any] ?? [:])
                 let text = String(decoding: try AgentJSON.data(value), as: UTF8.self)

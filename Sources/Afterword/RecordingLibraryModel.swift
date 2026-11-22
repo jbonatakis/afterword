@@ -46,6 +46,8 @@ enum GitHubPeriod: String, CaseIterable {
     @Published private(set) var sourceError: String?
     @Published var settingsTab = "sources"
     private let sourceDirectory: URL
+    let boardWindows = BoardWindows()
+    var boardStore: TaskBoardStore { TaskBoardStore(stateDirectory: sourceDirectory) }
     private var peopleSubscription: AnyCancellable?
     let github: GitHubCoordinator
     private var githubHistory: [GitHubHit] = [] {
@@ -114,16 +116,17 @@ enum GitHubPeriod: String, CaseIterable {
         !githubRepository.isEmpty || !githubType.isEmpty || !githubAction.isEmpty || githubPeriod != .any
     }
     @Published var sidebarVisible = true
-    @Published private(set) var calendarPage: LibraryCalendarPage?
+    @Published private(set) var page: LibraryPage?
     var destination: LibraryDestination {
-        get { calendarPage.map(LibraryDestination.calendar) ?? .activity(filter) }
+        get { page.map(LibraryDestination.page) ?? .activity(filter) }
         set {
             switch newValue {
             case .activity(let next):
-                if calendarPage != nil { calendarPage = nil }
+                guard !sources.isDisjoint(with: ActivitySource.feedSources) else { return }
+                if page != nil { page = nil }
                 if next != filter { filter = next }
-            case .calendar(let page):
-                if sources.contains(.recordings), calendarPage != page { calendarPage = page }
+            case .page(let next):
+                if sources.contains(next.source), page != next { page = next }
             }
         }
     }
@@ -147,6 +150,8 @@ enum GitHubPeriod: String, CaseIterable {
     private var matchedRecordings: [LibraryRecording] = []
     private var pendingInitialSelection: String?
     private var generation = UUID()
+    var recordingScanID: UUID { generation }
+    var peopleURL: URL { recorder?.peopleURL ?? PeopleDirectory.fileURL }
     private var subscriptions: Set<AnyCancellable> = []
     private let defaults: UserDefaults
     private lazy var summaryMonitor = LibrarySummaryMonitor { [weak self] in self?.scheduleLibraryRefresh() }
@@ -178,7 +183,7 @@ enum GitHubPeriod: String, CaseIterable {
                 // Previous releases remembered the recording destination on every library launch.
                 let existing = defaults.object(forKey: "libraryFolders") != nil || defaults.object(forKey: "destination") != nil
                     || CodingArchive.exists(in: archiveDirectory) || GitHubArchive.exists(in: github.directory)
-                initial = existing ? Set(ActivitySource.allCases) : []
+                initial = existing ? ActivitySource.feedSources : []
             }
         } catch {
             initial = []
@@ -221,6 +226,10 @@ enum GitHubPeriod: String, CaseIterable {
         recorder.$state.combineLatest(recorder.transcription.$busy).sink { [weak self] state, transcribing in
             self?.embeddings.setBusy([.preparing, .recording, .previewing, .finalizing].contains(state) || transcribing)
         }.store(in: &subscriptions)
+        if initial.contains(.board) {
+            // Upgrade an existing board before an older helper can serve it while the app is running.
+            do { try boardStore.prepareForSharing() } catch { sourceError = error.localizedDescription }
+        }
         applySources(initial)
         if !initial.isEmpty {
             pendingInitialSelection = savedSelection
@@ -242,13 +251,23 @@ enum GitHubPeriod: String, CaseIterable {
             sourceError = nil
             if next.contains(.recordings), let recordingDestination { recorder.destination = recordingDestination }
             applySources(next)
-        } catch { sourceError = error.localizedDescription }
+        } catch {
+            if let saved = try? ActivitySourceStore.load(directory: sourceDirectory), saved != sources { applySources(saved) }
+            sourceError = error.localizedDescription
+        }
     }
 
     private func applySources(_ next: Set<ActivitySource>) {
         guard let recorder else { return }
-        pendingInitialSelection = nil
         let previous = sources
+        if previous.contains(.board), !next.contains(.board) { boardWindows.closeAll() }
+        if next != previous, next.intersection(ActivitySource.feedSources) == previous.intersection(ActivitySource.feedSources) {
+            sources = next
+            if next == [.board] { page = .board }
+            else if !next.contains(.board), page == .board { page = nil }
+            return
+        }
+        pendingInitialSelection = nil
         browseOrder = nil
         scan?.cancel(); generation = UUID(); refreshing = false
         searchTask?.cancel(); searchGeneration = UUID(); searching = false
@@ -256,7 +275,8 @@ enum GitHubPeriod: String, CaseIterable {
         searchPresentation.status = nil; polledSemanticStatus = nil
         let records = next.contains(.recordings)
         recorder.setSourceEnabled(records)
-        if !records && calendarPage != nil { calendarPage = nil }
+        if let selected = page, !next.contains(selected.source) { page = nil }
+        if next == [.board] { page = .board }
         sources = next
         if records && !previous.contains(.recordings) {
             roots = Self.savedRecordingFolders(in: defaults)
@@ -280,11 +300,12 @@ enum GitHubPeriod: String, CaseIterable {
         } else {
             github.stop(); githubHistory = []; matchedGitHub = []
         }
-        if next.count == 1, let only = next.first, filter.source != only { filter = only.libraryFilter }
+        let activitySources = next.intersection(ActivitySource.feedSources)
+        if activitySources.count == 1, let only = activitySources.first?.libraryFilter, filter.source != only.source { filter = only }
         else if let current = filter.source, !next.contains(current) { filter = .activity }
         issues = []
         applyFilter()
-        if next.isEmpty {
+        if activitySources.isEmpty {
             semanticTimer?.invalidate(); semanticTimer = nil
             if let scan {
                 let id = generation
@@ -332,6 +353,7 @@ enum GitHubPeriod: String, CaseIterable {
     }
     func retrySemanticSearch() { pollSemanticSearch(retry: true) }
     func shutdown() {
+        boardWindows.closeAll()
         github.stop(); coding.stop()
         stopped = true; summaryMonitor.stop(); pendingRefresh?.cancel()
         needsRefresh = false; scan?.cancel(); generation = UUID()
@@ -362,13 +384,13 @@ enum GitHubPeriod: String, CaseIterable {
         if !refreshing { refresh() }
     }
     @discardableResult func refresh() -> Task<Void, Never>? {
-        guard !stopped, !sources.isEmpty, !managing else { return nil }
+        guard !stopped, !sources.isDisjoint(with: ActivitySource.feedSources), !managing else { return nil }
         summaryMonitor.watch(roots)
         needsRefresh = false; pendingRefresh?.cancel(); pendingRefresh = nil
         let previousScan = scan
         previousScan?.cancel()
         let id = UUID(); generation = id; refreshing = true
-        let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
+        let roots = roots, embeddingDirectory = embeddings.directory, peopleURL = self.peopleURL
         let callScope = filter.callScope
         let sessions = sources.contains(.coding) && callScope == .work ? coding.sessions : []
         let pageGeneration = coding.pageGeneration
@@ -718,7 +740,7 @@ enum GitHubPeriod: String, CaseIterable {
         do {
             try beginManagement()
             let snapshot = draft.recording, text = draft.markdown
-            let peopleURL = recorder?.peopleURL ?? PeopleDirectory.fileURL
+            let peopleURL = self.peopleURL
             _ = try await Task.detached(priority: .userInitiated) {
                 try CallSummaryStore.save(text, for: snapshot, source: snapshot.summary == nil ? snapshot.latestTranscript : nil, peopleURL: peopleURL)
             }.value
@@ -850,18 +872,33 @@ enum LibraryActivity: Identifiable {
 }
 
 extension ActivitySource {
-    var libraryFilter: LibraryFilter {
+    var libraryFilter: LibraryFilter? {
         switch self {
         case .recordings: return .recordings
         case .coding: return .coding
         case .github: return .github
+        case .board: return nil
         }
     }
 }
 
 enum LibraryDestination: Hashable {
     case activity(LibraryFilter)
+    case page(LibraryPage)
+
+    static func calendar(_ page: LibraryCalendarPage) -> Self { .page(.calendar(page)) }
+}
+
+enum LibraryPage: Hashable {
     case calendar(LibraryCalendarPage)
+    case board
+
+    var source: ActivitySource {
+        switch self { case .calendar: return .recordings; case .board: return .board }
+    }
+    var title: String {
+        switch self { case .calendar(let page): return page.rawValue; case .board: return "Task board" }
+    }
 }
 
 enum LibraryCalendarPage: String, CaseIterable {
@@ -898,7 +935,7 @@ enum LibraryFilter: String, Identifiable {
 
     func children(sources: Set<ActivitySource>, providers: Set<CodingProvider>) -> [Self] {
         switch self {
-        case .activity: return [ActivitySource.coding, .recordings, .github].filter(sources.contains).map(\.libraryFilter)
+        case .activity: return [ActivitySource.coding, .recordings, .github].filter(sources.contains).compactMap(\.libraryFilter)
         case .coding: return [Self.codex, .claudeCode].filter { $0.codingProvider.map(providers.contains) == true }
         case .recordings: return [.transcribed, .untranscribed, .needsSummary, .personal]
         default: return []

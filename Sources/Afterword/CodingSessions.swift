@@ -97,7 +97,7 @@ private actor CodingSettingsWriter {
     var hasMore: Bool { cursor != nil }
     private(set) var pageGeneration = UUID()
     private var pageRevision: String?
-    private var importRevision: String?
+    private(set) var importRevision: String?
     private var browseFilter = CodingBrowseFilter()
     private var pageTask: Task<Void, Never>?
     var pageChanged: (() -> Void)?
@@ -675,6 +675,8 @@ struct CodingSessionDetail: View {
     let session: CodingSession
     let directory: URL
     let hit: CodingHit?
+    var citedHistory: CodingHistory? = nil
+    var citedMessageID: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsJumpToTop = false
     @State private var timeline: CodingConversationTimeline?
@@ -711,13 +713,23 @@ struct CodingSessionDetail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: session) {
-            let id = session.id, directory = directory
+            let id = session.id, directory = directory, history = citedHistory
             let result = await Task.detached(priority: .userInitiated) {
-                Result { CodingConversationTimeline(try CodingArchive.history(in: directory, id: id)) }
+                Result { CodingConversationTimeline(try history ?? CodingArchive.history(in: directory, id: id)) }
             }.value
             guard !Task.isCancelled else { return }
             switch result {
-            case .success(let value): timeline = value; issue = nil
+            case .success(let value):
+                if let citedMessageID {
+                    guard value.recorded.contains(where: { $0.contains(citedMessageID) }) else {
+                        timeline = nil
+                        issue = "The cited message is no longer in this session."
+                        return
+                    }
+                    recorded = !value.conversation.contains { $0.contains(citedMessageID) }
+                }
+                timeline = value
+                issue = nil
             case .failure(let error): timeline = nil; issue = error.localizedDescription
             }
         }
@@ -727,7 +739,7 @@ struct CodingSessionDetail: View {
     }
 
     private func transcript(_ rows: [CodingConversationRow], proxy: ScrollViewProxy) -> some View {
-        let anchor = hit?.messageID.flatMap { id in rows.first { $0.contains(id) }?.id }
+        let anchor = (citedMessageID ?? hit?.messageID).flatMap { id in rows.first { $0.contains(id) }?.id }
         return GeometryReader { geometry in
             let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
             ZStack(alignment: .bottomTrailing) {
@@ -799,7 +811,7 @@ struct CodingSessionDetail: View {
                     .frame(maxWidth: width, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
-                                    maxWidth: width, matchedID: row.id == anchor ? hit?.messageID : nil) { questionID in
+                                    maxWidth: width, matchedID: row.id == anchor ? (citedMessageID ?? hit?.messageID) : nil) { questionID in
                     proxy.scrollTo(questionID, anchor: .top)
                 }
             }

@@ -196,35 +196,48 @@ struct GitHubItemView: View {
     let hit: GitHubHit
     let directory: URL
     let revision: String
+    var citedPassageID: String? = nil
     @State private var actions: [GitHubPassage] = []
     @State private var error: String?
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                Text(hit.item.title).font(.title2.bold()).textSelection(.enabled)
-                Text(
-                    "\(hit.repository)#\(hit.item.number) · \(hit.item.type == "pr" ? "Pull request" : "Issue") opened by \(hit.item.author) · \(hit.item.state.capitalized)"
-                )
-                if let url = URL(string: hit.item.url) { Link("Open on GitHub", destination: url) }
-                if let date = hit.verified { Text("Access checked \(date.formatted())").font(.caption).foregroundStyle(.secondary) }
-                if let error { Text(error) }
-                ForEach(actions) { action in
-                    Divider()
-                    HStack {
-                        Text(
-                            [action.kind.label, action.verdict?.replacingOccurrences(of: "_", with: " ").capitalized].compactMap { $0 }
-                                .joined(separator: " · ")
-                        ).bold()
-                        Spacer()
-                        if let url = URL(string: action.url) { Link(action.date.formatted(), destination: url) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    Text(hit.item.title).font(.title2.bold()).textSelection(.enabled)
+                    Text(
+                        "\(hit.repository)#\(hit.item.number) · \(hit.item.type == "pr" ? "Pull request" : "Issue") opened by \(hit.item.author) · \(hit.item.state.capitalized)"
+                    )
+                    if let url = URL(string: hit.item.url) { Link("Open on GitHub", destination: url) }
+                    if let date = hit.verified { Text("Access checked \(date.formatted())").font(.caption).foregroundStyle(.secondary) }
+                    if let error { Text(error) }
+                    ForEach(actions) { action in
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text(
+                                    [action.kind.label, action.verdict?.replacingOccurrences(of: "_", with: " ").capitalized].compactMap { $0 }
+                                        .joined(separator: " · ")
+                                ).bold()
+                                Spacer()
+                                if let url = URL(string: action.url) { Link(action.date.formatted(), destination: url) }
+                            }
+                            if let path = action.path {
+                                Text(path + (action.line.map { ":\($0)" } ?? "")).font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                            if !action.text.isEmpty { MarkdownContent(markdown: action.text) }
+                            if let date = action.edited { Text("Edited \(date.formatted())").font(.caption).foregroundStyle(.secondary) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(action.id == citedPassageID ? Color.accentColor.opacity(0.12) : .clear)
+                        .id(action.id)
                     }
-                    if let path = action.path {
-                        Text(path + (action.line.map { ":\($0)" } ?? "")).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                    if !action.text.isEmpty { MarkdownContent(markdown: action.text) }
-                    if let date = action.edited { Text("Edited \(date.formatted())").font(.caption).foregroundStyle(.secondary) }
-                }
-            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .task(id: citedPassageID.flatMap { id in actions.contains { $0.id == id } ? id : nil }) {
+                guard let citedPassageID, actions.contains(where: { $0.id == citedPassageID }) else { return }
+                await Task.yield()
+                if !Task.isCancelled { proxy.scrollTo(citedPassageID, anchor: .top) }
+            }
         }.task(id: revision + hit.id) {
             let id = hit.id
             let directory = directory
@@ -234,7 +247,9 @@ struct GitHubItemView: View {
                 }.value
                 if !Task.isCancelled {
                     actions = next
-                    error = nil
+                    if let citedPassageID, !next.contains(where: { $0.id == citedPassageID }) {
+                        error = "The cited contribution is no longer available."
+                    } else { error = nil }
                 }
             } catch {
                 if !Task.isCancelled {

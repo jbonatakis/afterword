@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import AVFoundation
+import Vision
 import Combine
 @testable import RecorderCore
 import Lookback
@@ -166,7 +167,7 @@ import Lookback
         let library = RecordingLibraryModel(recorder: recorder, embeddingDirectory: root.appendingPathComponent("Embeddings"))
         defer { library.shutdown() }
         for _ in 0..<50 { if !library.refreshing { break }; await pump(0.05) }
-        require(library.sources == Set(ActivitySource.allCases), "Upgrading an existing recording library hid a source")
+        require(library.sources == ActivitySource.feedSources, "Upgrading an existing recording library hid a source")
         require(library.recordings.count == 1 && library.selectedRecording?.id == recording.id, "Library failed to load fixture")
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
@@ -595,6 +596,240 @@ import Lookback
         }
         await pump()
         require(sidebar(host) == nil, "First launch already displayed a library sidebar")
+        // Keep the first two columns exposed for clicks with the ticket overlay open.
+        window.setContentSize(NSSize(width: 1440, height: 740))
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderBack(nil)
+        window.displayIfNeeded()
+        library.setSources([.board])
+        await pump()
+        require(sidebar(host)?.numberOfRows == 1 && library.destination == .page(.board), "Board-only setup did not open its sole sidebar destination")
+        require(!recorder.sourceEnabled && library.refresh() == nil, "Board-only setup started activity work")
+        var grants = AgentAccessConfiguration(enabled: true)
+        grants.allowBoardManagement = true
+        let state = library.boardStore.stateDirectory
+        try AgentAccessStore.save(grants, directory: state)
+        let agent = AgentLibrary(directory: state)
+        func boardRevision() throws -> String {
+            try agent.call("get_board", arguments: [:])["revision"] as! String
+        }
+        let localTicket = BoardTicket(title: "Plan launch review", notes: "Read the release checklist.", columnID: "todo",
+                                      references: [.init(source: .coding, itemID: "fixture", label: "Build session")])
+        _ = try library.boardStore.save(localTicket, original: nil)
+        let sharedTicket = try agent.call("get_board_ticket", arguments: ["ticket_id": localTicket.id])
+        let sharedRefs = (sharedTicket["ticket"] as? [String: Any])?["references"] as? [[String: Any]]
+        require(sharedRefs?.isEmpty == true, "The board-only agent received a local citation")
+        let agendaNotes = "Second ticket body.\n\n## Meeting decisions\n\n" + (1...36).map { "Agenda section " + String($0) + "\nReview the open questions and record next steps." }.joined(separator: "\n\n")
+        _ = try agent.call("create_board_ticket", arguments: ["title": "Prepare agenda", "notes": agendaNotes, "column_id": "in-progress", "expected_revision": try boardRevision()])
+        // Offscreen SwiftUI windows expose only native containers through AX. Locate
+        // visible labels and send clicks to this fixture's own window.
+        func labels(in view: NSView, waitingFor target: String, or alternate: String? = nil) async throws -> [String: NSPoint] {
+            var result: [String: NSPoint] = [:]
+            for _ in 0..<12 {
+                await pump(0.1)
+                view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                guard let image = bitmap.cgImage else { continue }
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .fast
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                result.removeAll()
+                for observation in request.results ?? [] {
+                    guard let text = observation.topCandidates(1).first?.string else { continue }
+                    let box = observation.boundingBox
+                    let point = NSPoint(x: box.midX * view.bounds.width, y: (view.isFlipped ? 1 - box.midY : box.midY) * view.bounds.height)
+                    let label = text.filter(\.isLetter).lowercased()
+                    result[label] = view.convert(point, to: nil)
+                    // Vision can read a button's SF Symbol as a leading letter.
+                    for key in ["openinseparatewindow", "backtoticket", "buildsession"] where label.hasSuffix(key) {
+                        result[key] = view.convert(point, to: nil)
+                    }
+                }
+                if result[target] != nil || alternate.flatMap({ result[$0] }) != nil { break }
+            }
+            require(result[target] != nil || alternate.flatMap({ result[$0] }) != nil, "Missing \(target) in rendered labels \(result.keys.sorted())")
+            return result
+        }
+        func click(_ point: NSPoint, in window: NSWindow) {
+            if let content = window.contentView {
+                var hit = content.hitTest(content.superview?.convert(point, from: nil) ?? point)
+                while let view = hit {
+                    if let button = view as? NSButton { button.performClick(nil); return }
+                    hit = view.superview
+                }
+            }
+            func event(_ type: NSEvent.EventType) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            NSApp.postEvent(event(.leftMouseUp), atStart: true)
+            window.sendEvent(event(.leftMouseDown))
+        }
+        func notesEditor(in view: NSView) -> NSTextView? {
+            if let text = view as? NSTextView, text.isEditable && !text.isFieldEditor { return text }
+            return view.subviews.lazy.compactMap(notesEditor).first
+        }
+        let boardLabels = try await labels(in: host, waitingFor: "planlaunchreview")
+        require(boardLabels["newticket"] != nil && boardLabels["addticket"] == nil, "Ticket creation should appear only in the board header")
+        guard let outline = sidebar(host) else { throw RecorderError.message("Missing board sidebar") }
+        let row = outline.rect(ofRow: 0)
+        let location = outline.convert(NSPoint(x: row.midX, y: row.midY), to: nil)
+        let rightClick = NSEvent.mouseEvent(with: .rightMouseDown, location: location, modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                           context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        guard let menu = outline.menu(for: rightClick), let item = menu.item(withTitle: "Open in New Window") else {
+            throw RecorderError.message("The task board sidebar is missing its separate-window action")
+        }
+        menu.performActionForItem(at: menu.index(of: item))
+        await pump()
+        guard let boardWindow = NSApp.windows.first(where: { $0 !== window && $0.title == "Task board" && $0.isVisible }),
+              let detachedBoard = boardWindow.contentView else { throw RecorderError.message("Task board window did not open") }
+        boardWindow.setContentSize(NSSize(width: 1050, height: 700))
+        boardWindow.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        let closedGrid = try await labels(in: detachedBoard, waitingFor: "inprogress")
+        menu.performActionForItem(at: menu.index(of: item))
+        require(NSApp.windows.filter { $0 !== window && $0.title == "Task board" && $0.isVisible }.count == 1,
+                "The sidebar action opened a duplicate board window")
+        func searchField(in view: NSView) -> NSSearchField? {
+            if let field = view as? NSSearchField, field.placeholderString == "Search tickets" { return field }
+            return view.subviews.lazy.compactMap(searchField).first
+        }
+        guard let detachedSearch = searchField(in: detachedBoard), let mainSearch = searchField(in: host) else {
+            throw RecorderError.message("Both board windows need an independent search field")
+        }
+        func search(_ text: String) {
+            detachedSearch.stringValue = text
+            detachedSearch.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: detachedSearch))
+        }
+        search("release checklist")
+        let matches = try await labels(in: detachedBoard, waitingFor: "match")
+        require(matches["planlaunchreview"] != nil && matches["prepareagenda"] == nil && mainSearch.stringValue.isEmpty,
+                "Board search must rank matching tickets in its own window")
+        func resultsTable(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView, table.numberOfRows == 1 { return table }
+            return view.subviews.lazy.compactMap(resultsTable).first
+        }
+        guard let table = resultsTable(in: detachedBoard) else { throw RecorderError.message("Missing ranked ticket list") }
+        let listWidth = table.bounds.width
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        _ = try await labels(in: detachedBoard, waitingFor: "openinseparatewindow")
+        require(abs(table.bounds.width - listWidth) < 1, "Opening a ticket resized the search results")
+        func divider(in view: NSView) -> NSView? {
+            if view.accessibilityRole() == .splitter && view.accessibilityLabel() == "Ticket pane width" { return view }
+            return view.subviews.lazy.compactMap(divider).first
+        }
+        func paneWidth() throws -> CGFloat {
+            guard let handle = divider(in: detachedBoard) else { throw RecorderError.message("Missing ticket pane divider") }
+            return detachedBoard.bounds.maxX - handle.convert(handle.bounds, to: detachedBoard).minX
+        }
+        let shortWidth = try paneWidth()
+        require(abs(shortWidth - 420) < 1, "The short ticket opened at width \(shortWidth)")
+        search("no ticket with this phrase")
+        // The overlay may cover the empty-state text; the match count stays in the board header.
+        _ = try await labels(in: detachedBoard, waitingFor: "matches", or: "omatches")
+        require(resultsTable(in: detachedBoard) == nil, "The previous search row remained visible for an empty result")
+        search("")
+        let openGrid = try await labels(in: detachedBoard, waitingFor: "inprogress")
+        require(abs(openGrid["inprogress"]!.x - closedGrid["inprogress"]!.x) < 2, "The ticket pane compressed the board columns")
+        let agendaPoint = openGrid["prepareagenda"]!
+        // The right end of the middle column's card is covered by the short ticket reader.
+        if let edge = divider(in: detachedBoard) {
+            let covered = NSPoint(x: edge.convert(edge.bounds, to: nil).maxX + 8, y: agendaPoint.y)
+            click(covered, in: boardWindow)
+            _ = try await labels(in: detachedBoard, waitingFor: "referencedetails")
+        }
+        click(agendaPoint, in: boardWindow)
+        let longReader = try await labels(in: detachedBoard, waitingFor: "meetingdecisions")
+        let longWidth = try paneWidth()
+        require(abs(shortWidth - longWidth) < 1, "Long notes changed the width of the reader")
+        guard let handle = divider(in: detachedBoard) else { throw RecorderError.message("Missing resize handle") }
+        let grab = handle.convert(NSPoint(x: handle.bounds.midX, y: handle.bounds.midY), to: nil)
+        func dragEvent(_ type: NSEvent.EventType, dx: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: NSPoint(x: grab.x + dx, y: grab.y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: boardWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        handle.mouseDown(with: dragEvent(.leftMouseDown, dx: 0))
+        handle.mouseDragged(with: dragEvent(.leftMouseDragged, dx: -64))
+        handle.mouseUp(with: dragEvent(.leftMouseUp, dx: -64))
+        await pump()
+        let resized = try paneWidth()
+        require(abs(resized - longWidth - 64) < 1, "Dragging the edge did not resize the ticket pane")
+        click(longReader["planlaunchreview"]!, in: boardWindow)
+        _ = try await labels(in: detachedBoard, waitingFor: "referencedetails")
+        let switchedWidth = try paneWidth()
+        require(abs(switchedWidth - resized) < 1, "Switching tickets discarded the adjusted pane width")
+        click(boardLabels["planlaunchreview"]!, in: window)
+        await pump()
+        require(window.attachedSheet == nil, "Reading a ticket blocked the board")
+        let reader = try await labels(in: host, waitingFor: "openinseparatewindow")
+        require(reader["readthereleasechecklist"] != nil && reader["save"] == nil, "The ticket should open for reading")
+        click(reader["openinseparatewindow"]!, in: window)
+        await pump()
+        guard let detached = NSApp.windows.first(where: { $0.title == "Plan launch review" }), let detachedContent = detached.contentView else {
+            throw RecorderError.message("The separate ticket window did not open")
+        }
+        _ = try await labels(in: detachedContent, waitingFor: "readthereleasechecklist")
+        click(reader["openinseparatewindow"]!, in: window)
+        await pump()
+        require(NSApp.windows.filter { $0.title == "Plan launch review" }.count == 1, "Opening this ticket created duplicate windows")
+        guard let otherCard = reader["prepareagenda"] else { throw RecorderError.message("The second fixture card is outside the exposed board") }
+        click(reader["edit"]!, in: window)
+        let paneEditor = try await labels(in: host, waitingFor: "save")
+        guard let paneNotes = notesEditor(in: host), let paneEdge = divider(in: host) else {
+            throw RecorderError.message("The ticket pane did not show editable notes")
+        }
+        require(window.attachedSheet == nil && paneEditor["save"]!.x > paneEdge.convert(paneEdge.bounds, to: nil).maxX,
+                "Edit should open inside the ticket pane")
+        paneNotes.selectAll(nil)
+        paneNotes.insertText("Unfinished notes.", replacementRange: paneNotes.selectedRange())
+        click(otherCard, in: window)
+        _ = try await labels(in: host, waitingFor: "meetingdecisions")
+        click(boardLabels["planlaunchreview"]!, in: window)
+        let resumed = try await labels(in: host, waitingFor: "cancel")
+        require(notesEditor(in: host)?.string == "Unfinished notes.", "Switching cards lost the inline draft")
+        click(resumed["cancel"]!, in: window)
+        _ = try await labels(in: host, waitingFor: "openinseparatewindow")
+        let unchanged = try library.boardStore.read()
+        require(unchanged.revision == 2 && unchanged.tickets.first?.notes == "Read the release checklist.", "Cancel wrote the draft to the board")
+        let detachedReader = try await labels(in: detachedContent, waitingFor: "buildsession")
+        click(detachedReader["buildsession"]!, in: detached)
+        let citation = try await labels(in: detachedContent, waitingFor: "sourceunavailable")
+        click(citation["backtoticket"]!, in: detached)
+        let returned = try await labels(in: detachedContent, waitingFor: "edit")
+        click(returned["edit"]!, in: detached)
+        let editor = try await labels(in: detachedContent, waitingFor: "save")
+        require(detached.attachedSheet == nil, "Editing should stay in the ticket window")
+        guard let notes = notesEditor(in: detachedContent) else { throw RecorderError.message("Ticket notes editor is missing") }
+        notes.selectAll(nil)
+        notes.insertText("My revised notes.", replacementRange: notes.selectedRange())
+        _ = try agent.call("update_board_ticket", arguments: ["ticket_id": localTicket.id, "notes": "Agent revision.", "expected_revision": try boardRevision()])
+        click(editor["save"]!, in: detached)
+        let comparison = try await labels(in: detachedContent, waitingFor: "keepmyedit")
+        require(comparison["agentrevision"] != nil && comparison["myrevisednotes"] != nil, "The comparison lost one version of the notes")
+        click(comparison["keepmyedit"]!, in: detached)
+        let resolved = try await labels(in: detachedContent, waitingFor: "editticket")
+        require(resolved["myrevisednotes"] != nil, "Keeping the draft lost the edited notes")
+        click(resolved["save"]!, in: detached)
+        let finished = try await labels(in: detachedContent, waitingFor: "edit")
+        let saved = try library.boardStore.read()
+        require(saved.revision == 4 && saved.tickets.first?.notes == "My revised notes.",
+                "Saving the chosen notes left revision \(saved.revision) with \(String(describing: saved.tickets.first?.notes))")
+        require(finished["myrevisednotes"] != nil && finished["save"] == nil, "Saving did not return to the updated ticket")
+        library.setSources([.board, .github])
+        library.destination = .activity(.github)
+        _ = try agent.call("update_board_ticket", arguments: ["ticket_id": localTicket.id, "notes": "Updated by agent.", "expected_revision": try boardRevision()])
+        _ = try await labels(in: detachedContent, waitingFor: "updatedbyagent")
+        library.destination = .page(.board)
+        library.setSources([.github])
+        require(!detached.isVisible && !boardWindow.isVisible, "Disabling the board left a board or ticket window open")
+        print("PASS task board sidebar window, independent ticket search, live ticket updates, conflict resolution and source gating")
+        require(library.destination == .activity(.github), "Disabling the board left its destination selected")
+        library.destination = .page(.board)
+        require(library.destination == .activity(.github), "A hidden board could still be opened")
+        library.setSources([.board])
+        let restored = try library.boardStore.read()
+        require(restored.tickets.first?.title == "Plan launch review", "Re-enabling the board lost its tickets")
         for source in [ActivitySource.github, .coding] {
             library.setSources([source])
             await library.refresh()?.value
@@ -706,7 +941,8 @@ import Lookback
         library.search = "#42"
         await library.updateSearch(debounce: false)?.value
         guard let hit = library.selectedGitHub else { throw RecorderError.message("Scoped item number did not find the pull request") }
-        let view = NSHostingView(rootView: GitHubItemView(hit: hit, directory: library.github.directory, revision: "fixture"))
+        let citation = BoardReference(source: .github, itemID: hit.id, anchor: passage.id, label: "Review comment")
+        let view = NSHostingView(rootView: BoardCitationView(reference: citation, library: library))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 680, height: 650),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view
@@ -727,6 +963,13 @@ import Lookback
         require(displayed.contains("Garden watering schedule") && displayed.contains("garden.swift:9") &&
                 displayed.contains("Irrigation schedule") && !displayed.contains("## Irrigation schedule"),
                 "GitHub timeline did not render the saved Markdown and file citation")
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw RecorderError.message("Could not render the citation") }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let image = bitmap.cgImage else { throw RecorderError.message("Could not inspect the citation") }
+        let ocr = VNRecognizeTextRequest()
+        try VNImageRequestHandler(cgImage: image).perform([ocr])
+        let labels = (ocr.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        require(labels.localizedCaseInsensitiveContains("private to Afterword"), "Missing private citation status in \(labels)")
         try archive.disconnect()
         library.githubRepository = ""
         library.githubAction = ""
@@ -1170,7 +1413,14 @@ import Lookback
             library.search = query
             await library.updateSearch(debounce: false)?.value
             guard let session = library.selectedCoding, let hit = library.codingHits[session.id] else { throw RecorderError.message("Missing coding search hit") }
-            let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: library.coding.directory, hit: hit))
+            let detail = NSHostingView(rootView: Group {
+                if query == "archivedterm" || query == "InspectLayout" {
+                    let ref = BoardReference(source: .coding, itemID: session.id, anchor: hit.messageID, label: heading)
+                    BoardCitationView(reference: ref, library: library)
+                } else {
+                    CodingSessionDetail(session: session, directory: library.coding.directory, hit: hit)
+                }
+            })
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
             window.contentView = detail; window.displayIfNeeded()

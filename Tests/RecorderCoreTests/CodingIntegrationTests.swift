@@ -36,6 +36,37 @@ final class CodingIntegrationTests: XCTestCase {
         return archive
     }
 
+    func testBoardCitationTracksCodingGrantMessageAndImportedProject() throws {
+        let archive = try imported()
+        let session = try XCTUnwrap(archive.sessions().first)
+        let message = try XCTUnwrap(archive.history(id: session.id).messages.first { $0.text == "Shipped the restart guard." })
+        let ref = BoardReference(source: .coding, itemID: session.id, anchor: message.id, label: session.title, quote: message.text)
+        try ActivitySourceStore.save([.coding, .board], directory: root)
+        var grants = AgentAccessConfiguration(enabled: true)
+        grants.allowBoardManagement = true
+        try AgentAccessStore.save(grants, directory: root)
+        let ticket = BoardTicket(title: "Follow up", columnID: "todo", references: [ref])
+        let store = TaskBoardStore(stateDirectory: root)
+        _ = try store.save(ticket, original: nil)
+        let agent = AgentLibrary(directory: root)
+        func refs() throws -> [[String: Any]] {
+            let row = try XCTUnwrap(agent.call("get_board_ticket", arguments: ["ticket_id": ticket.id])["ticket"] as? [String: Any])
+            return try XCTUnwrap(row["references"] as? [[String: Any]])
+        }
+        XCTAssertTrue(try refs().isEmpty)
+        grants.allowCodingSessions = true
+        try AgentAccessStore.save(grants, directory: root)
+        XCTAssertEqual(try refs().first?["quote"] as? String, message.text)
+        let token = try agent.call("get_board", arguments: [:])["revision"]!
+        for (anchor, quote) in [(message.id, "made up"), ("missing", message.text)] {
+            XCTAssertThrowsError(try agent.call("add_board_reference", arguments: ["ticket_id": ticket.id, "source": "coding",
+                "item_id": session.id, "anchor": anchor, "quote": quote, "expected_revision": token]))
+        }
+        try archive.removeProject(project)
+        XCTAssertTrue(try refs().isEmpty)
+        XCTAssertEqual(try store.read().ticket(ticket.id), ticket)
+    }
+
     private var codexHome: URL { root.appendingPathComponent("codex-home") }
     private let threadID = "00000000-0000-4000-a000-000000000001"
     private func writeRollout(_ id: String, project: String, archived: Bool = false, header: [String: Any] = [:], rows: String = "") throws {

@@ -48,6 +48,56 @@ final class AgentAccessTests: XCTestCase {
     func first() throws -> [String: Any] { try XCTUnwrap(items(service.call("list_calls", arguments: [:])).first) }
     func id() throws -> String { try XCTUnwrap(first()["call_id"] as? String) }
 
+    func testTurnAnAuthorizedTranscriptPassageIntoACitedTicket() throws {
+        try fixture(text: "Schedule the release review.")
+        try ActivitySourceStore.save([.recordings, .board], directory: state)
+        var grants = try AgentAccessStore.load(directory: state)
+        grants.allowBoardManagement = true
+        try AgentAccessStore.save(grants, directory: state)
+        let hit = try XCTUnwrap(items(service.call("search_activity", arguments: ["query": "release review", "mode": "keyword"])).first)
+        let callID = try XCTUnwrap(hit["call_id"] as? String)
+        let version = try XCTUnwrap(hit["version_id"] as? String)
+        let speech = try items(service.call("get_transcript", arguments: ["call_id": callID, "version_id": version]))
+        let passage = try XCTUnwrap(speech.first { ($0["text"] as? String)?.contains("release review") == true })
+        let anchor = String(try XCTUnwrap(passage["paragraph_id"] as? Int))
+        let ref = ["source": "call", "label": "Release meeting", "item_id": callID, "version_id": version,
+                   "anchor": anchor, "quote": try XCTUnwrap(passage["text"] as? String)]
+        let result = try service.call("create_board_ticket", arguments: ["expected_revision": try service.call("get_board", arguments: [:])["revision"]!, "title": "Schedule the release review",
+            "origin_key": UUID().uuidString, "references": [ref]])
+        let ticketID = try XCTUnwrap(result["ticket_id"] as? String)
+        let saved = try TaskBoardStore(stateDirectory: state).read().ticket(ticketID)
+        XCTAssertEqual(saved.references.first?.versionID, version)
+        XCTAssertEqual(saved.references.first?.quote, "Schedule the release review.")
+        _ = try fixture(text: "A newer transcript.", run: "second", created: "2026-11-14T15:00:00Z")
+        let call = try RecordingLibraryScanner.citedCall(id: callID, roots: [root], peopleURL: state.appendingPathComponent("People.json"))
+        let citedVersion = try XCTUnwrap(call.transcripts.first { $0.agentVersionID(callID: callID) == version })
+        XCTAssertNotEqual(citedVersion.id, call.latestTranscript?.id)
+        XCTAssertEqual(citedVersion.document?.paragraphs.first { String($0.id) == anchor }?.text, saved.references.first?.quote)
+        func visible() throws -> [[String: Any]] {
+            let row = try XCTUnwrap(service.call("get_board_ticket", arguments: ["ticket_id": ticketID])["ticket"] as? [String: Any])
+            return try XCTUnwrap(row["references"] as? [[String: Any]])
+        }
+        XCTAssertEqual(try visible().first?["label"] as? String, call.name)
+        let original = try TaskBoardStore(stateDirectory: state).read()
+        grants.folders = []
+        try AgentAccessStore.save(grants, directory: state)
+        XCTAssertTrue(try visible().isEmpty)
+        grants.folders = [root.path]
+        try AgentAccessStore.save(grants, directory: state)
+        XCTAssertEqual(try visible().count, 1)
+        try CallDetailsStore.setScope(.personal, for: call)
+        XCTAssertThrowsError(try RecordingLibraryScanner.citedCall(id: callID, roots: [root]))
+        XCTAssertThrowsError(try RecordingLibraryScanner.citedCall(id: callID, roots: []))
+        XCTAssertTrue(try visible().isEmpty)
+        grants.allowPersonalCalls = true
+        try AgentAccessStore.save(grants, directory: state)
+        XCTAssertEqual(try visible().count, 1)
+        try ActivitySourceStore.save([.board], directory: state)
+        XCTAssertThrowsError(try service.call("get_transcript", arguments: ["call_id": callID]))
+        XCTAssertTrue(try visible().isEmpty)
+        XCTAssertEqual(try TaskBoardStore(stateDirectory: state).read(), original)
+    }
+
     func testPersonalCallRequiresScopeFolderAndSeparateReadAndWriteGrants() throws {
         try fixture(text: "Design review")
         let other = try fixture("Call-2026-11-14_12-00-00", text: "Gardenias bloom")

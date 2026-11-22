@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import notify
 import RecorderCore
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -16,10 +17,18 @@ setpriority(PRIO_PROCESS, 0, 10)
 let server = AgentRPCServer(directory: directory)
 var pending = Data(), buffer = [UInt8](repeating: 0, count: 8192)
 let maximumRequest = 1_048_576
-func respond(_ line: Data) {
-    guard let response = server.handle(line) else { return }
+let rpcQueue = DispatchQueue(label: "io.local.afterword.mcp.rpc")
+func writeResponse(_ response: Data?) {
+    guard let response else { return }
     do { try FileHandle.standardOutput.write(contentsOf: response + Data([10])) }
     catch { exit(0) }
+}
+var notificationToken: Int32 = 0
+notify_register_dispatch(AgentAccessStore.toolsChanged.rawValue, &notificationToken, rpcQueue) { _ in
+    writeResponse(server.toolsChangedNotification())
+}
+func respond(_ line: Data) {
+    rpcQueue.sync { writeResponse(server.handle(line)) }
 }
 while true {
     let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)

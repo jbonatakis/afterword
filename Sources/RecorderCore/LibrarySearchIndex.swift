@@ -334,6 +334,9 @@ public final class LibrarySearchIndex: @unchecked Sendable {
 
 final class SearchDatabase {
     private var handle: OpaquePointer?
+    init() throws {
+        guard sqlite3_open(":memory:", &handle) == SQLITE_OK else { throw failure() }
+    }
     init(reading url: URL) throws {
         guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw failure() }
         sqlite3_busy_timeout(handle, 10_000)

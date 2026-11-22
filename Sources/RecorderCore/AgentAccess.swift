@@ -1,12 +1,14 @@
 import Foundation
 import CryptoKit
 import Darwin
+import notify
 
 public struct AgentAccessConfiguration: Codable, Equatable {
     public var version = 2
     public var enabled: Bool
     public var folders: [String]
     public var allowCodingSessions: Bool
+    public var allowBoardManagement = false
     public var allowPersonalCalls: Bool
     public var allowSummaryWrites: Bool
     public init(enabled: Bool = false, folders: [String] = [], allowSummaryWrites: Bool = false, allowCodingSessions: Bool = false, allowPersonalCalls: Bool = false) {
@@ -14,13 +16,14 @@ public struct AgentAccessConfiguration: Codable, Equatable {
         self.allowCodingSessions = allowCodingSessions
         self.enabled = enabled; self.folders = folders; self.allowSummaryWrites = allowSummaryWrites
     }
-    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites, allowCodingSessions, allowPersonalCalls }
+    enum CodingKeys: String, CodingKey { case version, enabled, folders, allowSummaryWrites, allowCodingSessions, allowPersonalCalls, allowBoardManagement }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
         enabled = try values.decode(Bool.self, forKey: .enabled)
         folders = try values.decode([String].self, forKey: .folders)
         allowCodingSessions = try values.decodeIfPresent(Bool.self, forKey: .allowCodingSessions) ?? false
+        allowBoardManagement = try values.decodeIfPresent(Bool.self, forKey: .allowBoardManagement) ?? false
         allowPersonalCalls = try values.decodeIfPresent(Bool.self, forKey: .allowPersonalCalls) ?? false
         allowSummaryWrites = try values.decodeIfPresent(Bool.self, forKey: .allowSummaryWrites) ?? false
     }
@@ -28,6 +31,11 @@ public struct AgentAccessConfiguration: Codable, Equatable {
 
 /// Shared by the app and its stdio helper. Read on every tool call, never cached.
 public enum AgentAccessStore {
+    public static let toolsChanged = Notification.Name("io.local.afterword.agent-tools.changed")
+    static func notifyToolsChanged() {
+        notify_post(toolsChanged.rawValue)
+        NotificationCenter.default.post(name: toolsChanged, object: nil)
+    }
     public static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Afterword/MCP", isDirectory: true)
     }
@@ -53,6 +61,52 @@ public enum AgentAccessStore {
         value.version = 2
         value.folders = Array(Set(value.folders.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path })).sorted()
         try PrivateFiles.atomicWrite(JSONEncoder().encode(value), to: directory.appendingPathComponent("Access.json"))
+        notifyToolsChanged()
+    }
+}
+
+/// The source grants and archive locations used by both activity tools and board citations.
+struct AgentEvidenceAccess: Equatable {
+    let directory: URL
+    let grants: AgentAccessConfiguration
+    let sources: Set<ActivitySource>
+
+    init(directory: URL) throws {
+        self.directory = directory
+        grants = try AgentAccessStore.load(directory: directory)
+        sources = try ActivitySourceStore.load(directory: directory) ?? ActivitySource.feedSources
+    }
+
+    var enabled: Bool { grants.enabled }
+    var folders: [String] { sources.contains(.recordings) ? grants.folders : [] }
+    var allowSummaryWrites: Bool { sources.contains(.recordings) && grants.allowSummaryWrites }
+    var codingDirectory: URL { directory == AgentAccessStore.directory ? CodingArchive.directory : directory.appendingPathComponent("CodingSessions") }
+    var githubDirectory: URL { directory == AgentAccessStore.directory ? GitHubArchive.directory : directory.appendingPathComponent("GitHub") }
+    var codingAllowed: Bool { enabled && sources.contains(.coding) && grants.allowCodingSessions && CodingArchive.exists(in: codingDirectory) }
+
+    func permitsCalls(_ scope: CallScope) -> Bool {
+        enabled && sources.contains(.recordings) && (scope == .work || grants.allowPersonalCalls)
+    }
+
+    func sharedGitHub() throws -> GitHubArchive? {
+        guard enabled, sources.contains(.github), GitHubArchive.exists(in: githubDirectory) else { return nil }
+        return try GitHubArchive(directory: githubDirectory)
+    }
+
+    func recordingRoots() throws -> [URL] {
+        let roots = folders.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
+        guard roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }) else {
+            throw AgentFailure("An allowed folder was replaced by a symbolic link. Review Agent Access settings.")
+        }
+        return roots
+    }
+
+    func recordingIndex(scope: CallScope) throws -> LibrarySearchIndex {
+        let standard = directory == AgentAccessStore.directory
+        return try LibrarySearchIndex(roots: recordingRoots(), confined: true,
+            directory: standard ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
+            embeddingDirectory: standard ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"),
+            peopleURL: directory.deletingLastPathComponent().appendingPathComponent("People.json"), callScope: scope)
     }
 }
 

@@ -5,7 +5,11 @@ import Foundation
 /// An explicit trailing * remains supported, but is no longer required.
 /// User input is never passed through as executable FTS syntax.
 public struct LibrarySearchQuery: Sendable {
-    struct Term: Sendable { let words: [String]; let prefix: Bool }
+    struct Term: Sendable {
+        let words: [String]
+        let prefix: Bool
+        var expression: String { "\"" + words.joined(separator: " ") + "\"" + (prefix ? "*" : "") }
+    }
     let terms: [Term]
     public let isEmpty: Bool
     private static let chunks = try! NSRegularExpression(pattern: #""([^"]*)"?|([^\s"]+)"#)
@@ -32,7 +36,7 @@ public struct LibrarySearchQuery: Sendable {
     }
     var expression: String? {
         guard !terms.isEmpty else { return nil }
-        return terms.map { "\"" + $0.words.joined(separator: " ") + "\"" + ($0.prefix ? "*" : "") }.joined(separator: " AND ")
+        return terms.map(\.expression).joined(separator: " AND ")
     }
     // Evidence can span paragraphs or fields. The document query establishes
     // eligibility; this OR query finds the paragraphs contributing its terms.

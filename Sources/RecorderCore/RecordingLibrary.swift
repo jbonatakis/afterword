@@ -77,11 +77,13 @@ public struct LibraryTranscript: Identifiable, Codable, Sendable {
     let fileModificationDate: Date
     public var id: String { url.path }
     public var runName: String { url.deletingLastPathComponent().lastPathComponent }
+    public func agentVersionID(callID: String) -> String { AgentJSON.hash(callID + "/" + runName) }
 }
 
 public struct LibraryRecording: Identifiable, Codable, Sendable {
+    public var agentID: String { get throws { try AgentJSON.identity(url) } }
     public func agentSummaryRequest() throws -> String {
-        let callID = try AgentJSON.identity(url)
+        let callID = try agentID
         return "Summarize this Afterword call and save the summary back to it. Use call_id \(callID) and scope \(details.scope.rawValue) for each tool call. Read get_call and the full get_transcript first, then use save_call_summary with the source version and current call revision."
     }
     public let url: URL
@@ -164,6 +166,19 @@ public enum RecordingLibraryScanner {
         }
         result.recordings.sort { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
         return result
+    }
+
+    /// Resolve a citation inside the local user's recording folders. Work scope is the default.
+    public static func citedCall(id: String, roots: [URL], peopleURL: URL = PeopleDirectory.fileURL, includePersonal: Bool = false) throws -> LibraryRecording {
+        let catalog = discover(roots: roots, confined: false) { url, directory in
+            try AgentJSON.identity(url) == id && (includePersonal || CallDetailsStore.load(for: url, isDirectory: directory).scope == .work)
+        }
+        guard let candidate = catalog.candidates.first else { throw RecorderError.message("This call is no longer available in your recording folders.") }
+        let recording = try load(candidate, confined: false, people: try? PeopleDirectory.load(from: peopleURL))
+        guard recording.detailsError == nil, includePersonal || recording.details.scope == .work, try recording.agentID == id else {
+            throw RecorderError.message("The cited call changed. Reopen its source to try again.")
+        }
+        return recording
     }
 
     // Discovery reads directory entries and stat information, never transcript bodies or audio.

@@ -27,7 +27,7 @@ struct AgentCall {
         }
         self.init(recording: recording, id: id, revision: AgentJSON.hash(try AgentJSON.data(payload)))
     }
-    func versionID(_ version: LibraryTranscript) -> String { AgentJSON.hash(id + "/" + version.runName) }
+    func versionID(_ version: LibraryTranscript) -> String { version.agentVersionID(callID: id) }
     func versionInfo(_ version: LibraryTranscript) -> [String: Any] {
         ["version_id": versionID(version), "created_at": AgentJSON.date(version.date),
          "edited": version.document?.editing != nil, "readable": version.document != nil]
@@ -62,6 +62,7 @@ struct AgentCall {
 
 /// Exposes only saved content. Never accepts a caller-supplied filesystem path.
 public final class AgentLibrary {
+    private let boardSearch = BoardTicketSearch()
     private var index: LibrarySearchIndex?
     private var codingAttached = false
     private var indexedSources: Set<ActivitySource>?
@@ -70,23 +71,22 @@ public final class AgentLibrary {
     private var peopleURL: URL { directory.deletingLastPathComponent().appendingPathComponent("People.json") }
     public init(directory: URL = AgentAccessStore.directory) { self.directory = directory }
 
-    private struct Access: Equatable {
-        let grants: AgentAccessConfiguration
-        let sources: Set<ActivitySource>
+    private func access() throws -> AgentEvidenceAccess { try AgentEvidenceAccess(directory: directory) }
 
-        var enabled: Bool { grants.enabled }
-        var folders: [String] { sources.contains(.recordings) ? grants.folders : [] }
-        var allowCodingSessions: Bool { sources.contains(.coding) && grants.allowCodingSessions }
-        var allowSummaryWrites: Bool { sources.contains(.recordings) && grants.allowSummaryWrites }
-    }
+    var boardAvailable: Bool { (try? requireBoardAccess()) != nil }
 
-    private func access() throws -> Access {
-        try Access(grants: AgentAccessStore.load(directory: directory),
-                   sources: ActivitySourceStore.load(directory: directory) ?? Set(ActivitySource.allCases))
+    private func requireBoardAccess() throws {
+        let grants = try AgentAccessStore.load(directory: directory)
+        guard grants.enabled, grants.allowBoardManagement, try ActivitySourceStore.boardEnabled(directory: directory) else {
+            throw AgentFailure("Task board access is disabled.")
+        }
     }
 
     public func call(_ name: String, arguments: [String: Any]) throws -> [String: Any] {
         try AgentTools.validate(name, arguments: arguments)
+        if BoardTools.names.contains(name) {
+            return try BoardTools.call(name, arguments, store: TaskBoardStore(stateDirectory: directory), search: boardSearch, evidence: { try BoardEvidenceReader(directory: self.directory) }, authorize: requireBoardAccess)
+        }
         let configuration = try access()
         guard configuration.enabled else {
             index?.stopSemanticSearch(); index = nil; indexedFolders = nil
@@ -94,7 +94,7 @@ public final class AgentLibrary {
         }
         let callScope = CallScope(rawValue: arguments["scope"] as? String ?? "work") ?? .work
         if callScope == .personal {
-            guard configuration.sources.contains(.recordings), configuration.grants.allowPersonalCalls else {
+            guard configuration.permitsCalls(.personal) else {
                 throw AgentFailure("Personal call access is disabled. Review Afterword Settings → Agent Access.")
             }
             if name == "search_activity",
@@ -103,31 +103,25 @@ public final class AgentLibrary {
                 throw AgentFailure("Personal scope is available for calls only.")
             }
         }
-        let roots = configuration.folders.map { URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL }
-        guard roots.allSatisfy({ $0 == $0.resolvingSymlinksInPath().standardizedFileURL }) else {
-            throw AgentFailure("An allowed folder was replaced by a symbolic link. Review Agent Access settings.")
-        }
+        let roots = try configuration.recordingRoots()
         let scope = AgentJSON.hash(try AgentJSON.data(configuration.folders.sorted()))
         if indexedFolders != configuration.folders || indexedSources != configuration.sources || index?.callScope != callScope {
             index?.stopSemanticSearch()
-            index = try LibrarySearchIndex(roots: roots, confined: true,
-                directory: directory == AgentAccessStore.directory ? LibrarySearchIndex.cacheDirectory : directory.appendingPathComponent("Search"),
-                embeddingDirectory: directory == AgentAccessStore.directory ? EmbeddingSettings.directory : directory.appendingPathComponent("Embeddings"), peopleURL: peopleURL, callScope: callScope)
+            index = try configuration.recordingIndex(scope: callScope)
             codingAttached = false
             indexedSources = configuration.sources
             indexedFolders = configuration.folders
         }
         guard let index else { throw AgentFailure("Search index is unavailable. Retry.") }
-        let codingDirectory = directory == AgentAccessStore.directory ? CodingArchive.directory : directory.appendingPathComponent("CodingSessions")
-        let codingAllowed = callScope == .work && configuration.allowCodingSessions && CodingArchive.exists(in: codingDirectory)
+        let codingDirectory = configuration.codingDirectory
+        let codingAllowed = callScope == .work && configuration.codingAllowed
         if codingAttached != codingAllowed {
             try index.useCodingArchive(in: codingAllowed ? codingDirectory : nil)
             codingAttached = codingAllowed
         }
-        let githubDirectory =
-            directory == AgentAccessStore.directory ? GitHubArchive.directory : directory.appendingPathComponent("GitHub")
+        let githubDirectory = configuration.githubDirectory
         let usesGitHub = ["search_activity", "get_github_item", "get_coding_session", "get_call"].contains(name)
-        let github = callScope == .work && usesGitHub && configuration.sources.contains(.github) && GitHubArchive.exists(in: githubDirectory) ? try GitHubArchive(directory: githubDirectory) : nil
+        let github = callScope == .work && usesGitHub ? try configuration.sharedGitHub() : nil
         let grantsRevision = try github?.revision(shared: true)
         if name == "get_github_item" {
             let args = AgentArguments(arguments)

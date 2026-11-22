@@ -2,13 +2,14 @@
 
 ## Set up the library
 
-On first launch, choose **Recordings**, **Coding sessions**, **GitHub**, or any combination. You can change the selection in **Settings → Sources**. Turning off a source stops its background work and hides its items from the library, search, and connected agents. Enabling it again restores its saved configuration and history.
+On first launch, choose **Recordings**, **Coding sessions**, **GitHub**, **Task board**, or any combination. You can change the selection in **Settings → Sources**. Turning off a source stops its background work and hides its items from the library, search, and connected agents. Enabling it again restores its saved configuration and history.
 
 | Source | Where to start |
 | --- | --- |
 | Recordings | Choose a save folder during setup or when you start your first recording. Manage that destination and folders of existing calls in **Settings → Recording**. [Recording guide](recordings.md) |
 | Coding sessions | Enable Claude Code or Codex and select project folders in **Settings → Coding**. |
 | GitHub | Connect your account in **Settings → GitHub** and choose repositories. The library shows issues, pull requests, and reviews you contributed to. [GitHub setup and sync](github-history.md) |
+| Task board | Choose **New ticket** to add a card. Use **Search tickets** to find related work by title, notes, or saved citation. Right-click **Task board** in the sidebar and choose **Open in New Window** to browse it independently. Click a card to read it in a pane over the right side of the board. Drag its left edge to resize it, or choose **Open in separate window** to keep the ticket visible while you work elsewhere. Click a source to read the cited passage. Choose **Edit** to make changes in the pane. You can switch cards and return to your draft while the board is open. **Save** or **Cancel** takes you back to reading. You can also drag cards between columns and swimlanes. Enable board management in **Settings → Agent Access** to share ticket titles and notes. Agents see citations only from shared sources. [Board tools](mcp.md#task-board) |
 
 The release ZIP runs on Apple Silicon with macOS 14.2 or later. The release guide covers first launch, including how to approve a downloaded copy in macOS. [Releases and installation](releases.md)
 

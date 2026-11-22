@@ -34,7 +34,7 @@ import SwiftUI
         window.delegate = self
         window.setFrameAutosaveName("RecordingLibraryWindow")
         if !window.setFrameUsingName("RecordingLibraryWindow") { window.center() }
-        pageObservation = library.$calendarPage.dropFirst().sink { [weak self] next in
+        pageObservation = library.$page.dropFirst().sink { [weak self] next in
             guard let self else { return }
             if next == nil, !positions.isEmpty {
                 // A background window need not receive windowDidUpdate. A clip still reports
@@ -46,7 +46,7 @@ import SwiftUI
                     .receive(on: RunLoop.main)
                     .sink { [weak self] _ in self?.restoreActivityPosition() }
                 DispatchQueue.main.async { [weak self] in self?.restoreActivityPosition() }
-            } else if next != nil, library.calendarPage == nil, let content = window.contentView {
+            } else if next != nil, library.page == nil, let content = window.contentView {
                 layoutObservation = nil
                 savedDestination = library.destination
                 savedItem = library.selection
@@ -69,7 +69,7 @@ import SwiftUI
     // Switching toolbars can temporarily resize both activity columns. Restore each clip
     // after the library is visible and AppKit has given it its reading dimensions again.
     private func restoreActivityPosition() {
-        guard !positions.isEmpty, library.calendarPage == nil, let window else { return }
+        guard !positions.isEmpty, library.page == nil, let window else { return }
         guard library.destination == savedDestination, library.selection == savedItem else {
             positions = []; layoutObservation = nil
             return

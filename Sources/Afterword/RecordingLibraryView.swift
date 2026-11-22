@@ -102,16 +102,20 @@ struct SourceToggles: View {
             })) {
                 Label {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(source.libraryFilter.rawValue)
+                        Text(source.libraryFilter?.rawValue ?? "Task board")
                         Group {
                             switch source {
                             case .recordings: Text("Record calls and transcribe them locally.")
                             case .coding: Text("Import Claude Code and Codex sessions.")
                             case .github: Text("Import your issues, pull requests, and reviews.")
+                            case .board: Text("Track follow-ups in columns and swimlanes.")
                             }
                         }.font(.caption).foregroundStyle(.secondary)
                     }
-                } icon: { source.libraryFilter.icon }
+                } icon: {
+                    if let filter = source.libraryFilter { filter.icon }
+                    else { Image(systemName: "rectangle.3.group") }
+                }
             }
             if source == .recordings, selection.contains(.recordings), let setupDestination {
                 RecordingFolderPicker(destination: setupDestination)
@@ -147,17 +151,24 @@ struct LibrarySidebar: View {
     @Binding var selection: LibraryDestination
     let sources: Set<ActivitySource>
     @ObservedObject var coding: CodingCoordinator
-    let openWindow: (LibraryCalendarPage) -> Void
+    let openWindow: (LibraryPage) -> Void
     @State private var expanded: Set<LibraryFilter> = [.activity, .coding, .recordings]
 
-    private var root: LibraryFilter {
-        if sources.count == 1, let source = sources.first { return source.libraryFilter }
+    private var root: LibraryFilter? {
+        let activity = sources.intersection(ActivitySource.feedSources)
+        if activity.isEmpty { return nil }
+        if activity.count == 1 { return activity.first?.libraryFilter }
         return .activity
     }
 
     var body: some View {
         List(selection: $selection) {
-            LibrarySidebarRow(filter: root, sources: sources, providers: coding.providers, selection: $selection, expanded: $expanded)
+            if let root {
+                LibrarySidebarRow(filter: root, sources: sources, providers: coding.providers, selection: $selection, expanded: $expanded)
+            }
+            if sources.contains(.board) {
+                Label("Task board", systemImage: "rectangle.3.group").tag(LibraryDestination.page(.board))
+            }
             if sources.contains(.recordings) {
                 ForEach(LibraryCalendarPage.allCases, id: \.self) { page in
                     Label(page.rawValue, systemImage: page.symbol)
@@ -166,7 +177,7 @@ struct LibrarySidebar: View {
             }
         }.listStyle(.sidebar)
             .contextMenu(forSelectionType: LibraryDestination.self) { selection in
-                if case .calendar(let page) = selection.first {
+                if case .page(let page) = selection.first {
                     Button("Open in New Window") { openWindow(page) }
                 }
             }
@@ -253,14 +264,43 @@ struct RecordingLibraryView: View {
     @State private var detailsEditor: LibraryRecording?
     @State private var trashTarget: TrashTarget?
     @State private var managementError: String?
+    @State private var ticketSource: BoardReference?
     @State private var discardTranscriptEdits: LibraryRecording?
     @State private var discardSummaryEdits: LibraryRecording?
     @Environment(\.openSettings) private var openSettings
     @FocusState private var focus: LibraryFocus?
 
+    @ViewBuilder private func followUp(_ reference: @escaping () async throws -> BoardReference) -> some View {
+        if library.sources.contains(.board) {
+            Button("Create follow-up ticket…") {
+                Task {
+                    do {
+                        let citation = try await reference()
+                        guard library.sources.contains(.board) else { return }
+                        ticketSource = citation
+                        library.destination = .page(.board)
+                    } catch { managementError = error.localizedDescription }
+                }
+            }
+        }
+    }
+
     private func recordingRow(_ recording: LibraryRecording) -> some View {
         RecordingRow(recording: recording, library: library, focus: $focus).tag(recording.id)
             .contextMenu {
+                if recording.details.scope == .work {
+                    followUp {
+                        let callID = try recording.agentID
+                        let hit = library.searchHits[recording.id]
+                        let version = recording.transcripts.first { $0.id == hit?.versionID }
+                        let paragraph = version?.document?.paragraphs.first { $0.id == hit?.paragraphIDs.first }
+                        let text = hit?.summaryMatch == true ? recording.summary?.current?.markdown : paragraph?.text
+                        let snippet = hit?.snippet?.replacingOccurrences(of: "Summary · ", with: "", options: .anchored)
+                        return BoardReference(source: .call, itemID: callID, anchor: paragraph.map { String($0.id) },
+                                              label: String(recording.name.prefix(240)), quote: text.flatMap { BoardReference.excerpt(in: $0, near: snippet) },
+                                              versionID: version?.agentVersionID(callID: callID))
+                    }
+                }
                 Button("Rename") { library.beginRenaming(recording) }.disabled(library.managing || library.renamingID != nil)
                 Button("Edit details…") { detailsEditor = recording }.disabled(library.managing || library.renamingID != nil)
                 Button(recording.details.scope == .work ? "Mark as Personal" : "Move to Work") {
@@ -292,8 +332,12 @@ struct RecordingLibraryView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            LibrarySidebar(selection: $library.destination, sources: library.sources, coding: library.coding,
-                           openWindow: recorder.calendar.openWindow)
+            LibrarySidebar(selection: $library.destination, sources: library.sources, coding: library.coding) { page in
+                switch page {
+                case .calendar(let destination): recorder.calendar.openWindow(destination)
+                case .board: library.boardWindows.openBoard(library: library)
+                }
+            }
             VStack(alignment: .leading, spacing: 8) {
                 if library.sources.contains(.recordings) {
                     TranscriptionActivity(transcription: recorder.transcription)
@@ -333,6 +377,24 @@ struct RecordingLibraryView: View {
                         case .call(let recording): recordingRow(recording)
                         case .coding(let session):
                             codingRow(session)
+                                .contextMenu {
+                                    followUp {
+                                        let hit = library.codingHits[session.id]
+                                        let directory = library.coding.directory
+                                        return try await Task.detached(priority: .userInitiated) {
+                                            var quote: String?
+                                            if let anchor = hit?.messageID {
+                                                let history = try CodingArchive.history(in: directory, id: session.id)
+                                                guard let message = history.messages.first(where: { $0.id == anchor }) else {
+                                                    throw RecorderError.message("The cited message is no longer available.")
+                                                }
+                                                quote = BoardReference.excerpt(in: message.text, near: hit?.text)
+                                            }
+                                            return BoardReference(source: .coding, itemID: session.id, anchor: hit?.messageID,
+                                                                  label: String(session.title.prefix(240)), quote: quote)
+                                        }.value
+                                    }
+                                }
                                 .task(id: library.hasMoreCoding && session.id == library.coding.sessions.last?.id) {
                                     library.loadOlderCoding(after: session.id)
                                 }
@@ -347,6 +409,24 @@ struct RecordingLibraryView: View {
                                     ).lineLimit(2)
                                 }
                             }.tag(row.id)
+                                .contextMenu {
+                                    followUp {
+                                        let passage = hit.citations.first
+                                        let directory = library.github.directory
+                                        return try await Task.detached(priority: .userInitiated) {
+                                            var quote: String?
+                                            if let passage {
+                                                let archive = try GitHubArchive(directory: directory)
+                                                guard let original = try archive.timeline(hit.id, shared: false).first(where: { $0.id == passage.id }) else {
+                                                    throw RecorderError.message("The cited contribution is no longer available.")
+                                                }
+                                                quote = BoardReference.excerpt(in: original.text, near: passage.text)
+                                            }
+                                            return BoardReference(source: .github, itemID: hit.id, anchor: passage?.id,
+                                                                  label: String(hit.item.title.prefix(240)), quote: quote)
+                                        }.value
+                                    }
+                                }
                         }
                     }
                 }.listStyle(.inset).focused($focus, equals: .callList)
@@ -391,16 +471,18 @@ struct RecordingLibraryView: View {
             sidebar
         } detail: {
             // Keep the native list and detail mounted so switching pages preserves both scroll positions.
-            HSplitView {
-                activityList.frame(minWidth: 240, idealWidth: 290, maxWidth: 380)
-                activityDetail.frame(minWidth: 330, maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .disabled(library.calendarPage != nil)
-            .allowsHitTesting(library.calendarPage == nil)
-            .accessibilityHidden(library.calendarPage != nil)
-            .overlay {
-                switch library.calendarPage {
-                case .upcoming:
+            ZStack {
+                HSplitView {
+                    activityList.frame(minWidth: 240, idealWidth: 290, maxWidth: 380)
+                    activityDetail.frame(minWidth: 330, maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .disabled(library.page != nil)
+                .allowsHitTesting(library.page == nil)
+                .accessibilityHidden(library.page != nil)
+                switch library.page {
+                case .board:
+                    TaskBoardView(library: library, ticketSource: $ticketSource)
+                case .calendar(.upcoming):
                     UpcomingMeetingsView(calendar: recorder.calendar, embedded: true) {
                         library.destination = .calendar(.people)
                     }
@@ -408,19 +490,19 @@ struct RecordingLibraryView: View {
                         recorder.calendar.startMonitoring(refreshImmediately: false)
                         recorder.calendar.refresh()
                     }
-                case .people:
+                case .calendar(.people):
                     PeopleDirectoryView(calendar: recorder.calendar, embedded: true)
                 case nil:
                     Color.clear.frame(width: 0, height: 0)
                         .modifier(LibrarySearchField(presentation: library.searchPresentation, setQuery: { library.search = $0 }))
                 }
             }
-            .navigationTitle(library.calendarPage?.rawValue ?? library.filter.rawValue)
+            .navigationTitle(library.page?.title ?? library.filter.rawValue)
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if library.calendarPage == nil {
+                if library.page == nil {
                     Menu {
                         if library.filter == .github {
                             Picker("Repository", selection: $library.githubRepository) {
@@ -483,7 +565,7 @@ struct RecordingLibraryView: View {
                         Button("Recording controls", action: showControls)
                     }.font(.caption).padding(10).background(.bar)
                 }
-                if library.calendarPage == nil && !library.issues.isEmpty {
+                if library.page == nil && !library.issues.isEmpty {
                     HStack {
                         Image(systemName: "exclamationmark.triangle")
                         Text(library.issues.joined(separator: "\n")).textSelection(.enabled)
@@ -501,8 +583,8 @@ struct RecordingLibraryView: View {
             if library.sources.isEmpty { LibrarySourceChooser(library: library, destination: recorder.destination) }
             else { libraryContent }
         }
-        .background(LibraryCommandScope(bindings: library.calendarPage == nil ? keyboardBindings : [:], cancelEditing: .init(enabled: {
-            library.calendarPage == nil && (library.renamingID != nil || library.selectedRecording.map { library.transcriptDrafts[$0.id] != nil || library.summaryDrafts[$0.id] != nil } == true)
+        .background(LibraryCommandScope(bindings: library.page == nil ? keyboardBindings : [:], cancelEditing: .init(enabled: {
+            library.page == nil && (library.renamingID != nil || library.selectedRecording.map { library.transcriptDrafts[$0.id] != nil || library.summaryDrafts[$0.id] != nil } == true)
         }, perform: cancelInlineEditing)).frame(width: 0, height: 0))
         .frame(minWidth: 940, minHeight: 600)
         .sheet(item: $detailsEditor) { recording in
@@ -533,13 +615,13 @@ struct RecordingLibraryView: View {
             else { playback.clear() }
         }
         .onChange(of: library.renamingID) { previous, current in
-            if previous != nil && current == nil && library.calendarPage == nil { focus = .callList }
+            if previous != nil && current == nil && library.page == nil { focus = .callList }
         }
         .onChange(of: library.selectedRecording.flatMap { library.summaryDrafts[$0.id]?.id }) { previous, current in
-            if previous != nil && current == nil && library.calendarPage == nil { focus = .callList }
+            if previous != nil && current == nil && library.page == nil { focus = .callList }
         }
         .onChange(of: library.selectedRecording.flatMap { library.transcriptDrafts[$0.id]?.version.id }) { previous, current in
-            if previous != nil && current == nil && library.calendarPage == nil { focus = .callList }
+            if previous != nil && current == nil && library.page == nil { focus = .callList }
         }
     }
 

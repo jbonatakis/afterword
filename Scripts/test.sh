@@ -26,4 +26,5 @@ xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macosx14.2" \
     Scripts/StandaloneTestSupport.swift Tests/RecorderCoreTests/*.swift build/TestRunner.swift \
     "$binary_dir"/RecorderCore.build/*.swift.o "$binary_dir"/Lookback.build/*.swift.o "$binary_dir"/CaptureBridge.build/CaptureBridge.c.o \
     -o build/RecorderCoreTests
+export AFTERWORD_TEST_MCP="${AFTERWORD_TEST_MCP:-$binary_dir/AfterwordMCP}"
 exec build/RecorderCoreTests

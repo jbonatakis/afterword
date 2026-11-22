@@ -18,6 +18,15 @@ struct AgentAccessSettings: View {
                 }))
                 Text("Let MCP clients read the saved activity you choose to share.")
                     .font(.caption).foregroundStyle(.secondary)
+                if library.sources.contains(.board) {
+                    Toggle("Allow agents to manage the task board", isOn: Binding(get: { configuration.allowBoardManagement }, set: { allowed in
+                        var next = configuration
+                        next.allowBoardManagement = allowed
+                        save(next)
+                    })).disabled(!configuration.enabled)
+                    Text("Agents can manage all tickets, columns, and swimlanes. Ticket titles and notes are shared. Agents see citations only from sources you share with them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if library.sources.contains(.coding) {
                     Toggle("Share imported coding sessions", isOn: Binding(get: { configuration.allowCodingSessions }, set: { allowed in
                         var next = configuration; next.allowCodingSessions = allowed; save(next)
