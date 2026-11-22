@@ -73,7 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "build/release/Afterword-$RELEASE_TAG-macOS-arm64.zip" --clobber
 
-  update-cask:
+  distribute-cask:
     needs: build
     if: >-
       ${{ !cancelled() && (github.event_name == 'workflow_dispatch' ||
@@ -82,10 +82,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check out the public tap
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          persist-credentials: false
-      - name: Read the published release and asset checksum
+          repository: jbonatakis/homebrew-tap
+          ref: main
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      - name: Stage the verified app ZIP for the tap publisher
+        id: stage
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -93,26 +97,24 @@ jobs:
           release=latest
           if [[ -n "$RELEASE_TAG" ]]; then release="tags/$RELEASE_TAG"; fi
           gh api "repos/$GITHUB_REPOSITORY/releases/$release" > "$RUNNER_TEMP/release.json"
-      - name: Check out the Homebrew tap
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          repository: jbonatakis/homebrew-tap
-          ref: main
-          path: tap
-          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-      - name: Publish the cask to the tap
+          tag=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' "$RUNNER_TEMP/release.json")
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          asset="Afterword-$tag-macOS-arm64.zip"
+          digest=$(jq -er --arg asset "$asset" '.assets[] | select(.name == $asset and .state == "uploaded") | .digest' "$RUNNER_TEMP/release.json")
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP" && echo "${digest#sha256:}  $asset" | sha256sum --check --strict)
+          mkdir afterword-upload
+          echo "${digest#sha256:}" > afterword-upload/sha256
+          # Transport only the ZIP, in chunks below GitHub's Git object size limit.
+          split -b 48M -d -a 4 "$RUNNER_TEMP/$asset" afterword-upload/part-
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Send the ZIP to the public tap
+        env:
+          RELEASE_TAG: ${{ steps.stage.outputs.tag }}
         run: |
-          git -C tap config user.name 'github-actions[bot]'
-          git -C tap config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          for attempt in 1 2 3; do
-            # Start from the current tap head if another publisher pushed first.
-            git -C tap fetch origin main
-            git -C tap reset --hard FETCH_HEAD
-            python3 Scripts/update-homebrew-cask.py "$RUNNER_TEMP/release.json" tap/Casks/afterword.rb
-            if ! git -C tap diff --quiet -- Casks/afterword.rb; then
-              git -C tap add Casks/afterword.rb
-              git -C tap commit -m "Update Afterword cask to $(jq -r .tag_name "$RUNNER_TEMP/release.json")"
-            fi
-            if git -C tap push origin HEAD:main; then exit 0; fi
-          done
-          exit 1
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- afterword-upload
+          git commit -m "Stage Afterword $RELEASE_TAG for public distribution"
+          git push origin "HEAD:refs/heads/publish/afterword-$RELEASE_TAG/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

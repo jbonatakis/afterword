@@ -2,15 +2,13 @@
 
 ## Install with Homebrew
 
-Use an Apple Silicon Mac running macOS 14.2 or later. The cask downloads the prebuilt app from Afterword's private GitHub release using GitHub CLI. Sign in with an account that can read `jbonatakis/afterword`. The ZIP includes the Lookback dependency.
+Use an Apple Silicon Mac running macOS 14.2 or later. Homebrew downloads the app from the public tap and verifies its SHA-256 checksum. The ZIP includes Lookback.
 
 ```sh
-brew install gh
-gh auth login --hostname github.com
 brew install --cask jbonatakis/tap/afterword
 ```
 
-If GitHub CLI is already signed in, go straight to the cask install. If you have a manually installed `/Applications/Afterword.app`, quit it and move that bundle out of Applications before installing the cask. To upgrade a Homebrew installation, run `brew update` followed by `brew upgrade --cask jbonatakis/tap/afterword`.
+If you have a manually installed `/Applications/Afterword.app`, quit it and move that bundle out of Applications before installing the cask. To upgrade a Homebrew installation, run `brew update` followed by `brew upgrade --cask jbonatakis/tap/afterword`.
 
 ## Publish a release
 
@@ -32,7 +30,7 @@ The published tag supplies the app's version. The number of commits reachable fr
 
 The build uses the repository secret `LOOKBACK_READ_TOKEN`. Use a fine-grained token with read-only access to the contents of the private `jbonatakis/lookback` repository. SwiftPM uses the revision pinned by Afterword.
 
-After a stable release build uploads its ZIP, the workflow reads GitHub's SHA-256 digest and updates `Casks/afterword.rb` on the public `jbonatakis/homebrew-tap` main branch. The ZIP stays on the Afterword release. The publisher uses `HOMEBREW_TAP_DEPLOY_KEY`, the private half of the tap's write-enabled **Afterword cask publisher** deploy key. To resync the cask for the latest published release, choose **Actions → Release → Run workflow** on `main`.
+For stable releases, the workflow verifies the private release ZIP against GitHub's SHA-256 and sends it to a temporary branch in `jbonatakis/homebrew-tap` using `HOMEBREW_TAP_DEPLOY_KEY`. The tap's **Publish Afterword** workflow verifies the bytes, publishes the ZIP as a release asset, updates `Casks/afterword.rb` and removes the temporary branch. Published versions retain their checksum. Use a new version for a changed binary. To resync the latest stable release, choose **Actions → Release → Run workflow** on Afterword's `main`.
 
 If your release bundles a GitHub OAuth client ID, set the repository **variable** `AFTERWORD_GITHUB_CLIENT_ID`. Release immutability must be off for this publish-then-upload flow because GitHub locks assets when an immutable release is published. [GitHub release documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
 
