@@ -56,14 +56,6 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install uv==0.9.29
-      - name: Fetch the private Lookback dependency
-        env:
-          GH_TOKEN: ${{ secrets.LOOKBACK_READ_TOKEN }}
-        run: |
-          : "${GH_TOKEN:?Set LOOKBACK_READ_TOKEN to a token with read access to Lookback}"
-          url=https://github.com/jbonatakis/lookback.git
-          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' clone --bare "$url" "$RUNNER_TEMP/lookback.git"
-          git config --global url."file://$RUNNER_TEMP/lookback.git".insteadOf "$url"
       - name: Build and verify the Apple Silicon release
         env:
           AFTERWORD_GITHUB_CLIENT_ID: ${{ vars.AFTERWORD_GITHUB_CLIENT_ID }}

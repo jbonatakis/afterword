@@ -2,18 +2,16 @@
 
 ## Build the app
 
-Use a Mac with Swift 6.2 or later, a macOS 26 SDK, Git, uv, and a local Python 3.12 installation. From the repository root, check the toolchain and access to the private Lookback dependency before starting the build. [uv installation](https://docs.astral.sh/uv/)
+Use a Mac with Swift 6.2 or later, a macOS 26 SDK, Git, uv, and a local Python 3.12 installation. SwiftPM downloads the pinned Lookback dependency from its public GitHub repository. Run the toolchain checks from the repository root. [uv installation](https://docs.astral.sh/uv/)
 
 ```sh
 swift --version
 xcrun --sdk macosx --show-sdk-version
 uv python find --no-managed-python 3.12
-GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/jbonatakis/lookback.git HEAD
 ```
 
 - **SDK.** If the default SDK is 27.2, the standalone Command Line Tools can fail on SwiftUI’s `@State` with `plugin for module 'SwiftUIMacros' not found`. Afterword builds with the macOS 26.5 SDK. With that SDK installed, run `SDKROOT="$(xcrun --sdk macosx26.5 --show-sdk-path)" && export SDKROOT` in the shell you’ll build from. If the lookup fails, install a toolchain that includes the macOS 26 SDK. [Apple developer downloads](https://developer.apple.com/download/all/)
 - **Python.** The uv check should print a Python 3.12 interpreter path. If it reports a pyenv shim error, use `pyenv versions` to find your installed 3.12 release and select it in this shell (for example, `export PYENV_VERSION=3.12.4`). Rerun the uv check.
-- **Lookback.** The Git check should print a commit hash and `HEAD`. SwiftPM uses the HTTPS URL in `Package.swift` and fetches without prompting. If authentication fails, confirm your account has read access and configure a Git credential helper. With GitHub CLI, sign in using `gh auth login` and run `gh auth setup-git --hostname github.com`.
 
 Once the checks pass, build and open the app from the same shell.
 

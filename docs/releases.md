@@ -28,9 +28,9 @@ The published tag supplies the app's version. The number of commits reachable fr
 
 ## GitHub Actions setup
 
-The build uses the repository secret `LOOKBACK_READ_TOKEN`. Use a fine-grained token with read-only access to the contents of the private `jbonatakis/lookback` repository. SwiftPM uses the revision pinned by Afterword.
+The release build uses SwiftPM to fetch the public Lookback revision pinned in `Package.swift`.
 
-For stable releases, the workflow verifies the private release ZIP against GitHub's SHA-256 and sends it to a temporary branch in `jbonatakis/homebrew-tap` using `HOMEBREW_TAP_DEPLOY_KEY`. The tap's **Publish Afterword** workflow verifies the bytes, publishes the ZIP as a release asset, updates `Casks/afterword.rb` and removes the temporary branch. Published versions retain their checksum. Use a new version for a changed binary. To resync the latest stable release, choose **Actions → Release → Run workflow** on Afterword's `main`.
+For stable releases, the workflow verifies the release ZIP against GitHub's SHA-256 and sends it to a temporary branch in `jbonatakis/homebrew-tap` using `HOMEBREW_TAP_DEPLOY_KEY`. The tap's **Publish Afterword** workflow verifies the bytes, publishes the ZIP as a release asset, updates `Casks/afterword.rb` and removes the temporary branch. Published versions retain their checksum. Use a new version for a changed binary. To resync the latest stable release, choose **Actions → Release → Run workflow** on Afterword's `main`.
 
 If your release bundles a GitHub OAuth client ID, set the repository **variable** `AFTERWORD_GITHUB_CLIENT_ID`. Release immutability must be off for this publish-then-upload flow because GitHub locks assets when an immutable release is published. [GitHub release documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
 
