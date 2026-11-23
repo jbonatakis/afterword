@@ -4,7 +4,7 @@ The experiment moves mixed-library ordering, audio-player preparation, and the n
 
 ## Method
 
-The control is `f1ad3bc`. The candidate is `e2f01d8`. Both use the same release-optimized core and native fixture. The control includes a search-debounce compatibility change. Before that change the optimized fixture twice aborted in the Swift concurrency runtime during debounced search. Both measured builds use the same 150 ms debounce with the nanoseconds overload.
+The control is `ab63e21`. The candidate is `5f2f512`. Both use the same release-optimized core and native fixture. The control includes a search-debounce compatibility change. Before that change the optimized fixture twice aborted in the Swift concurrency runtime during debounced search. Both measured builds use the same 150 ms debounce with the nanoseconds overload.
 
 All fixture data is generated locally. Each call has a one-minute AAC track, half have transcripts, and each call contributes two coding sessions, four GitHub items and four initial directory contacts to the fixture. Search deliberately returns results across all three sources. All measurements are warm, with two excluded iterations per process, on one Apple silicon Mac running macOS 15.8.3 and Swift 6.2.3.
 
