@@ -74,7 +74,7 @@ Keep paraphrases, recurring meetings about the same decision, and sessions imple
 
 ## First paired run
 
-On November 17, 2026, the baseline was `cbbc830`. The candidate used the strongest individually matched turn in the winning call passage for the preview and filled spare space with immediately following cited turns. Both builds used the same 260-character limit and Qwen model. The following counts measure first previews containing a labeled evidence phrase from an accepted source.
+On November 17, 2026, the baseline was `fdf1565`. The candidate used the strongest individually matched turn in the winning call passage for the preview and filled spare space with immediately following cited turns. Both builds used the same 260-character limit and Qwen model. The following counts measure first previews containing a labeled evidence phrase from an accepted source.
 
 | Frozen corpus | Development, before → after | Held out, before → after |
 |---|---:|---:|
