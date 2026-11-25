@@ -48,3 +48,9 @@ jobs:
         with:
           name: calendar-scroll
           path: build/calendar-scroll/*.png
+      - name: Upload failed citation screenshot
+        if: ${{ !cancelled() && hashFiles('build/private-citation.png') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-citation
+          path: build/private-citation.png

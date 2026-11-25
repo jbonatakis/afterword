@@ -1079,7 +1079,9 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         guard let hit = library.selectedGitHub else { throw RecorderError.message("Scoped item number did not find the pull request") }
         let citation = BoardReference(source: .github, itemID: hit.id, anchor: passage.id, label: "Review comment")
-        let view = NSHostingView(rootView: BoardCitationView(reference: citation, library: library))
+        // Include the window surface in the offscreen image so OCR sees the same contrast as the reader.
+        let view = NSHostingView(rootView: BoardCitationView(reference: citation, library: library)
+            .background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 680, height: 650),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view
@@ -1106,7 +1108,14 @@ import Lookback
         let ocr = VNRecognizeTextRequest()
         try VNImageRequestHandler(cgImage: image).perform([ocr])
         let labels = (ocr.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(labels.localizedCaseInsensitiveContains("private to Afterword"), "Missing private citation status in \(labels)")
+        if !labels.localizedCaseInsensitiveContains("private to Afterword") {
+            let file = URL(fileURLWithPath: "build/private-citation.png")
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                throw RecorderError.message("Could not encode the failing citation screenshot")
+            }
+            try png.write(to: file)
+            throw RecorderError.message("Missing private citation status in \(labels). Screenshot: \(file.path)")
+        }
         try archive.disconnect()
         library.githubRepository = ""
         library.githubAction = ""
@@ -1406,16 +1415,19 @@ import Lookback
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
         scroll.reflectScrolledClipView(scroll.contentView)
         await pump()
-        func readingOffset() -> CGFloat? {
-            guard let document = scroll.documentView,
-                  let reply = descendants(document).compactMap({ $0 as? NSTextField }).first(where: {
-                      $0.stringValue == "Retries are now documented with a worked example."
-                  }) else { return nil }
-            let frame = reply.convert(reply.bounds, to: document)
-            guard scroll.documentVisibleRect.contains(frame) else { return nil }
-            return frame.minY - scroll.documentVisibleRect.minY
+        func visibleMessages() -> [(id: String, offset: CGFloat)] {
+            guard let document = scroll.documentView else { return [] }
+            let viewport = scroll.documentVisibleRect
+            return descendants(document).compactMap { view in
+                guard let row = view as? ConversationRowMarker.MarkerView else { return nil }
+                let frame = row.convert(row.bounds, to: document)
+                guard frame.intersects(viewport) else { return nil }
+                return (row.messageID, frame.minY - viewport.minY)
+            }
         }
-        guard let before = readingOffset() else { throw RecorderError.message("Missing visible retry reply before opening the calendar") }
+        guard let before = visibleMessages().min(by: { abs($0.offset) < abs($1.offset) }) else {
+            throw RecorderError.message("Missing visible message before opening the calendar")
+        }
         try captureViewport("before-calendar")
         let offset = scroll.contentView.bounds.origin.y
         let saved = library.selection
@@ -1450,10 +1462,12 @@ import Lookback
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         require(library.destination == .activity(.claudeCode) && library.selection == saved && hasLibrarySearch(), "Returning to activity lost selection or search")
         try captureViewport("after-calendar")
-        guard let after = readingOffset() else { throw RecorderError.message("The retry reply disappeared after returning from the calendar") }
-        require(scroll.window === window && abs(after - before) < 2,
-                "Returning to activity moved the retry reply from \(before) to \(after) points below the viewport top")
-        print("PASS calendar round trip: retry reply at \(before) points before, \(after) points after")
+        guard let after = visibleMessages().first(where: { $0.id == before.id }) else {
+            throw RecorderError.message("Message \(before.id) disappeared after returning from the calendar")
+        }
+        require(scroll.window === window && abs(after.offset - before.offset) < 2,
+                "Returning to activity moved message \(before.id) from \(before.offset) to \(after.offset) points")
+        print("PASS calendar round trip: message \(before.id) at \(before.offset) points before, \(after.offset) points after")
         library.destination = .activity(.transcribed)
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
