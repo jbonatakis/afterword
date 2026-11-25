@@ -1412,16 +1412,16 @@ import Lookback
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
         scroll.reflectScrolledClipView(scroll.contentView)
         await pump()
-        func firstVisibleParagraph() -> String? {
-            guard let document = scroll.documentView else { return nil }
-            return descendants(document).compactMap { view -> (String, CGFloat)? in
-                guard let field = view as? NSTextField, !field.stringValue.isEmpty else { return nil }
-                let rect = field.convert(field.bounds, to: document)
-                guard scroll.documentVisibleRect.contains(rect) else { return nil }
-                return (field.stringValue, rect.minY - scroll.documentVisibleRect.minY)
-            }.min { $0.1 < $1.1 }?.0
+        func readingOffset() -> CGFloat? {
+            guard let document = scroll.documentView,
+                  let reply = descendants(document).compactMap({ $0 as? NSTextField }).first(where: {
+                      $0.stringValue == "Retries are now documented with a worked example."
+                  }) else { return nil }
+            let frame = reply.convert(reply.bounds, to: document)
+            guard scroll.documentVisibleRect.contains(frame) else { return nil }
+            return frame.minY - scroll.documentVisibleRect.minY
         }
-        let paragraphAtTop = firstVisibleParagraph()
+        guard let before = readingOffset() else { throw RecorderError.message("Missing visible retry reply before opening the calendar") }
         try captureViewport("before-calendar")
         let offset = scroll.contentView.bounds.origin.y
         let saved = library.selection
@@ -1456,8 +1456,10 @@ import Lookback
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         require(library.destination == .activity(.claudeCode) && library.selection == saved && hasLibrarySearch(), "Returning to activity lost selection or search")
         try captureViewport("after-calendar")
-        require(scroll.window === window && abs(scroll.contentView.bounds.origin.y - offset) < 2 &&
-                paragraphAtTop != nil && firstVisibleParagraph() == paragraphAtTop, "Returning to activity lost the conversation scroll position: wanted \(offset), got \(scroll.contentView.bounds.origin.y), attached \(scroll.window === window)")
+        guard let after = readingOffset() else { throw RecorderError.message("The retry reply disappeared after returning from the calendar") }
+        require(scroll.window === window && abs(after - before) < 2,
+                "Returning to activity moved the retry reply from \(before) to \(after) points below the viewport top")
+        print("PASS calendar round trip: retry reply at \(before) points before, \(after) points after")
         library.destination = .activity(.transcribed)
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
