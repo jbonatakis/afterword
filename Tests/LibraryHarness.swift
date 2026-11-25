@@ -100,6 +100,11 @@ import Lookback
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
         checkMarkdownListLayout()
         checkRecordingTelemetry(root)
+        let toolActivityOnly = CommandLine.arguments.contains("--tool-activity")
+        if toolActivityOnly || CommandLine.arguments.count == 1 {
+            try await checkToolActivity(root.appendingPathComponent("ToolActivity"))
+            if toolActivityOnly { return }
+        }
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
         if checkBoardDrag { try await checkSourceSelection(root); return }
         if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }
@@ -1236,6 +1241,195 @@ import Lookback
         print("PASS recording startup during blocked indexing, saved selection, current scope, and queued search")
     }
 
+    @MainActor static func toolSnapshot(_ view: NSView) throws -> (NSBitmapImageRep, [VNRecognizedText]) {
+        // Use the same resolution for small disclosure labels on Retina and CI displays.
+        let size = view.bounds.size
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+            throw RecorderError.message("Could not render tool activity")
+        }
+        bitmap.size = size
+        view.layoutSubtreeIfNeeded()
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let image = bitmap.cgImage else { throw RecorderError.message("Missing tool activity image") }
+        let request = VNRecognizeTextRequest()
+        request.minimumTextHeight = 0.007
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (bitmap, (request.results ?? []).compactMap { $0.topCandidates(1).first })
+    }
+
+    @MainActor static func checkToolActivity(_ root: URL) async throws {
+        let source = root.appendingPathComponent("Claude")
+        let folder = source.appendingPathComponent("afterword")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let log = #"""
+        {"type":"user","uuid":"prompt","cwd":"/work/afterword","timestamp":"2026-11-20T15:00:00Z","message":{"content":"Why does the conversation show the same tool call twice?"}}
+        {"type":"assistant","uuid":"work","parentUuid":"prompt","message":{"id":"work","content":[{"type":"text","text":"I’ll trace the grouping logic and run the focused test."},{"type":"tool_use","id":"r","name":"Read","input":{"file_path":"/work/afterword/Sources/CodingSessions.swift"}},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"swift test --filter ConversationRowTests"}},{"type":"tool_use","id":"edit","name":"Edit","input":{"file_path":"/work/afterword/Sources/CodingSessions.swift","old_string":"rows.append(row)","new_string":"if seen.insert(row.id).inserted { rows.append(row) }"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"swift test --filter ConversationRowTests"}}]}}
+        {"type":"user","uuid":"results","parentUuid":"work","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"ConversationRowTests.swift:42: error: expected 1 row, got 2\nTest Suite 'All tests' failed at 10:00"},{"type":"tool_result","tool_use_id":"t2","content":"Test Suite 'All tests' passed at 10:01"}]}}
+        {"type":"assistant","uuid":"reply","parentUuid":"results","message":{"content":"The same row ID appeared twice. The grouping code now keeps its first occurrence."}}
+        {"type":"custom-title","customTitle":"Duplicate rows in the conversation"}
+        """#
+        try Data(log.utf8).write(to: folder.appendingPathComponent("00000000-0000-4000-a000-000000000001.jsonl"))
+        let directory = root.appendingPathComponent("CodingSessions")
+        let archive = try CodingArchive(directory: directory)
+        try archive.addProject("/work/afterword")
+        try archive.setEnabled(true)
+        try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: source))
+        guard let session = try archive.sessions().first,
+              let hit = try archive.matches(query: "expected 1 row", semantic: [], from: nil, to: nil, project: nil, branch: nil).first
+        else { throw RecorderError.message("The fixture did not produce a searchable test diagnostic") }
+        let rows = CodingConversationRow.group(try archive.history(id: session.id).conversation)
+        let firstTime = Date(timeIntervalSinceReferenceDate: 3600)
+        let legacy = (0..<3).map { index in
+            CodingMessage(id: "legacy-\(index)", role: "Assistant", text: "", parentID: nil,
+                          timestamp: firstTime.addingTimeInterval(Double(index)), tools: ["exec"])
+        }
+        let legacyRow = CodingConversationRow.group(legacy)[0]
+        require(!legacyRow.hasToolDetails && legacyRow.toolSummary == "exec ×3 · Names only" &&
+                legacyRow.toolEntries.count == 1 && legacyRow.toolEntries[0].date == firstTime &&
+                legacyRow.toolEntries[0].lastDate == firstTime.addingTimeInterval(2),
+                "Repeated name-only calls should retain their count and recorded time range")
+        let undated = legacy.map { CodingMessage(id: $0.id, role: $0.role, text: "", parentID: nil, timestamp: nil, tools: $0.tools) }
+        let mixed = CodingConversationRow.group(rows.flatMap(\.toolMessages) + undated)[0]
+        require(mixed.hasToolDetails && mixed.toolEntries.last?.locations.count == 3 && mixed.toolEntries.count == 5,
+                "Consecutive bare calls should share one entry and retain all three search anchors")
+        let summary = "1 read · 2 test runs (failed → passed) · 1 edit"
+        require(rows.first(where: { $0.id == "work" })?.toolSummary == summary, "Action groups lost their order or reported outcomes")
+        require(hit.messageID == "work" && hit.toolIndex == 1, "Search missed the second call in a message containing prose")
+
+        let id = "00000000-0000-4000-a000-000000000012"
+        let codexHome = root.appendingPathComponent("CodexHome")
+        let rollouts = codexHome.appendingPathComponent("sessions/2026/11/20")
+        try FileManager.default.createDirectory(at: rollouts, withIntermediateDirectories: true)
+        let codexLog = #"""
+        {"type":"session_meta","payload":{"id":"\#(id)","cwd":"/work/afterword"}}
+        {"type":"event_msg","payload":{"type":"user_message","id":"prompt","message":"Check the local build"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"first","call_id":"a","name":"exec","input":"// Local build\n// Expanded script body\nawait tools.exec_command({cmd: 'swift build'})"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"child","command":["zsh","-lc","swift build"],"exit_code":0}}}
+        {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"a","output":"ok"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"second","call_id":"b","name":"exec","input":"const report = 'Build artifacts verified'"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"b","output":"ok"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"third","call_id":"c","name":"exec","input":"text('Finished checks')"}}
+        """#
+        try Data(codexLog.utf8).write(to: rollouts.appendingPathComponent("rollout-2026-11-20-\(id).jsonl"))
+        try archive.setEnabled(true, for: .codex)
+        try archive.synchronize(reader: CodexReader(homeDirectory: codexHome))
+        guard let scriptHit = try archive.matches(query: "artifacts verified", semantic: [], from: nil, to: nil, project: nil, branch: nil).first else {
+            throw RecorderError.message("Missing Codex script citation")
+        }
+
+        var patch = CodingMessage(id: "patch", role: "Assistant", text: "Edited files", parentID: nil, timestamp: nil, tools: ["apply_patch"])
+        patch.toolCalls = [try JSONDecoder().decode(CodingToolCall.self, from: Data(
+            #"{"name":"apply_patch","action":"edit","subject":"First.swift","additionalPaths":["Second.swift"]}"#.utf8))]
+        let saved = legacy + [patch]
+        let archived = CodingHistory(session: session, messages: saved, conversationIDs: saved.map(\.id))
+        let examples: [(String, CodingSession, CodingHit?, [String])] = [
+            ("collapsed", session, nil, ["test runs"]),
+            ("archive", session, nil, ["Names only", "1 edit"]),
+            ("expanded", session, hit, ["test runs", "expected 1 row"]),
+            ("codex", scriptHit.session, scriptHit, ["3 scripts", "swift build", "Build artifacts verified", "Finished checks"])
+        ]
+        for (label, example, selection, expected) in examples {
+            let host = NSHostingView(rootView: CodingSessionDetail(session: example, directory: directory, hit: selection,
+                                                                   citedHistory: label == "archive" ? archived : nil)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 660),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .aqua)
+            window.contentView = host
+            window.orderBack(nil)
+            defer { window.orderOut(nil) }
+            func rendered(_ expected: [String], hiding: String? = nil, screenshot: String? = nil) async throws -> [VNRecognizedText] {
+                var visible = ""
+                for _ in 0..<40 {
+                    await pump(0.05)
+                    let (bitmap, lines) = try toolSnapshot(host)
+                    visible = lines.map(\.string).joined(separator: " ")
+                    guard expected.allSatisfy(visible.contains),
+                          hiding.map({ !visible.contains($0) }) ?? true else { continue }
+                    if let screenshot {
+                        let url = URL(fileURLWithPath: "build/tool-activity-" + screenshot + ".png")
+                        try bitmap.representation(using: .png, properties: [:])?.write(to: url)
+                    }
+                    return lines
+                }
+                throw RecorderError.message("Unexpected tool disclosure for " + label + ": " + visible)
+            }
+            func click(_ text: String, in lines: [VNRecognizedText], alignment: UnitPoint = .center, offset: CGFloat = 0) throws {
+                guard let line = lines.first(where: { $0.string.contains(text) }), let range = line.string.range(of: text),
+                      let box = try line.boundingBox(for: range)?.boundingBox else {
+                    throw RecorderError.message("Could not locate " + text + " for the pointer check")
+                }
+                let x = (box.minX + alignment.x * box.width) * host.bounds.width + offset
+                let y = (host.isFlipped ? 1 - box.midY : box.midY) * host.bounds.height
+                let location = host.convert(NSPoint(x: x, y: y), to: nil)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                    window.sendEvent(event)
+                }
+            }
+            var lines = try await rendered(expected, hiding: label == "collapsed" ? "expected 1 row" : nil, screenshot: label)
+            switch label {
+            case "collapsed":
+                for (words, alignment, offset, expanded) in [("test runs", UnitPoint.center, 0.0, true), ("1 edit", .trailing, 16, false),
+                                                            ("1 read", .leading, -8, true), ("test runs", .center, 0, false)] {
+                    try click(words, in: lines, alignment: alignment, offset: offset)
+                    lines = try await rendered(expanded ? expected + ["expected 1 row"] : expected, hiding: expanded ? nil : "expected 1 row")
+                }
+            case "archive":
+                let note = "No arguments or results"
+                try click("Names only", in: lines)
+                lines = try await rendered(expected + [note])
+                try click("Names only", in: lines)
+                lines = try await rendered(expected, hiding: note)
+                try click("1 edit", in: lines)
+                lines = try await rendered(["1 more file"], hiding: "Second")
+                try click("more file", in: lines)
+                lines = try await rendered(["1 more file", "Second"])
+                try click("more file", in: lines)
+                _ = try await rendered(["1 more file"], hiding: "Second")
+            case "codex":
+                try click("Local build", in: lines)
+                lines = try await rendered(["Expanded script body"])
+                try click("Script", in: lines)
+                _ = try await rendered(["Local build"], hiding: "Expanded script body")
+            default: break
+            }
+        }
+        // Force the second call below the fold in the same message. A scroll to its parent row
+        // would still expand the disclosure but would leave the matching assertion offscreen.
+        let filler = (0..<36).map { index in
+            #"{"type":"tool_use","id":"extra-\#(index)","name":"Read","input":{"file_path":"Sources/Extra\#(index).swift"}},"#
+        }.joined()
+        let longer = log.replacingOccurrences(of: #"{"type":"tool_use","id":"t1""#,
+                                               with: filler + #"{"type":"tool_use","id":"t1""#)
+        let file = folder.appendingPathComponent("00000000-0000-4000-a000-000000000001.jsonl")
+        try Data(longer.utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: file.path)
+        try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: source))
+        guard let target = try archive.matches(query: "expected 1 row", semantic: [], from: nil, to: nil, project: nil, branch: nil).first,
+              target.toolIndex == 37 else { throw RecorderError.message("Long tool group did not import") }
+        let host = NSHostingView(rootView: CodingSessionDetail(session: target.session, directory: directory, hit: target)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 660, height: 460),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        var revealed = false
+        for _ in 0..<15 {
+            await pump(0.1)
+            let (_, lines) = try toolSnapshot(host)
+            revealed = lines.contains { $0.string.contains("expected 1 row") }
+            if revealed { break }
+        }
+        require(revealed, "Selecting a result in a long group must scroll to the matching call")
+        print("PASS deterministic action groups, exact test citation, and native collapsed and expanded previews")
+    }
+
     @MainActor static func checkCodingPages(_ root: URL) async throws {
         let directory = root.appendingPathComponent("CodingSessions")
         try CodingArchive(directory: directory).setEnabled(true, for: .claudeCode)
@@ -1620,22 +1814,30 @@ import Lookback
                 } else {
                     CodingSessionDetail(session: session, directory: library.coding.directory, hit: hit)
                 }
-            })
+            }.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
-            window.contentView = detail; window.displayIfNeeded()
+            window.appearance = NSAppearance(named: .aqua)
+            window.contentView = detail; window.orderBack(nil); window.displayIfNeeded()
+            var toolText = ""
             var text = ""
             for _ in 0..<40 {
                 await pump(0.05)
                 detail.layoutSubtreeIfNeeded()
                 text = visibleText(detail).joined(separator: "\n")
-                if text.contains(heading) && (query != "InspectLayout" || text.contains("InspectLayout")) { break }
+                guard text.contains(heading) else { continue }
+                if query == "InspectLayout" {
+                    let (_, lines) = try toolSnapshot(detail)
+                    toolText = lines.map(\.string).joined(separator: " ").filter(\.isLetter).lowercased()
+                    if !toolText.contains("noargumentsorresults") { continue }
+                }
+                break
             }
             require(text.contains(heading) && !text.contains("## " + heading), "Coding message heading did not render: " + text)
             require(text.contains(provider), "The detail is missing its coding provider")
             if query == "InspectLayout" {
-                require(hit.messageID == "tools-2" && text.contains("InspectLayout") && text.contains("Read"),
-                        "Opening a tool search did not expand its group")
+                require(hit.messageID == "tools-2" && toolText.contains("inspectlayout") && toolText.contains("read") && toolText.contains("noargumentsorresults"),
+                        "Opening tool citation \(hit.messageID ?? "(missing)") did not reveal its calls: " + toolText)
             }
             if query == "reviewneedle" {
                 require(hit.messageID == "review" && text.contains("App.swift:17 · warning") && text.contains("A saved setting is lost."),

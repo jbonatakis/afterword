@@ -540,6 +540,229 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertFalse(plan.contains { $0.last?.contains("TEMP B-TREE") == true })
     }
 
+    func testToolEvidenceSearchPairsParallelCallsAndReplaysLegacyArchive() throws {
+        let rows = #"""
+        {"type":"assistant","uuid":"batch","parentUuid":"reply","message":{"id":"parallel","content":[{"type":"text","text":"Checking the implementation."},{"type":"tool_use","id":"path","name":"Read","input":{"file_path":"/projects/example/Source/Orchard.swift"}},{"type":"tool_use","id":"tests","name":"Bash","input":{"command":"swift test --filter OrchardTests"}},{"type":"tool_use","id":"unknown","name":"CustomTool","input":{"body":"SecretCustomInput"}}]}}
+        {"type":"user","uuid":"results","parentUuid":"batch","message":{"content":[{"type":"tool_result","tool_use_id":"tests","is_error":true,"content":"OrchardTests.swift:9: error: expected 1 row, got 2\nTest Suite 'All tests' failed at 12:00"},{"type":"tool_result","tool_use_id":"path","content":"SecretFileContents"},{"type":"tool_result","tool_use_id":"unknown","content":"SecretCustomOutput"}]}}
+        """#
+        try Data((transcript + "\n" + rows).utf8).write(to: file)
+        let archive = try imported()
+        let id = try XCTUnwrap(archive.sessions().first).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        // An unchanged v1 source is enriched once. The legacy name array stays readable while paused.
+        try db.execute("UPDATE sessions SET info=json_set(info,'$.transcriptVersion',1), history=json_remove(history,'$.messages[5].toolCalls')")
+        try db.execute("DELETE FROM coding_tool_text")
+        func batch() throws -> CodingMessage { try XCTUnwrap(archive.history(id: id).messages.first { $0.id == "batch" }) }
+        try archive.setEnabled(false)
+        try archive.synchronize(reader: reader)
+        XCTAssertEqual(try batch().displayedToolCalls.map(\.name), ["Read", "Bash", "CustomTool"])
+        XCTAssertNil(try batch().toolCalls)
+        try archive.setEnabled(true)
+        try archive.synchronize(reader: reader)
+        let calls = try XCTUnwrap(batch().toolCalls)
+        XCTAssertEqual(calls.map(\.action), [.read, .test, .other])
+        XCTAssertEqual(calls[0].subject, "Source/Orchard.swift")
+        XCTAssertNil(calls[0].result)
+        XCTAssertEqual(calls[1].testOutcome, "failed")
+        XCTAssertEqual(calls[1].diagnostic, "OrchardTests.swift:9: error: expected 1 row, got 2")
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(calls), as: UTF8.self).contains("Secret"))
+        func search(_ term: String) throws -> [CodingHit] {
+            try archive.matches(query: term, semantic: [], from: nil, to: nil, project: project, branch: nil)
+        }
+        let failure = try XCTUnwrap(search("expected 1 row").first)
+        XCTAssertEqual(failure.messageID, "batch")
+        XCTAssertEqual(failure.toolIndex, 1)
+        XCTAssertEqual(try search("Source/Orchard.swift").first?.toolIndex, 0)
+        let revision = try archive.revision
+        try archive.synchronize(reader: reader)
+        XCTAssertEqual(try archive.revision, revision)
+
+        try AgentAccessStore.save(.init(enabled: true, allowCodingSessions: true), directory: root)
+        let agent = AgentLibrary(directory: root)
+        let shared = try agent.call("search_activity", arguments: ["source": "coding", "query": "OrchardTests", "mode": "keyword"])
+        XCTAssertEqual(shared["total"] as? Int, 0)
+        let page = try agent.call("get_coding_session", arguments: ["session_id": id, "message_id": "batch", "limit": 1])
+        XCTAssertFalse(String(describing: page).contains("Orchard"))
+        XCTAssertFalse(try archive.embeddingChunks().contains { $0.text.contains("Orchard") })
+
+        try archive.removeProject(project)
+        XCTAssertTrue(try db.rows("SELECT session FROM coding_tool_text").isEmpty)
+    }
+
+    func testCodexScriptIndexesReportedCommandsWithoutGuessingAboutOverlappingCalls() throws {
+        let rows = #"""
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"wrapper","call_id":"s","name":"exec","input":"await inspect()"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"read-one","command":["zsh","-lc","cat Sources/Fruit.swift"],"parsed_cmd":[{"type":"read","path":"/projects/example/Sources/Fruit.swift"}],"exit_code":0,"aggregated_output":"SecretReadBody"}}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"test-one","command":["zsh","-lc","swift test"],"exit_code":1,"status":"failed","aggregated_output":"FruitTests:9: error: plumfixture failed\nTest Suite 'All tests' failed at noon"}}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","id":"edit-one","changes":{"Sources/Fruit.swift":{"type":"update","unified_diff":"-before\n+after"}}}}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"sibling","call_id":"b","name":"exec","input":"await check()"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"ambiguous","command":"SecretAmbiguous","exit_code":1}}}
+        {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"s","output":"ok"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"b","output":"ok"}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        let store = try CodingArchive(directory: archived)
+        try store.addProject(project)
+        try store.setEnabled(true, for: .codex)
+        try store.synchronize(reader: CodexReader(homeDirectory: codexHome))
+        let history = try store.history(id: XCTUnwrap(store.sessions().first).id)
+        XCTAssertEqual(history.conversationIDs, ["wrapper", "sibling"])
+        let events = try XCTUnwrap(history.conversation.first?.toolCalls?.first?.events)
+        XCTAssertEqual(events.map(\.action), [.read, .test, .edit])
+        XCTAssertEqual(events[0].subject, "Sources/Fruit.swift")
+        XCTAssertEqual(events[0].result, "Exit 0")
+        XCTAssertEqual(events[1].result, "Exit 1")
+        XCTAssertEqual(events[1].testOutcome, "failed")
+        XCTAssertEqual(events[2].subject, "Sources/Fruit.swift")
+        XCTAssertTrue(events[2].preview?.contains("+after") == true)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(history), as: UTF8.self).contains("Secret"))
+        let hit = try XCTUnwrap(store.matches(query: "plumfixture", semantic: [], from: nil, to: nil, project: nil, branch: nil).first)
+        XCTAssertEqual(hit.messageID, "wrapper")
+        XCTAssertEqual(hit.toolIndex, 0)
+        XCTAssertEqual(hit.eventIndex, 1)
+    }
+
+    func testOpeningLegacyCodexSessionRecoversOnlyItsExecDetails() throws {
+        let rows = #"""
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"a","call_id":"1","name":"exec","input":"inspectOne()"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"b","call_id":"2","name":"exec","input":"inspectTwo()"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"c","call_id":"3","name":"exec","input":"inspectThree()"}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        try writeRollout("00000000-0000-4000-a000-000000000002", project: project, rows: rows)
+        let reader = CodexReader(homeDirectory: codexHome)
+        let archive = try CodingArchive(directory: archived)
+        try archive.setEnabled(true, for: .codex)
+        try archive.addProject(project)
+        try archive.synchronize(reader: reader)
+        let sessions = try archive.sessions()
+        XCTAssertEqual(sessions.count, 2)
+        let id = try XCTUnwrap(sessions.first).id
+        let other = try XCTUnwrap(sessions.last).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("""
+            UPDATE sessions SET info=json_set(info,'$.transcriptVersion',1),
+              history=json_set(json_remove(history,'$.messages[0].toolCalls','$.messages[1].toolCalls','$.messages[2].toolCalls'),
+                               '$.session.transcriptVersion',1)
+            """)
+        func open() throws -> [CodingToolCall] {
+            try CodingArchive.historyForDisplay(in: archived, id: id, readers: [reader]).conversation.flatMap(\.displayedToolCalls)
+        }
+        try archive.setEnabled(false, for: .codex)
+        XCTAssertEqual(try open().map(\.hasDetails), [false, false, false])
+        try archive.setEnabled(true, for: .codex)
+        XCTAssertEqual(try open().compactMap(\.preview), ["inspectOne()", "inspectTwo()", "inspectThree()"])
+        XCTAssertNil(try archive.history(id: other).messages.first?.toolCalls)
+        let revision = try archive.revision
+        _ = try open()
+        XCTAssertEqual(try archive.revision, revision)
+    }
+
+    func testCodexPartialCompletionsPreserveCommandsAndRepairSearchOnReplay() throws {
+        let rows = #"""
+        {"type":"response_item","payload":{"type":"function_call","id":"build","call_id":"a","name":"exec_command","arguments":"{\"cmd\":\"swift build\"}"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"a","exit_code":0}}}
+        {"type":"response_item","payload":{"type":"function_call_output","call_id":"a","output":"done"}}
+        {"type":"response_item","payload":{"type":"function_call","id":"read","call_id":"b","name":"exec_command","arguments":"{\"cmd\":\"cat Fruit.swift\"}"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"b","command":[],"parsed_cmd":[{"type":"read","path":"Fruit.swift"}]}}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        let reader = CodexReader(homeDirectory: codexHome)
+        let archive = try CodingArchive(directory: archived)
+        try archive.addProject(project)
+        try archive.setEnabled(true, for: .codex)
+        try archive.synchronize(reader: reader)
+        let id = try XCTUnwrap(archive.sessions().first).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("""
+            UPDATE sessions SET info=json_set(info,'$.transcriptVersion',3),
+              history=json_set(json_remove(history,'$.messages[0].toolCalls[0].subject'),'$.session.transcriptVersion',3)
+            """)
+        try db.execute("DELETE FROM coding_tool_text WHERE message='build'")
+        let history = try CodingArchive.historyForDisplay(in: archived, id: id, readers: [reader])
+        let calls = history.conversation.flatMap(\.displayedToolCalls)
+        XCTAssertEqual(calls.map(\.subject), ["swift build", "Fruit.swift"])
+        XCTAssertEqual(calls.first?.result, "Exit 0")
+        XCTAssertEqual(calls.last?.preview, "cat Fruit.swift")
+        let hits = try archive.matches(query: "swift build", semantic: [], from: nil, to: nil, project: nil, branch: nil)
+        XCTAssertEqual(hits.first?.messageID, "build")
+        XCTAssertEqual(hits.first?.toolIndex, 0)
+    }
+
+    func testCodexCompletedCommandOverridesOnlyWithUsableShellText() throws {
+        func call(_ invocation: String, _ completed: String) -> CodingToolCall {
+            CodingToolCall(name: "exec_command", input: Data(invocation.utf8), project: project, provider: "codex",
+                           commandCompletion: Data(completed.utf8))
+        }
+        let original = #"{"cmd":"swift test"}"#
+        for partial in ["{}", #"{"cwd":"/demo"}"#, #"{"command":["zsh","-lc"," "]}"#] {
+            XCTAssertEqual(call(original, partial).subject, "swift test")
+        }
+        let completed = #"{"command":["zsh","-lc","swift test --filter Fruit"]}"#
+        XCTAssertEqual(call(original, completed).subject, "swift test --filter Fruit")
+        XCTAssertEqual(call("{}", completed).subject, "swift test --filter Fruit")
+        XCTAssertNil(call("{}", "{}").subject)
+        let parsed = #"{"cmd":"cat Fruit.swift","parsed_cmd":[{"type":"read","path":"Fruit.swift"}]}"#
+        let partial = call(parsed, #"{"parsed_cmd":[{"type":"read"}]}"#)
+        XCTAssertEqual(partial.subject, "Fruit.swift")
+        XCTAssertEqual(partial.preview, "cat Fruit.swift")
+    }
+
+    func testToolEvidenceUsesOnlyRecordedFieldsAndBoundsExcerpts() throws {
+        func call(_ name: String, _ input: Any, provider: CodingProvider = .codex) throws -> CodingToolCall {
+            CodingToolCall(name: name, input: try JSONSerialization.data(withJSONObject: input, options: .fragmentsAllowed),
+                           project: project, provider: provider.rawValue)
+        }
+        let command = try call("shell_command", ["command": "swift test --filter LeafTests"])
+        XCTAssertEqual(command.action, .test)
+        XCTAssertEqual(command.subject, "swift test --filter LeafTests")
+        let poll = try call("write_stdin", ["session_id": 37, "chars": ""])
+        XCTAssertEqual(poll.subject, "Poll terminal session 37")
+        let input = try call("write_stdin", ["session_id": 37, "chars": "PrivateStdin"])
+        XCTAssertEqual(input.subject, "Send input to terminal session 37")
+        XCTAssertFalse(input.searchText.contains("PrivateStdin"))
+        let task = try call("TaskUpdate", ["taskId": "7", "status": "completed", "metadata": ["private": "PrivateValue"]])
+        XCTAssertEqual(task.preview, "status = completed\ntaskId = 7")
+        let mcp = try call("call_mcp_tool", ["ServerName": "work", "ToolName": "lookup", "Arguments": ["query": "Apricots", "token": "PrivateToken"]], provider: .antigravity)
+        XCTAssertEqual(mcp.preview, "query = Apricots")
+        let opaque = try call("CustomTool", ["body": "PrivateBody"])
+        XCTAssertFalse(opaque.hasDetails)
+        let edit = try call("Edit", ["file_path": "/projects/example2/a", "old_string": "old", "new_string": "new"])
+        XCTAssertEqual(edit.subject, "/projects/example2/a")
+        XCTAssertEqual(edit.preview, "− old\n+ new")
+        let indent = try call("edit", ["oldText": "  return", "newText": "    return"])
+        XCTAssertEqual(indent.preview, "−   return\n+     return")
+        let patch = try call("apply_patch", "*** Update File: First.swift\n" + String(repeating: "+line\n", count: 40) + "*** Delete File: Last.swift")
+        XCTAssertEqual(patch.additionalPaths, ["Last.swift"])
+        XCTAssertTrue(patch.searchText.contains("Last.swift"))
+        let script = try call("exec", "// @exec: {}\n" + String(repeating: "example();\n", count: 1000))
+        XCTAssertEqual(script.action, .script)
+        XCTAssertTrue(script.preview?.hasSuffix("…") == true)
+        XCTAssertFalse(script.preview?.contains("@exec") == true)
+        let nested = try call("call_mcp_tool", ["ServerName": "work", "ToolName": "get_ticket", "Arguments": ["secret": "hidden"]], provider: .antigravity)
+        XCTAssertEqual(nested.subject, "work / get_ticket")
+        XCTAssertFalse(nested.searchText.contains("hidden"))
+        var search = try call("Grep", ["pattern": "needle"])
+        search.receive(output: try JSONEncoder().encode(["numMatches": 0]), isError: false)
+        XCTAssertEqual(search.result, "0 matches")
+
+        func result(_ cmd: String, _ output: String) throws -> CodingToolCall {
+            var shell = try call("exec_command", ["cmd": cmd])
+            shell.receive(output: try JSONEncoder().encode(output), isError: false)
+            return shell
+        }
+        let shell = try result("swift test | tee log", "Test Suite 'All tests' passed")
+        XCTAssertEqual(shell.action, .command)
+        XCTAssertNil(shell.testOutcome)
+        let partial = try result("swift test", "Chunk ID: abc\nWall time: 1s\nProcess exited with code 0\nOutput:\nTest Suite 'OneTest' passed")
+        XCTAssertEqual(partial.result, "Exit 0")
+        XCTAssertNil(partial.testOutcome)
+        let success = try result("pytest -q", "===== 14 passed in 1.22s =====")
+        XCTAssertEqual(success.testOutcome, "passed")
+        let unmatched = try call("Bash", ["command": "swift test"])
+        XCTAssertNil(unmatched.testOutcome)
+    }
+
     func testOptInArchiveViewsAndCleanup() throws {
         let store = try CodingArchive(directory: archived)
         try store.synchronize(reader: reader)

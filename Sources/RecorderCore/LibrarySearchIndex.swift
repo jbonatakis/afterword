@@ -186,11 +186,11 @@ public final class LibrarySearchIndex: @unchecked Sendable {
         codingArchive = try directory.flatMap { CodingArchive.exists(in: $0) ? try CodingArchive(directory: $0) : nil }
     }
     public func codingSearch(_ query: String, keywordOnly: Bool = false, from: Date? = nil,
-                             to: Date? = nil, project: String? = nil, branch: String? = nil) throws -> (hits: [CodingHit], status: SemanticSearchStatus) {
+                             to: Date? = nil, project: String? = nil, branch: String? = nil, includeToolEvidence: Bool = true) throws -> (hits: [CodingHit], status: SemanticSearchStatus) {
         lock.lock(); defer { lock.unlock() }
         guard let codingArchive else { return ([], semanticStatus()) }
         let (candidates, status, _) = keywordOnly ? ([], semanticStatus(), "") : semantic.search(query, allVersions: false)
-        return (try codingArchive.matches(query: query, semantic: candidates, from: from, to: to, project: project, branch: branch), status)
+        return (try codingArchive.matches(query: query, semantic: candidates, from: from, to: to, project: project, branch: branch, includeToolEvidence: includeToolEvidence), status)
     }
     public func useGitHubArchive(in directory: URL?, shared: Bool) throws {
         lock.lock(); defer { lock.unlock() }

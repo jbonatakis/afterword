@@ -100,7 +100,7 @@ struct BoardCitationView: View {
                         }
                         return .call(call, version, paragraphs)
                     case .coding(let projects, _):
-                        let history = try CodingArchive.history(in: codingDirectory, id: reference.itemID)
+                        let history = try CodingArchive.historyForDisplay(in: codingDirectory, id: reference.itemID)
                         guard projects.includes(history.session.project) else {
                             throw RecorderError.message("This session is outside your selected coding sources.")
                         }
