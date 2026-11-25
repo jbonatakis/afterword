@@ -51,7 +51,7 @@ Session transcripts are parsed, stored, and optionally embedded, enabling browsi
 and intelligent search across sessions and agents. Quickly find what you did in old sessions,
 or with another agent altogether.
 
-Supported agents: Codex, Claude Code, Pi
+Supported agents: Codex, Claude Code, Pi, Google Antigravity CLI
 
 #### GitHub
 
