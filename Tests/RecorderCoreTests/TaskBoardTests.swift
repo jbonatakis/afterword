@@ -63,10 +63,11 @@ final class TaskBoardTests: XCTestCase {
         XCTAssertTrue(rpc.toolsChangedNotification() != nil)
         XCTAssertEqual(try names(), initial)
         try grant()
+        let lastVisibleRevision = try revision()
         try ActivitySourceStore.save([.coding], directory: state)
         XCTAssertEqual(try names(), initial)
         XCTAssertTrue(try request("tools/call", ["name": "delete_board_ticket", "arguments": [:]])["error"] != nil)
-        XCTAssertThrowsError(try library.call("create_board_ticket", arguments: ["title": "Hidden", "expected_revision": try revision()]))
+        XCTAssertThrowsError(try library.call("create_board_ticket", arguments: ["title": "Hidden", "expected_revision": lastVisibleRevision]))
         try ActivitySourceStore.save([.board], directory: state)
         XCTAssertEqual(try library.call("get_board", arguments: [:])["ticket_count"] as? Int, 1)
         var config = try AgentAccessStore.load(directory: state)
@@ -138,7 +139,8 @@ final class TaskBoardTests: XCTestCase {
         }
 
         func page(_ args: [String: Any]) throws -> [[String: Any]] {
-            try XCTUnwrap(agent.call("list_board_tickets", arguments: args)["items"] as? [[String: Any]])
+            let response = try agent.call("list_board_tickets", arguments: args)
+            return try XCTUnwrap(response["items"] as? [[String: Any]])
         }
         func ids(_ args: [String: Any]) throws -> [String] { try page(args).compactMap { $0["id"] as? String } }
         let browse = try page(["query": "  "])

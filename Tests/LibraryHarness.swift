@@ -1294,6 +1294,21 @@ import Lookback
         print("PASS cached first paint and detail during a blocked import, native scrolling, concurrent removal, and archive-wide search and filters")
     }
 
+    /// Read the rendered viewport across SwiftUI versions with different backing views for Text.
+    @MainActor static func visibleConversationLines(in scroll: NSScrollView, host: NSView) throws -> [String] {
+        host.layoutSubtreeIfNeeded()
+        let clip = scroll.contentView
+        let rect = clip.convert(clip.bounds, to: host).intersection(host.bounds)
+        guard !rect.isEmpty, let bitmap = host.bitmapImageRepForCachingDisplay(in: rect) else { return [] }
+        host.cacheDisplay(in: rect, to: bitmap)
+        guard let image = bitmap.cgImage else { return [] }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .fast
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).sorted { $0.boundingBox.midY > $1.boundingBox.midY }
+            .compactMap { $0.topCandidates(1).first?.string }
+    }
+
     @MainActor static func checkCodingSidebar(root: URL, library: RecordingLibraryModel, recorder: RecordingCoordinator, playback: RecordingPlayback) async throws {
         try checkQuestionReplies()
         let pending = root.appendingPathComponent("Call-2026-11-14_10-00-00")
@@ -1389,16 +1404,8 @@ import Lookback
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
         scroll.reflectScrolledClipView(scroll.contentView)
         await pump()
-        func firstVisibleParagraph() -> String? {
-            guard let document = scroll.documentView else { return nil }
-            return descendants(document).compactMap { view -> (String, CGFloat)? in
-                guard let field = view as? NSTextField, !field.stringValue.isEmpty else { return nil }
-                let rect = field.convert(field.bounds, to: document)
-                guard scroll.documentVisibleRect.contains(rect) else { return nil }
-                return (field.stringValue, rect.minY - scroll.documentVisibleRect.minY)
-            }.min { $0.1 < $1.1 }?.0
-        }
-        let paragraphAtTop = firstVisibleParagraph()
+        let lineAtTop = try visibleConversationLines(in: scroll, host: host).first
+        require(lineAtTop != nil, "Missing visible conversation text before calendar navigation")
         let offset = scroll.contentView.bounds.origin.y
         let saved = library.selection
         let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
@@ -1431,8 +1438,9 @@ import Lookback
         }
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         require(library.destination == .activity(.claudeCode) && library.selection == saved && hasLibrarySearch(), "Returning to activity lost selection or search")
+        let restoredLine = try visibleConversationLines(in: scroll, host: host).first
         require(scroll.window === window && abs(scroll.contentView.bounds.origin.y - offset) < 2 &&
-                paragraphAtTop != nil && firstVisibleParagraph() == paragraphAtTop, "Returning to activity lost the conversation scroll position: wanted \(offset), got \(scroll.contentView.bounds.origin.y), attached \(scroll.window === window)")
+                restoredLine == lineAtTop, "Returning to activity lost the conversation position: wanted \(offset) / \(lineAtTop ?? ""), got \(scroll.contentView.bounds.origin.y) / \(restoredLine ?? "")")
         library.destination = .activity(.transcribed)
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
@@ -1630,18 +1638,16 @@ import Lookback
         defer { window.orderOut(nil) }
 
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        func isTextVisible(_ text: String) -> Bool {
-            guard let scroll = descendants(detail).compactMap({ $0 as? NSScrollView }).first,
-                  let document = scroll.documentView else { return false }
-            return descendants(document).compactMap { $0 as? NSTextField }.contains { field in
-                field.stringValue == text && scroll.documentVisibleRect.contains(field.convert(field.bounds, to: document))
-            }
+        func isTextVisible(_ text: String) throws -> Bool {
+            guard let scroll = descendants(detail).compactMap({ $0 as? NSScrollView }).first else { return false }
+            return try visibleConversationLines(in: scroll, host: detail).contains(text)
         }
         for _ in 0..<40 {
             await pump(0.05)
-            if isTextVisible("End of reply 31.") { break }
+            if try isTextVisible("End of reply 31.") { break }
         }
-        require(isTextVisible("End of reply 31."), "The last paragraph must be visible when the chat opens")
+        let showsLastReply = try isTextVisible("End of reply 31.")
+        require(showsLastReply, "The last paragraph must be visible when the chat opens")
 
         // Click the floating control through this window's event handler.
         let location = NSPoint(x: detail.bounds.width - 65, y: 26)
@@ -1652,9 +1658,10 @@ import Lookback
         }
         for _ in 0..<60 {
             await pump(0.05)
-            if isTextVisible("Document the retry behavior") { break }
+            if try isTextVisible("Document the retry behavior") { break }
         }
-        require(isTextVisible("Document the retry behavior"), "Jump to top must reveal the first message")
+        let showsFirstPrompt = try isTextVisible("Document the retry behavior")
+        require(showsFirstPrompt, "Jump to top must reveal the first message")
         print("PASS last paragraph visible on open and first prompt visible after the floating Jump to top")
     }
 
