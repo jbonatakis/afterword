@@ -650,7 +650,6 @@ private struct CodingMessageBubble: View {
     let maxWidth: CGFloat
     let matchedID: String?
     let matchedTool: CodingToolLocation?
-    let revealTool: (CodingToolLocation) -> Void
     let jumpToQuestion: (String) -> Void
     @State private var toolsExpanded = false
 
@@ -756,14 +755,14 @@ private struct CodingMessageBubble: View {
                         }
                     }
                     .help(entry.date?.formatted() ?? "")
-                    .modifier(CodingToolCitation(location: location, match: matchedTool, reveal: revealTool))
+                    .background { if location == matchedTool { CodingToolCitation().id(location) } }
                     if let events = call.events {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Reported during this script").font(.caption).foregroundStyle(.secondary)
                             ForEach(events.indices, id: \.self) { position in
                                 let event = CodingToolLocation(messageID: entry.id.messageID, index: entry.id.index, event: position)
                                 CodingToolDetail(call: events[position], matched: matchedTool == event)
-                                    .modifier(CodingToolCitation(location: event, match: matchedTool, reveal: revealTool))
+                                    .background { if event == matchedTool { CodingToolCitation().id(event) } }
                             }
                         }
                         .padding(.leading, 10)
@@ -800,19 +799,27 @@ private struct CodingToolDisclosure<Content: View, Label: View>: View {
     }
 }
 
-private struct CodingToolCitation: ViewModifier {
-    let location: CodingToolLocation
-    let match: CodingToolLocation?
-    let reveal: (CodingToolLocation) -> Void
+/// The scroll proxy targets message rows in the lazy stack. Use the laid-out
+/// bounds of the selected call to reveal its position inside the expanded row.
+private struct CodingToolCitation: NSViewRepresentable {
+    final class Marker: NSView {
+        private var revealed = false
 
-    func body(content: Content) -> some View {
-        content.id(location)
-            .task(id: match == location) {
-                guard match == location else { return }
-                await Task.yield()
-                if !Task.isCancelled { reveal(location) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func layout() {
+            super.layout()
+            guard !revealed, !bounds.isEmpty, window != nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.revealed, !self.bounds.isEmpty, self.enclosingScrollView != nil else { return }
+                self.scrollToVisible(self.bounds)
+                self.revealed = true
             }
+        }
     }
+
+    func makeNSView(context: Context) -> Marker { Marker() }
+    func updateNSView(_ view: Marker, context: Context) {}
 }
 
 private struct CodingToolDetail: View {
@@ -929,6 +936,7 @@ struct CodingSessionDetail: View {
     var citedHistory: CodingHistory? = nil
     var citedMessageID: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var positionedMessageID: String?
     @State private var showsJumpToTop = false
     @State private var timeline: CodingConversationTimeline?
     @State private var recorded = false
@@ -1027,10 +1035,12 @@ struct CodingSessionDetail: View {
                 .contentMargins(.all, margins, for: .scrollContent)
                 .modifier(ConversationOpeningPosition(opensAtBottom: anchor == nil))
                 .task(id: anchor) {
-                    guard let anchor else { return }
+                    guard let anchor else { positionedMessageID = nil; return }
                     await Task.yield()
                     guard !Task.isCancelled else { return }
                     proxy.scrollTo(anchor, anchor: .top)
+                    // A nested tool scroll must follow the scroll that materializes its lazy message row.
+                    positionedMessageID = anchor
                 }
                 // Clearing a search or citation reopens the conversation at its default position.
                 .id(anchor == nil)
@@ -1073,8 +1083,7 @@ struct CodingSessionDetail: View {
             } else {
                 CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
                                     maxWidth: width, matchedID: row.id == anchor ? (citedMessageID ?? hit?.messageID) : nil,
-                                    matchedTool: row.id == anchor && citedMessageID == nil ? matchedTool : nil,
-                                    revealTool: { proxy.scrollTo($0, anchor: .top) }) { questionID in
+                                    matchedTool: row.id == anchor && row.id == positionedMessageID && citedMessageID == nil ? matchedTool : nil) { questionID in
                     proxy.scrollTo(questionID, anchor: .top)
                 }
             }

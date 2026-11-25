@@ -1241,6 +1241,24 @@ import Lookback
         print("PASS recording startup during blocked indexing, saved selection, current scope, and queued search")
     }
 
+    @MainActor static func toolSnapshot(_ view: NSView) throws -> (NSBitmapImageRep, [VNRecognizedText]) {
+        // Use the same resolution for small disclosure labels on Retina and CI displays.
+        let size = view.bounds.size
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+            throw RecorderError.message("Could not render tool activity")
+        }
+        bitmap.size = size
+        view.layoutSubtreeIfNeeded()
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let image = bitmap.cgImage else { throw RecorderError.message("Missing tool activity image") }
+        let request = VNRecognizeTextRequest()
+        request.minimumTextHeight = 0.007
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (bitmap, (request.results ?? []).compactMap { $0.topCandidates(1).first })
+    }
+
     @MainActor static func checkToolActivity(_ root: URL) async throws {
         let source = root.appendingPathComponent("Claude")
         let folder = source.appendingPathComponent("afterword")
@@ -1326,13 +1344,7 @@ import Lookback
                 var visible = ""
                 for _ in 0..<40 {
                     await pump(0.05)
-                    host.layoutSubtreeIfNeeded()
-                    let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
-                    host.cacheDisplay(in: host.bounds, to: bitmap)
-                    guard let image = bitmap.cgImage else { continue }
-                    let request = VNRecognizeTextRequest()
-                    try VNImageRequestHandler(cgImage: image).perform([request])
-                    let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first }
+                    let (bitmap, lines) = try toolSnapshot(host)
                     visible = lines.map(\.string).joined(separator: " ")
                     guard expected.allSatisfy(visible.contains),
                           hiding.map({ !visible.contains($0) }) ?? true else { continue }
@@ -1410,14 +1422,8 @@ import Lookback
         var revealed = false
         for _ in 0..<15 {
             await pump(0.1)
-            host.layoutSubtreeIfNeeded()
-            let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
-            host.cacheDisplay(in: host.bounds, to: bitmap)
-            if let image = bitmap.cgImage {
-                let request = VNRecognizeTextRequest()
-                try VNImageRequestHandler(cgImage: image).perform([request])
-                revealed = (request.results ?? []).contains { $0.topCandidates(1).first?.string.contains("expected 1 row") == true }
-            }
+            let (_, lines) = try toolSnapshot(host)
+            revealed = lines.contains { $0.string.contains("expected 1 row") }
             if revealed { break }
         }
         require(revealed, "Selecting a result in a long group must scroll to the matching call")
@@ -1811,19 +1817,26 @@ import Lookback
             })
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
-            window.contentView = detail; window.displayIfNeeded()
+            window.contentView = detail; window.orderBack(nil); window.displayIfNeeded()
+            var toolText = ""
             var text = ""
             for _ in 0..<40 {
                 await pump(0.05)
                 detail.layoutSubtreeIfNeeded()
                 text = visibleText(detail).joined(separator: "\n")
-                if text.contains(heading) && (query != "InspectLayout" || text.contains("InspectLayout")) { break }
+                guard text.contains(heading) else { continue }
+                if query == "InspectLayout" {
+                    let (_, lines) = try toolSnapshot(detail)
+                    toolText = lines.map(\.string).joined(separator: " ").filter(\.isLetter).lowercased()
+                    if !toolText.contains("noargumentsorresults") { continue }
+                }
+                break
             }
             require(text.contains(heading) && !text.contains("## " + heading), "Coding message heading did not render: " + text)
             require(text.contains(provider), "The detail is missing its coding provider")
             if query == "InspectLayout" {
-                require(hit.messageID == "tools-2" && text.contains("InspectLayout") && text.contains("Read"),
-                        "Opening a tool search did not expand its group")
+                require(hit.messageID == "tools-2" && toolText.contains("inspectlayout") && toolText.contains("read") && toolText.contains("noargumentsorresults"),
+                        "Opening tool citation \(hit.messageID ?? "(missing)") did not reveal its calls: " + toolText)
             }
             if query == "reviewneedle" {
                 require(hit.messageID == "review" && text.contains("App.swift:17 · warning") && text.contains("A saved setting is lost."),
