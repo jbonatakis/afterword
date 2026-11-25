@@ -725,6 +725,7 @@ struct CodingSessionDetail: View {
     var citedMessageID: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsJumpToTop = false
+    @State private var fitsViewport = false
     @State private var timeline: CodingConversationTimeline?
     @State private var recorded = false
     @State private var issue: String?
@@ -787,38 +788,35 @@ struct CodingSessionDetail: View {
     private func transcript(_ rows: [CodingConversationRow], proxy: ScrollViewProxy) -> some View {
         let anchor = (citedMessageID ?? hit?.messageID).flatMap { id in rows.first { $0.contains(id) }?.id }
         return GeometryReader { geometry in
-            let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
+            let margins = EdgeInsets(top: 16, leading: 16, bottom: 54, trailing: 16)
+            let maxWidth = min(680, max(0, geometry.size.width - margins.leading - margins.trailing) * 0.87)
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         Color.clear.frame(height: 0).id(VerticalEdge.top)
-                        LazyVStack(spacing: 0) {
-                            ForEach(rows.dropLast()) { row in
-                                messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
-                            }
-                        }
-                        // Keep the final row measured while the lazy stack estimates earlier message heights.
-                        if let last = rows.last {
-                            messageRow(last, width: maxWidth, anchor: anchor, proxy: proxy)
+                        ForEach(rows) { row in
+                            messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
                         }
                     }
+                    .onGeometryChange(for: Bool.self) { stack in
+                        stack.size.height + margins.top + margins.bottom <= geometry.size.height
+                    } action: { fitsViewport = $0 }
                     .onGeometryChange(for: Bool.self) { stack in
                         stack.frame(in: .scrollView).minY < -24
                     } action: { scrolledDown in
                         showsJumpToTop = scrolledDown
                     }
                 }
-                .contentMargins([.horizontal, .top], 16, for: .scrollContent)
-                .contentMargins(.bottom, 54, for: .scrollContent)
+                .contentMargins(.all, margins, for: .scrollContent)
+                .defaultScrollAnchor(anchor == nil && !fitsViewport ? .bottom : nil)
                 .task(id: anchor) {
+                    guard let anchor else { return }
                     await Task.yield()
                     guard !Task.isCancelled else { return }
-                    if let anchor {
-                        proxy.scrollTo(anchor, anchor: .top)
-                    } else if let last = rows.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+                    proxy.scrollTo(anchor, anchor: .top)
                 }
+                // Clearing a search or citation reopens the conversation at its default position.
+                .id(anchor == nil)
                 if showsJumpToTop {
                     jumpToTopButton(proxy: proxy)
                         .padding(.trailing, 20).padding(.bottom, 12)

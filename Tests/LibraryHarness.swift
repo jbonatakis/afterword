@@ -1540,8 +1540,17 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }
         require(library.codingHits[session.id]?.messageID == "answer", "Coding search lost the message citation")
-        try await checkSessionScrolling(session: session, directory: library.coding.directory)
         let history = try archive.history(id: session.id)
+        try await checkSessionScrolling(session: session, directory: library.coding.directory,
+                                        visibleOnOpen: ["End of reply 31."])
+        let lastTurns = [
+            CodingMessage(id: "follow-up", role: "User", text: "Any other changes?", parentID: "turn-31", timestamp: nil, tools: []),
+            CodingMessage(id: "done", role: "Assistant", text: "All done.", parentID: "follow-up", timestamp: nil, tools: [])
+        ]
+        let shortEnding = CodingHistory(session: session, messages: history.messages + lastTurns,
+                                        conversationIDs: history.conversationIDs + lastTurns.map(\.id))
+        try await checkSessionScrolling(session: session, directory: library.coding.directory, history: shortEnding,
+                                        visibleOnOpen: ["End of reply 31."] + lastTurns.map(\.text))
         for messages in [history.conversation, history.messages] {
             let rows = CodingConversationRow.group(messages)
             let calls = rows.filter { $0.toolCount > 0 }
@@ -1656,8 +1665,10 @@ import Lookback
         print("PASS Pi folder selection, import, and provider sidebar navigation")
     }
 
-    @MainActor static func checkSessionScrolling(session: CodingSession, directory: URL) async throws {
-        let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: nil))
+    @MainActor static func checkSessionScrolling(session: CodingSession, directory: URL, history: CodingHistory? = nil,
+                                                visibleOnOpen: [String]) async throws {
+        let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: nil,
+                                                                 citedHistory: history))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 540, height: 660),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = detail
@@ -1674,9 +1685,10 @@ import Lookback
         }
         for _ in 0..<40 {
             await pump(0.05)
-            if isTextVisible("End of reply 31.") { break }
+            if visibleOnOpen.allSatisfy(isTextVisible) { break }
         }
-        require(isTextVisible("End of reply 31."), "The last paragraph must be visible when the chat opens")
+        let missing = visibleOnOpen.filter { !isTextVisible($0) }
+        require(missing.isEmpty, "Missing text in the viewport before any scrolling: \(missing)")
 
         // Click the floating control through this window's event handler.
         let location = NSPoint(x: detail.bounds.width - 65, y: 26)
@@ -1690,7 +1702,7 @@ import Lookback
             if isTextVisible("Document the retry behavior") { break }
         }
         require(isTextVisible("Document the retry behavior"), "Jump to top must reveal the first message")
-        print("PASS last paragraph visible on open and first prompt visible after the floating Jump to top")
+        print("PASS chat opened showing \(visibleOnOpen.joined(separator: " / ")). Jump to top revealed the first prompt.")
     }
 
     static func checkQuestionReplies() throws {
