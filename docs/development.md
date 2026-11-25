@@ -53,10 +53,6 @@ xcodebuild -project Afterword.xcodeproj -scheme Afterword \
 
 The project defaults to the same local signing identity. If using another certificate, set `CODE_SIGN_IDENTITY` consistently. Regenerate the checked-in project after adding or removing source or test files with `python3 Scripts/generate-project.py`.
 
-### Migrate an installation named Call Recorder
-
-Quit the old app and its MCP helpers. Run `python3 Scripts/migrate-afterword-data.py` before opening Afterword. It moves support and cache directories and copies preferences into the new domain. Recording folders stay in place. If both installations already have data, the script refuses to merge them. Grant permissions to the new app when prompted and update any MCP clients to use the new bundle's `Contents/Helpers/AfterwordMCP`.
-
 ## Run checks
 
 | Command | What it exercises |
