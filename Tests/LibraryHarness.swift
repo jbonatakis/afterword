@@ -72,6 +72,24 @@ import Lookback
         print("PASS independent recorder state, 10 Hz audio meters, whole-second clock, and final diagnostics")
     }
 
+    @MainActor static func checkMarkdownListLayout() {
+        let proposal = NSSize(width: 480, height: 600)
+        func width(_ markdown: String, fillsWidth: Bool = false) -> CGFloat {
+            let host = NSHostingController(rootView: MarkdownContent(markdown: markdown, fillsWidth: fillsWidth))
+            return host.sizeThatFits(in: proposal).width
+        }
+        // Only the longest row determines the ideal width of these compact conversation bubbles.
+        let wide = "- Longest item in this list"
+        let flat = width("- A\n" + wide)
+        let nested = "- A\n  " + wide
+        let compact = width(nested)
+        require(compact > flat, "The child row rendered at the parent margin")
+        require(width("- A\n  - B\n" + wide) == flat, "The final parent row kept its child's indent")
+        require(compact < proposal.width && width(nested, fillsWidth: true) == proposal.width,
+                "List rows lost their compact or full-width sizing")
+        print("PASS nested Markdown list indentation, return to parent, and compact and full-width sizing")
+    }
+
     @MainActor static func run() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-ui-" + UUID().uuidString)
         setenv("CLAUDE_CONFIG_DIR", root.appendingPathComponent("ClaudeConfig").path, 1)
@@ -80,6 +98,7 @@ import Lookback
         guard Bundle.main.bundleIdentifier == name else { throw RecorderError.message("Run this harness in the Library Check test bundle") }
         UserDefaults.standard.removePersistentDomain(forName: name)
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
+        checkMarkdownListLayout()
         checkRecordingTelemetry(root)
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
         if checkBoardDrag { try await checkSourceSelection(root); return }
