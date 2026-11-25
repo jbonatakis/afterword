@@ -796,7 +796,7 @@ struct CodingSessionDetail: View {
                         ForEach(rows) { row in
                             messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
                                 .background {
-                                    if row.id == rows.last?.id {
+                                    if #unavailable(macOS 15), row.id == rows.last?.id {
                                         GeometryReader { message in
                                             let frame = message.frame(in: .scrollView)
                                             let bottom = geometry.size.height - margins.bottom
@@ -880,15 +880,26 @@ private struct ConversationEndVisible: PreferenceKey {
 
 private struct ConversationOpeningPosition: ViewModifier {
     let opensAtBottom: Bool
-    @State private var didShowEnd = false
+    @State private var releaseBottomAnchor = false
 
     func body(content: Content) -> some View {
-        // Lazy row estimates can change during scrolling. Release the bottom anchor
-        // once the final message's measured bottom edge has reached the viewport.
-        content
-            .defaultScrollAnchor(opensAtBottom && !didShowEnd ? .bottom : nil)
-            .onPreferenceChange(ConversationEndVisible.self) { visible in
-                if visible { didShowEnd = true }
-            }
+        if #available(macOS 15, *) {
+            // Stay at the bottom while the lazy stack measures the last page.
+            // Once scrolling starts, size changes should preserve the reading position.
+            content
+                .defaultScrollAnchor(opensAtBottom ? .bottom : nil, for: .initialOffset)
+                .defaultScrollAnchor(opensAtBottom && !releaseBottomAnchor ? .bottom : nil, for: .sizeChanges)
+                .onScrollPhaseChange { _, phase in
+                    if phase != .idle { releaseBottomAnchor = true }
+                }
+        } else {
+            // macOS 14 uses one anchor for all roles. Release it when the measured
+            // bottom edge of the final message reaches the viewport.
+            content
+                .defaultScrollAnchor(opensAtBottom && !releaseBottomAnchor ? .bottom : nil)
+                .onPreferenceChange(ConversationEndVisible.self) { visible in
+                    if visible { releaseBottomAnchor = true }
+                }
+        }
     }
 }
