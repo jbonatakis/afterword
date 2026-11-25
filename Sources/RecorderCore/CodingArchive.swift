@@ -45,11 +45,13 @@ public enum CodingProvider: String, CaseIterable, Sendable {
     case claudeCode = "claude-code"
     case codex
     case pi
+    case antigravity
 
     public var name: String {
         switch self {
         case .claudeCode: return "Claude Code"
         case .codex: return "Codex"
+        case .antigravity: return "Google Antigravity"
         case .pi: return "Pi"
         }
     }
@@ -58,6 +60,7 @@ public enum CodingProvider: String, CaseIterable, Sendable {
         switch self {
         case .claudeCode: return "enabled"
         case .codex: return "codexEnabled"
+        case .antigravity: return "antigravityEnabled"
         case .pi: return "piEnabled"
         }
     }
@@ -255,7 +258,7 @@ public final class CodingArchive {
         var projects = Set<String>(), issues: [String] = []
         var accounts: [LocalCodexAccount] = []
         guard discoverProjects || options.projectSelection.hasIncludes else { return ([], [], []) }
-        let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true), PiReader(sessionsDirectory: options.piSessionsDirectory)]
+        let sources = readers ?? [ClaudeCodeReader(), CodexReader(includeArchived: true), PiReader(sessionsDirectory: options.piSessionsDirectory), AntigravityReader()]
         for var reader in sources {
             guard let provider = CodingProvider(rawValue: reader.source), options.providers.contains(provider),
                   requested == nil || requested == provider else { continue }
@@ -270,6 +273,8 @@ public final class CodingArchive {
                     reader = catalog.scoped(accountID: scope?.accountID, userID: scope?.userID)
                 } else if let claude = reader as? ClaudeCodeReader {
                     reader = try claude.catalogSnapshot()
+                } else if let agy = reader as? AntigravityReader {
+                    reader = try agy.catalogSnapshot()
                 } else if let pi = reader as? PiReader {
                     reader = try pi.catalogSnapshot()
                 }
@@ -348,7 +353,7 @@ public final class CodingArchive {
         case .claudeCode:
             flag = "claudeTaskNotificationsV1"
             candidates = "instr(history, '<task-notification>') > 0"
-        case .pi: return
+        case .pi, .antigravity: return
         }
         guard try db.rows("SELECT 1 FROM settings WHERE key=?", [flag]).isEmpty else { return }
         try db.transaction {

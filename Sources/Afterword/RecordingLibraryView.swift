@@ -41,18 +41,40 @@ private extension CodingProvider {
         #endif
     }()
 
-    static let images: [Self: NSImage] = [
-        Self.codex: "Codex", .claudeCode: "ClaudeCode", .pi: "Pi"
-    ].compactMapValues { name in
+    static func loadIcon(_ name: String) -> NSImage? {
         iconBundle.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
     }
 
+    static let images: [Self: NSImage] = [
+        Self.codex: "Codex", .claudeCode: "ClaudeCode", .pi: "Pi"
+    ].compactMapValues(loadIcon)
+
     @ViewBuilder var icon: some View {
-        if let image = Self.images[self] {
+        if self == .antigravity {
+            AntigravityIcon()
+        } else if let image = Self.images[self] {
             // The Pi badge is edge-to-edge. Codex already has about two points of inset at this size.
             Image(nsImage: image).renderingMode(self == .pi ? .template : .original)
                 .resizable().scaledToFit().padding(self == .pi ? 2 : 0)
                 .frame(width: 18, height: 18).accessibilityHidden(true)
+        } else {
+            Image(systemName: "terminal")
+        }
+    }
+}
+
+private struct AntigravityIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    private static let dark = CodingProvider.loadIcon("AntigravityDark")
+    private static let light = CodingProvider.loadIcon("AntigravityLight")
+
+    var body: some View {
+        if let image = colorScheme == .dark ? Self.dark : Self.light {
+            Image(nsImage: image).renderingMode(.original)
+                .resizable().scaledToFit()
+                .frame(width: 18, height: 18)
+                .accessibilityHidden(true)
         } else {
             Image(systemName: "terminal")
         }
@@ -64,6 +86,7 @@ private extension LibraryFilter {
         switch self {
         case .codex: CodingProvider.codex.icon
         case .claudeCode: CodingProvider.claudeCode.icon
+        case .antigravity: CodingProvider.antigravity.icon
         case .pi: CodingProvider.pi.icon
         case .activity: Image(systemName: "rectangle.stack")
         case .github: Image(systemName: "arrow.triangle.branch")
@@ -110,7 +133,7 @@ struct SourceToggles: View {
                         Group {
                             switch source {
                             case .recordings: Text("Record calls and transcribe them locally.")
-                            case .coding: Text("Import Claude Code, Codex, and Pi sessions.")
+                            case .coding: Text("Import Claude Code, Codex, Pi, and Google Antigravity sessions.")
                             case .github: Text("Import your issues, pull requests, and reviews.")
                             case .board: Text("Track follow-ups in columns and swimlanes.")
                             }
