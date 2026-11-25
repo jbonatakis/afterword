@@ -6,7 +6,7 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
     public let branch: String?
     public let started: Date?
     public let updated: Date
-    fileprivate static let currentTranscriptVersion = 3
+    fileprivate var currentTranscriptVersion: Int { source == CodingProvider.codex.rawValue ? 4 : 3 }
     // Legacy archives gain tool evidence when their source is next available.
     var transcriptVersion: Int? = nil
     public var providerName: String { CodingProvider(rawValue: source)?.name ?? source }
@@ -323,7 +323,7 @@ public final class CodingArchive {
                 let old = try known[id].map { try JSONDecoder().decode(CodingSession.self, from: Data($0.utf8)) }
                 var session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
                                             branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
-                session.transcriptVersion = CodingSession.currentTranscriptVersion
+                session.transcriptVersion = session.currentTranscriptVersion
                 // Codex can rename a thread in its index without modifying the rollout.
                 if old == session { continue }
                 let source = try reader.readSession(info.id)
@@ -393,9 +393,8 @@ public final class CodingArchive {
                     let completion = unique ? message.toolEvents.first {
                         $0.id == id && (name == $0.name || name == "functions." + $0.name)
                     } : nil
-                    // The completed command includes Codex's parsed file/search target and exact argv.
-                    let arguments = completion?.name == "exec_command" ? completion?.inputJSON ?? input : input
-                    var call = CodingToolCall(name: name, input: arguments, project: session.project, provider: session.source)
+                    var call = CodingToolCall(name: name, input: input, project: session.project, provider: session.source,
+                                              commandCompletion: completion?.name == "exec_command" ? completion?.inputJSON : nil)
                     let reply = unique ? results[id] : nil
                     if reply != nil || completion != nil {
                         call.receive(output: reply?.0 ?? completion?.outputJSON, isError: reply?.1 == true || completion?.isError == true,
@@ -563,7 +562,7 @@ public final class CodingArchive {
     /// Use the normal account and project grants, and read back the winning import transaction.
     public static func historyForDisplay(in directory: URL, id: String, readers: [any SessionReader]? = nil) throws -> CodingHistory {
         let saved = try history(in: directory, id: id)
-        guard (saved.session.transcriptVersion ?? 0) < CodingSession.currentTranscriptVersion,
+        guard (saved.session.transcriptVersion ?? 0) < saved.session.currentTranscriptVersion,
               saved.messages.contains(where: { !$0.tools.isEmpty }),
               let provider = CodingProvider(rawValue: saved.session.source),
               let archive = try? CodingArchive(directory: directory) else { return saved }

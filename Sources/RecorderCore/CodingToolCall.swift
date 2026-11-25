@@ -59,7 +59,7 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
         data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: .fragmentsAllowed) }
     }
 
-    init(name: String, input: Data?, project: String, provider: String) {
+    init(name: String, input: Data?, project: String, provider: String, commandCompletion: Data? = nil) {
         self.init(name: name)
         let tool = name.hasPrefix("functions.") ? String(name.dropFirst("functions.".count)) : name
         let value = Self.json(input)
@@ -126,25 +126,26 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
             subject = Self.excerpt(string("pattern", "query", "glob") ?? queries, characters: 400, lines: 1)
             preview = path(string("path"))
         case "exec_command", "shell_command", "local_shell_call", "Bash", "bash", "run_command":
-            let command = string("cmd", "command", "CommandLine") ?? (value as? String)
-            let argv = fields["command"] as? [String] ?? value as? [String]
-            let shellText: String?
-            if let argv, argv.count == 3, ["-c", "-lc"].contains(argv[1]) { shellText = argv[2] }
-            else { shellText = command ?? argv?.joined(separator: " ") }
+            let execution = Self.json(commandCompletion) as? [String: Any]
+            let original = Self.shellText(fields["cmd"]) ?? Self.shellText(fields["command"])
+                ?? Self.shellText(fields["CommandLine"]) ?? Self.shellText(value)
+            let shellText = Self.shellText(execution?["command"]) ?? original
             subject = Self.excerpt(shellText, characters: 500, lines: 3)
             action = Self.commandAction(shellText ?? "")
-            if let parts = fields["parsed_cmd"] as? [[String: Any]], parts.count == 1, let part = parts.first {
+            func target(_ parts: [[String: Any]]?) -> (Action, String)? {
+                guard let parts, parts.count == 1, let part = parts.first else { return nil }
                 switch part["type"] as? String {
-                case "read":
-                    action = .read
-                    preview = subject
-                    subject = path(part["path"] as? String ?? part["name"] as? String)
-                case "search":
-                    action = .search
-                    preview = subject
-                    subject = Self.excerpt(part["query"] as? String) ?? subject
-                default: break
+                case "read": return path(part["path"] as? String ?? part["name"] as? String).map { (.read, $0) }
+                case "search": return Self.excerpt(part["query"] as? String).map { (.search, $0) }
+                default: return nil
                 }
+            }
+            let completedParts = execution?["parsed_cmd"] as? [[String: Any]]
+            if (completedParts?.count ?? 0) <= 1,
+               let (kind, detail) = target(completedParts) ?? target(fields["parsed_cmd"] as? [[String: Any]]) {
+                action = kind
+                preview = subject
+                subject = detail
             }
         case "exec" where provider == CodingProvider.codex.rawValue:
             action = .script
@@ -208,6 +209,18 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
 
     private static func diffLines(_ text: String?, sign: String) -> String? {
         excerpt(text, characters: 540, lines: 5, preserveWhitespace: true)?.components(separatedBy: "\n").map { sign + " " + $0 }.joined(separator: "\n")
+    }
+
+    /// A status-only completion may encode the absent command as empty argv or blank shell text.
+    private static func shellText(_ input: Any?) -> String? {
+        let command: String?
+        if let argv = input as? [String] {
+            command = argv.count == 3 && ["-c", "-lc"].contains(argv[1]) ? argv[2] : argv.joined(separator: " ")
+        } else {
+            command = input as? String
+        }
+        guard let command, command.contains(where: { !$0.isWhitespace }) else { return nil }
+        return command
     }
 
     private static func commandAction(_ command: String) -> Action {

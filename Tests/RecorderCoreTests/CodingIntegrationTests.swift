@@ -572,6 +572,56 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertEqual(try archive.revision, revision)
     }
 
+    func testCodexPartialCompletionsPreserveCommandsAndRepairSearchOnReplay() throws {
+        let rows = #"""
+        {"type":"response_item","payload":{"type":"function_call","id":"build","call_id":"a","name":"exec_command","arguments":"{\"cmd\":\"swift build\"}"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"a","exit_code":0}}}
+        {"type":"response_item","payload":{"type":"function_call_output","call_id":"a","output":"done"}}
+        {"type":"response_item","payload":{"type":"function_call","id":"read","call_id":"b","name":"exec_command","arguments":"{\"cmd\":\"cat Fruit.swift\"}"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"b","command":[],"parsed_cmd":[{"type":"read","path":"Fruit.swift"}]}}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        let reader = CodexReader(homeDirectory: codexHome)
+        let archive = try CodingArchive(directory: archived)
+        try archive.addProject(project)
+        try archive.setEnabled(true, for: .codex)
+        try archive.synchronize(reader: reader)
+        let id = try XCTUnwrap(archive.sessions().first).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("""
+            UPDATE sessions SET info=json_set(info,'$.transcriptVersion',3),
+              history=json_set(json_remove(history,'$.messages[0].toolCalls[0].subject'),'$.session.transcriptVersion',3)
+            """)
+        try db.execute("DELETE FROM coding_tool_text WHERE message='build'")
+        let history = try CodingArchive.historyForDisplay(in: archived, id: id, readers: [reader])
+        let calls = history.conversation.flatMap(\.displayedToolCalls)
+        XCTAssertEqual(calls.map(\.subject), ["swift build", "Fruit.swift"])
+        XCTAssertEqual(calls.first?.result, "Exit 0")
+        XCTAssertEqual(calls.last?.preview, "cat Fruit.swift")
+        let hits = try archive.matches(query: "swift build", semantic: [], from: nil, to: nil, project: nil, branch: nil)
+        XCTAssertEqual(hits.first?.messageID, "build")
+        XCTAssertEqual(hits.first?.toolIndex, 0)
+    }
+
+    func testCodexCompletedCommandOverridesOnlyWithUsableShellText() throws {
+        func call(_ invocation: String, _ completed: String) -> CodingToolCall {
+            CodingToolCall(name: "exec_command", input: Data(invocation.utf8), project: project, provider: "codex",
+                           commandCompletion: Data(completed.utf8))
+        }
+        let original = #"{"cmd":"swift test"}"#
+        for partial in ["{}", #"{"cwd":"/demo"}"#, #"{"command":["zsh","-lc"," "]}"#] {
+            XCTAssertEqual(call(original, partial).subject, "swift test")
+        }
+        let completed = #"{"command":["zsh","-lc","swift test --filter Fruit"]}"#
+        XCTAssertEqual(call(original, completed).subject, "swift test --filter Fruit")
+        XCTAssertEqual(call("{}", completed).subject, "swift test --filter Fruit")
+        XCTAssertNil(call("{}", "{}").subject)
+        let parsed = #"{"cmd":"cat Fruit.swift","parsed_cmd":[{"type":"read","path":"Fruit.swift"}]}"#
+        let partial = call(parsed, #"{"parsed_cmd":[{"type":"read"}]}"#)
+        XCTAssertEqual(partial.subject, "Fruit.swift")
+        XCTAssertEqual(partial.preview, "cat Fruit.swift")
+    }
+
     func testToolEvidenceUsesOnlyRecordedFieldsAndBoundsExcerpts() throws {
         func call(_ name: String, _ input: Any, provider: CodingProvider = .codex) throws -> CodingToolCall {
             CodingToolCall(name: name, input: try JSONSerialization.data(withJSONObject: input, options: .fragmentsAllowed),
