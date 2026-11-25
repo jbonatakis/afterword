@@ -496,16 +496,39 @@ struct CodingToolLocation: Hashable {
     var event: Int? = nil
 }
 
+struct CodingToolEntry: Identifiable {
+    let call: CodingToolCall
+    let date: Date?
+    let id: CodingToolLocation
+    var locations: [CodingToolLocation]
+
+    static func entries(_ messages: [CodingMessage]) -> [Self] {
+        var entries: [Self] = []
+        for message in messages {
+            for (index, call) in message.displayedToolCalls.enumerated() {
+                let location = CodingToolLocation(messageID: message.id, index: index)
+                if !call.hasDetails, let last = entries.indices.last,
+                   !entries[last].call.hasDetails, entries[last].call.name == call.name {
+                    entries[last].locations.append(location)
+                } else {
+                    entries.append(Self(call: call, date: message.timestamp, id: location, locations: [location]))
+                }
+            }
+        }
+        return entries
+    }
+}
+
 private struct CodingToolGroup {
     let first: CodingToolCall
     var count = 0
     var testOutcomes: [String?] = []
     var events: [CodingToolCall] = []
 
-    static func labels(_ calls: [CodingToolCall]) -> [String] {
+    static func labels(_ calls: [CodingToolCall], namesOnly: Bool = false) -> [String] {
         var groups: [Self] = [], indices: [String: Int] = [:]
         for call in calls {
-            let key = call.action == .other ? "other/" + call.name : call.action.rawValue
+            let key = namesOnly || call.action == .other ? "other/" + call.name : call.action.rawValue
             let index = indices[key] ?? groups.count
             if index == groups.count {
                 indices[key] = index
@@ -516,6 +539,7 @@ private struct CodingToolGroup {
             if call.action == .test { groups[index].testOutcomes.append(call.testOutcome) }
         }
         return groups.map { group in
+            if namesOnly { return group.first.nameLabel(count: group.count) }
             let title = group.first.groupLabel(count: group.count)
             if !group.events.isEmpty { return title + " (reported " + labels(group.events).joined(separator: ", ") + ")" }
             guard group.testOutcomes.contains(where: { $0 != nil }) else { return title }
@@ -539,6 +563,8 @@ struct CodingConversationRow: Identifiable, Sendable {
     private(set) var toolMessages: [CodingMessage] = []
     private(set) var toolCount = 0
     private(set) var toolSummary = ""
+    private(set) var toolEntries: [CodingToolEntry] = []
+    private(set) var hasToolDetails = false
     private(set) var thread: AssistantThread?
     var questionReply: CodexQuestionReply?
     var id: String { message.id }
@@ -570,7 +596,10 @@ struct CodingConversationRow: Identifiable, Sendable {
             let hasTools = rows[i].toolCount > 0
             if hasTools {
                 let calls = rows[i].toolMessages.flatMap(\.displayedToolCalls)
-                rows[i].toolSummary = CodingToolGroup.labels(calls).joined(separator: " · ")
+                rows[i].toolEntries = CodingToolEntry.entries(rows[i].toolMessages)
+                rows[i].hasToolDetails = calls.contains(where: \.hasDetails)
+                rows[i].toolSummary = CodingToolGroup.labels(calls, namesOnly: !rows[i].hasToolDetails).joined(separator: " · ")
+                if !rows[i].hasToolDetails { rows[i].toolSummary += " · Names only" }
             }
             guard rows[i].message.role == "Assistant" else { continue }
             if connectsAbove || precedesAgent || hasTools {
@@ -652,11 +681,15 @@ private struct CodingMessageBubble: View {
                             .overlay(alignment: .leading) { Capsule().fill(.tertiary).frame(width: 2) }
                     }
                 }
-                if row.toolCount > 0 { tools }
+                if row.hasToolDetails { tools }
+                else if row.toolCount > 0 {
+                    Text(verbatim: row.toolSummary).font(.callout).foregroundStyle(.secondary)
+                        .help("Only the tool names are available for these calls.")
+                }
             }
             .padding(.horizontal, 4)
             .overlay(alignment: edge) {
-                if matchedID != nil && matchedTool == nil {
+                if matchedID != nil && (matchedTool == nil || !row.hasToolDetails) {
                     Capsule().fill(Color.accentColor).frame(width: 2).accessibilityHidden(true)
                 }
             }
@@ -698,25 +731,29 @@ private struct CodingMessageBubble: View {
     private var tools: some View {
         DisclosureGroup(isExpanded: $toolsExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(row.toolMessages) { message in
-                    let calls = message.displayedToolCalls
-                    ForEach(calls.indices, id: \.self) { index in
-                        let location = CodingToolLocation(messageID: message.id, index: index)
-                        let call = calls[index]
-                        CodingToolDetail(call: call, matched: matchedTool == location, foldsPreview: call.events != nil)
-                            .help(message.timestamp?.formatted() ?? "")
-                            .modifier(CodingToolCitation(location: location, match: matchedTool, reveal: revealTool))
-                        if let events = call.events {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("Reported during this script").font(.caption).foregroundStyle(.secondary)
-                                ForEach(events.indices, id: \.self) { position in
-                                    let event = CodingToolLocation(messageID: message.id, index: index, event: position)
-                                    CodingToolDetail(call: events[position], matched: matchedTool == event)
-                                        .modifier(CodingToolCitation(location: event, match: matchedTool, reveal: revealTool))
-                                }
-                            }
-                            .padding(.leading, 10)
+                ForEach(row.toolEntries) { entry in
+                    let call = entry.call
+                    let location = matchedTool.flatMap { entry.locations.contains($0) ? $0 : nil } ?? entry.id
+                    Group {
+                        if call.hasDetails {
+                            CodingToolDetail(call: call, matched: matchedTool == location, foldsPreview: call.events?.isEmpty == false)
+                        } else {
+                            Text(verbatim: call.nameLabel(count: entry.locations.count) + " · Names only")
+                                .font(.caption).foregroundStyle(matchedTool == location ? Color.accentColor : Color.secondary)
                         }
+                    }
+                    .help(entry.date?.formatted() ?? "")
+                    .modifier(CodingToolCitation(location: location, match: matchedTool, reveal: revealTool))
+                    if let events = call.events {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Reported during this script").font(.caption).foregroundStyle(.secondary)
+                            ForEach(events.indices, id: \.self) { position in
+                                let event = CodingToolLocation(messageID: entry.id.messageID, index: entry.id.index, event: position)
+                                CodingToolDetail(call: events[position], matched: matchedTool == event)
+                                    .modifier(CodingToolCitation(location: event, match: matchedTool, reveal: revealTool))
+                            }
+                        }
+                        .padding(.leading, 10)
                     }
                 }
             }
@@ -755,7 +792,7 @@ private struct CodingToolDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(verbatim: call.name).font(.caption.weight(.semibold))
+                Text(verbatim: call.action == .script ? "Codex script" : call.name).font(.caption.weight(.semibold)).help(call.name)
                 if let outcome = call.testOutcome {
                     Label(outcome.capitalized, systemImage: outcome == "passed" ? "checkmark.circle" : "xmark.circle")
                         .font(.caption).foregroundStyle(outcome == "passed" ? Color.green : Color.red)
@@ -779,9 +816,15 @@ private struct CodingToolDetail: View {
                     .padding(6).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
                 if foldsPreview {
-                    DisclosureGroup("Script", isExpanded: $showScript) { snippet }
-                        .font(.caption)
-                        .onChange(of: matched, initial: true) { _, value in if value { showScript = true } }
+                    DisclosureGroup(isExpanded: $showScript) { snippet } label: {
+                        if showScript { Text("Script") }
+                        else {
+                            Text(verbatim: preview).font(.system(.caption, design: .monospaced)).lineLimit(1)
+                                .help("Show script")
+                        }
+                    }
+                    .font(.caption)
+                    .onChange(of: matched, initial: true) { _, value in if value { showScript = true } }
                 } else { snippet }
             }
             if let diagnostic = call.diagnostic {
@@ -887,9 +930,10 @@ struct CodingSessionDetail: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: session) {
             let id = session.id, directory = directory, history = citedHistory
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { CodingConversationTimeline(try history ?? CodingArchive.history(in: directory, id: id)) }
-            }.value
+            let load = Task.detached(priority: .userInitiated) {
+                Result { CodingConversationTimeline(try history ?? CodingArchive.historyForDisplay(in: directory, id: id)) }
+            }
+            let result = await withTaskCancellationHandler { await load.value } onCancel: { load.cancel() }
             guard !Task.isCancelled else { return }
             switch result {
             case .success(let value):

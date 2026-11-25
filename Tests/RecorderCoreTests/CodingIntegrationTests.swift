@@ -536,11 +536,61 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertEqual(hit.eventIndex, 1)
     }
 
+    func testOpeningLegacyCodexSessionRecoversOnlyItsExecDetails() throws {
+        let rows = #"""
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"a","call_id":"1","name":"exec","input":"inspectOne()"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"b","call_id":"2","name":"exec","input":"inspectTwo()"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"c","call_id":"3","name":"exec","input":"inspectThree()"}}
+        """#
+        try writeRollout(threadID, project: project, rows: rows)
+        try writeRollout("00000000-0000-4000-a000-000000000002", project: project, rows: rows)
+        let reader = CodexReader(homeDirectory: codexHome)
+        let archive = try CodingArchive(directory: archived)
+        try archive.setEnabled(true, for: .codex)
+        try archive.addProject(project)
+        try archive.synchronize(reader: reader)
+        let sessions = try archive.sessions()
+        XCTAssertEqual(sessions.count, 2)
+        let id = try XCTUnwrap(sessions.first).id
+        let other = try XCTUnwrap(sessions.last).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        try db.execute("""
+            UPDATE sessions SET info=json_set(info,'$.transcriptVersion',1),
+              history=json_set(json_remove(history,'$.messages[0].toolCalls','$.messages[1].toolCalls','$.messages[2].toolCalls'),
+                               '$.session.transcriptVersion',1)
+            """)
+        func open() throws -> [CodingToolCall] {
+            try CodingArchive.historyForDisplay(in: archived, id: id, readers: [reader]).conversation.flatMap(\.displayedToolCalls)
+        }
+        try archive.setEnabled(false, for: .codex)
+        XCTAssertEqual(try open().map(\.hasDetails), [false, false, false])
+        try archive.setEnabled(true, for: .codex)
+        XCTAssertEqual(try open().compactMap(\.preview), ["inspectOne()", "inspectTwo()", "inspectThree()"])
+        XCTAssertNil(try archive.history(id: other).messages.first?.toolCalls)
+        let revision = try archive.revision
+        _ = try open()
+        XCTAssertEqual(try archive.revision, revision)
+    }
+
     func testToolEvidenceUsesOnlyRecordedFieldsAndBoundsExcerpts() throws {
         func call(_ name: String, _ input: Any, provider: CodingProvider = .codex) throws -> CodingToolCall {
             CodingToolCall(name: name, input: try JSONSerialization.data(withJSONObject: input, options: .fragmentsAllowed),
                            project: project, provider: provider.rawValue)
         }
+        let command = try call("shell_command", ["command": "swift test --filter LeafTests"])
+        XCTAssertEqual(command.action, .test)
+        XCTAssertEqual(command.subject, "swift test --filter LeafTests")
+        let poll = try call("write_stdin", ["session_id": 37, "chars": ""])
+        XCTAssertEqual(poll.subject, "Poll terminal session 37")
+        let input = try call("write_stdin", ["session_id": 37, "chars": "PrivateStdin"])
+        XCTAssertEqual(input.subject, "Send input to terminal session 37")
+        XCTAssertFalse(input.searchText.contains("PrivateStdin"))
+        let task = try call("TaskUpdate", ["taskId": "7", "status": "completed", "metadata": ["private": "PrivateValue"]])
+        XCTAssertEqual(task.preview, "status = completed\ntaskId = 7")
+        let mcp = try call("call_mcp_tool", ["ServerName": "work", "ToolName": "lookup", "Arguments": ["query": "Apricots", "token": "PrivateToken"]], provider: .antigravity)
+        XCTAssertEqual(mcp.preview, "query = Apricots")
+        let opaque = try call("CustomTool", ["body": "PrivateBody"])
+        XCTAssertFalse(opaque.hasDetails)
         let edit = try call("Edit", ["file_path": "/projects/example2/a", "old_string": "old", "new_string": "new"])
         XCTAssertEqual(edit.subject, "/projects/example2/a")
         XCTAssertEqual(edit.preview, "− old\n+ new")

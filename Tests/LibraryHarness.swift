@@ -1258,12 +1258,45 @@ import Lookback
               let hit = try archive.matches(query: "expected 1 row", semantic: [], from: nil, to: nil, project: nil, branch: nil).first
         else { throw RecorderError.message("The fixture did not produce a searchable test diagnostic") }
         let rows = CodingConversationRow.group(try archive.history(id: session.id).conversation)
+        let legacy = ["a", "b", "c"].map { CodingMessage(id: $0, role: "Assistant", text: "", parentID: nil, timestamp: nil, tools: ["exec"]) }
+        let legacyRow = CodingConversationRow.group(legacy)[0]
+        require(!legacyRow.hasToolDetails && legacyRow.toolSummary == "exec ×3 · Names only",
+                "Name-only history offered an empty disclosure")
+        let mixed = CodingConversationRow.group(rows.flatMap(\.toolMessages) + legacy)[0]
+        require(mixed.hasToolDetails && mixed.toolEntries.last?.locations.count == 3 && mixed.toolEntries.count == 5,
+                "Consecutive bare calls should share one entry and retain all three search anchors")
         let summary = "1 read · 2 test runs (failed → passed) · 1 edit"
         require(rows.first(where: { $0.id == "work" })?.toolSummary == summary, "Action groups lost their order or reported outcomes")
         require(hit.messageID == "work" && hit.toolIndex == 1, "Search missed the second call in a message containing prose")
 
-        for expanded in [false, true] {
-            let host = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: expanded ? hit : nil)
+        let id = "00000000-0000-4000-a000-000000000012"
+        let codexHome = root.appendingPathComponent("CodexHome")
+        let rollouts = codexHome.appendingPathComponent("sessions/2026/11/20")
+        try FileManager.default.createDirectory(at: rollouts, withIntermediateDirectories: true)
+        let codexLog = #"""
+        {"type":"session_meta","payload":{"id":"\#(id)","cwd":"/work/afterword"}}
+        {"type":"event_msg","payload":{"type":"user_message","id":"prompt","message":"Check the local build"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"first","call_id":"a","name":"exec","input":"await tools.exec_command({cmd: 'swift build'})"}}
+        {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"child","command":["zsh","-lc","swift build"],"exit_code":0}}}
+        {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"a","output":"ok"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"second","call_id":"b","name":"exec","input":"const report = 'Build artifacts verified'"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"b","output":"ok"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"third","call_id":"c","name":"exec","input":"text('Finished checks')"}}
+        """#
+        try Data(codexLog.utf8).write(to: rollouts.appendingPathComponent("rollout-2026-11-20-\(id).jsonl"))
+        try archive.setEnabled(true, for: .codex)
+        try archive.synchronize(reader: CodexReader(homeDirectory: codexHome))
+        guard let scriptHit = try archive.matches(query: "artifacts verified", semantic: [], from: nil, to: nil, project: nil, branch: nil).first else {
+            throw RecorderError.message("Missing Codex script citation")
+        }
+
+        let examples: [(String, CodingSession, CodingHit?, [String])] = [
+            ("collapsed", session, nil, ["test runs"]),
+            ("expanded", session, hit, ["test runs", "expected 1 row"]),
+            ("codex", scriptHit.session, scriptHit, ["3 scripts", "swift build", "Build artifacts verified", "Finished checks"])
+        ]
+        for (label, example, selection, expected) in examples {
+            let host = NSHostingView(rootView: CodingSessionDetail(session: example, directory: directory, hit: selection)
                 .background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 660),
                                   styleMask: [.titled], backing: .buffered, defer: false)
@@ -1281,12 +1314,12 @@ import Lookback
                 let request = VNRecognizeTextRequest()
                 try VNImageRequestHandler(cgImage: image).perform([request])
                 visible = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-                guard attempt == 39 || (visible.contains("test runs") && (!expanded || visible.contains("expected 1 row"))) else { continue }
-                let url = URL(fileURLWithPath: "build/tool-activity-" + (expanded ? "expanded" : "collapsed") + ".png")
+                guard attempt == 39 || expected.allSatisfy(visible.contains) else { continue }
+                let url = URL(fileURLWithPath: "build/tool-activity-" + label + ".png")
                 try bitmap.representation(using: .png, properties: [:])?.write(to: url)
                 break
             }
-            require(visible.contains("test runs") && visible.contains("expected 1 row") == expanded,
+            require(expected.allSatisfy(visible.contains) && (label != "collapsed" || !visible.contains("expected 1 row")),
                     "The native tool disclosure did not reflect the search selection: " + visible)
         }
         // Force the second call below the fold in the same message. A scroll to its parent row

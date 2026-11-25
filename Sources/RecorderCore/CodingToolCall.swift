@@ -19,6 +19,12 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
 
     public init(name: String) { self.name = name }
 
+    public var hasDetails: Bool {
+        subject != nil || preview != nil || result != nil || diagnostic != nil || testOutcome != nil || events?.isEmpty == false
+    }
+
+    public func nameLabel(count: Int) -> String { count == 1 ? name : "\(name) ×\(count)" }
+
     public func groupLabel(count: Int) -> String {
         let noun: String
         switch action {
@@ -29,7 +35,7 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
         case .command: noun = "command"
         case .test: noun = "test run"
         case .script: noun = "script"
-        case .other: return count == 1 ? name : "\(name) ×\(count)"
+        case .other: return nameLabel(count: count)
         }
         return "\(count) \(noun)" + (count > 1 && action != .search ? "s" : "")
     }
@@ -116,9 +122,10 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
             }
         case "Grep", "grep", "Glob", "find", "web_search_call", "WebSearch":
             action = .search
-            subject = Self.excerpt(string("pattern", "query", "glob"), characters: 400, lines: 1)
+            let queries = (fields["queries"] as? [String])?.prefix(4).joined(separator: " · ")
+            subject = Self.excerpt(string("pattern", "query", "glob") ?? queries, characters: 400, lines: 1)
             preview = path(string("path"))
-        case "exec_command", "local_shell_call", "Bash", "bash", "run_command":
+        case "exec_command", "shell_command", "local_shell_call", "Bash", "bash", "run_command":
             let command = string("cmd", "command", "CommandLine") ?? (value as? String)
             let argv = fields["command"] as? [String] ?? value as? [String]
             let shellText: String?
@@ -145,10 +152,58 @@ public struct CodingToolCall: Codable, Equatable, Sendable {
                 if script.hasPrefix("// @exec:"), let newline = script.firstIndex(of: "\n") { script = String(script[script.index(after: newline)...]) }
                 preview = Self.excerpt(script, preserveWhitespace: true)
             }
+        case "Agent", "Monitor":
+            subject = Self.excerpt(string("description"))
+            preview = Self.excerpt(tool == "Monitor" ? string("command") : string("subagent_type"))
+        case "write_stdin" where provider == CodingProvider.codex.rawValue:
+            if let session = Self.scalar(fields["session_id"]), let chars = fields["chars"] as? String {
+                subject = chars.isEmpty ? "Poll terminal session \(session)" : "Send input to terminal session \(session)"
+            }
+        case "update_plan" where provider == CodingProvider.codex.rawValue:
+            subject = Self.excerpt(string("explanation"), characters: 240, lines: 2)
+            if let steps = fields["plan"] as? [[String: Any]] {
+                preview = Self.excerpt(steps.prefix(8).compactMap { item in
+                    guard let step = Self.excerpt(item["step"] as? String, characters: 160, lines: 1) else { return nil }
+                    return [Self.excerpt(item["status"] as? String, characters: 25, lines: 1), step].compactMap { $0 }.joined(separator: " · ")
+                }.joined(separator: "\n") + (steps.count > 8 ? "\n…" : ""))
+            }
+        case "request_user_input", "request_user_input_async":
+            if let questions = fields["questions"] as? [[String: Any]] {
+                preview = Self.excerpt(questions.prefix(3).compactMap { Self.excerpt(($0["question"] ?? $0["title"]) as? String, characters: 300, lines: 2) }.joined(separator: "\n"))
+            }
         case "call_mcp_tool" where provider == CodingProvider.antigravity.rawValue:
             subject = Self.excerpt([string("ServerName"), string("ToolName")].compactMap { $0 }.joined(separator: " / "), characters: 200, lines: 1)
+            if let arguments = fields["Arguments"] as? [String: Any] { preview = Self.parameters(arguments) }
         default: break
         }
+        if subject == nil && preview == nil { preview = Self.parameters(fields) }
+    }
+
+    private static func scalar(_ value: Any?) -> String? {
+        if let string = value as? String { return excerpt(string, characters: 200, lines: 2) }
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue ? "true" : "false" }
+            return number.stringValue
+        }
+        return nil
+    }
+
+    /// Identify a call using selected scalar fields. Bodies, environment variables, stdin and
+    /// arbitrary nested payloads stay out of the archive. Structured operations retain their counts.
+    private static func parameters(_ fields: [String: Any]) -> String? {
+        let keys = ["subject", "title", "label", "query", "pattern", "file_path", "path", "DirectoryPath",
+                    "Action", "Target", "toolSummary", "action", "status", "skill", "name", "format",
+                    "taskId", "task_id", "cell_id", "session_id", "call_id", "message_id", "diagramId", "exportId",
+                    "source", "scope", "from", "to", "duration_ms", "yield_time_ms", "offset", "limit"]
+        var lines: [String] = []
+        for key in keys {
+            if let value = scalar(fields[key]) { lines.append("\(key) = \(value)") }
+            if lines.count == 5 { break }
+        }
+        for key in ["operations", "actions", "writes"] {
+            if let list = fields[key] as? [Any] { lines.append("\(key) ×\(list.count)") }
+        }
+        return excerpt(lines.joined(separator: "\n"), characters: 600, lines: 6)
     }
 
     private static func diffLines(_ text: String?, sign: String) -> String? {
