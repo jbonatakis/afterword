@@ -1387,6 +1387,28 @@ import Lookback
             ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 700 && $0.contentView.bounds.height > 100
         }
         guard let scroll else { throw RecorderError.message("Missing conversation scroll view") }
+        func captureViewport(_ phase: String) throws {
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            let clip = scroll.contentView
+            let rect = clip.convert(clip.bounds, to: host)
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: rect) else {
+                throw RecorderError.message("Could not capture the conversation viewport")
+            }
+            host.cacheDisplay(in: rect, to: bitmap)
+            let folder = URL(fileURLWithPath: "build/calendar-scroll", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent(phase + ".png"))
+            if let doc = scroll.documentView {
+                let fields = descendants(doc).compactMap { view -> String? in
+                    guard let f = view as? NSTextField else { return nil }
+                    let frame = f.convert(f.bounds, to: doc)
+                    guard scroll.documentVisibleRect.intersects(frame) else { return nil }
+                    return "\(Int(frame.minY))=\(f.stringValue.prefix(40))"
+                }
+                print("Viewport \(phase) window=\(window.frame) clip=\(clip.bounds) hostRect=\(rect) document=\(doc.bounds) fields=\(fields)")
+            }
+        }
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
         scroll.reflectScrolledClipView(scroll.contentView)
         await pump()
@@ -1400,6 +1422,7 @@ import Lookback
             }.min { $0.1 < $1.1 }?.0
         }
         let paragraphAtTop = firstVisibleParagraph()
+        try captureViewport("before-calendar")
         let offset = scroll.contentView.bounds.origin.y
         let saved = library.selection
         let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
@@ -1432,6 +1455,7 @@ import Lookback
         }
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         require(library.destination == .activity(.claudeCode) && library.selection == saved && hasLibrarySearch(), "Returning to activity lost selection or search")
+        try captureViewport("after-calendar")
         require(scroll.window === window && abs(scroll.contentView.bounds.origin.y - offset) < 2 &&
                 paragraphAtTop != nil && firstVisibleParagraph() == paragraphAtTop, "Returning to activity lost the conversation scroll position: wanted \(offset), got \(scroll.contentView.bounds.origin.y), attached \(scroll.window === window)")
         library.destination = .activity(.transcribed)
