@@ -909,7 +909,7 @@ enum LibraryCalendarPage: String, CaseIterable {
 }
 
 enum LibraryFilter: String, Identifiable {
-    case activity = "All activity", coding = "Coding sessions", codex = "Codex", claudeCode = "Claude Code", pi = "Pi"
+    case activity = "All activity", coding = "Coding sessions", codex = "Codex", claudeCode = "Claude Code", pi = "Pi", antigravity = "Google Antigravity"
     case github = "GitHub"
     case recordings = "Recordings", transcribed = "With transcripts", untranscribed = "Needs transcription"
     case needsSummary = "Needs summary", personal = "Personal"
@@ -920,7 +920,7 @@ enum LibraryFilter: String, Identifiable {
         switch self {
         case .activity: return nil
         case .github: return .github
-        case .coding, .claudeCode, .codex, .pi: return .coding
+        case .coding, .claudeCode, .codex, .pi, .antigravity: return .coding
         default: return .recordings
         }
     }
@@ -929,6 +929,7 @@ enum LibraryFilter: String, Identifiable {
         switch self {
         case .codex: return .codex
         case .claudeCode: return .claudeCode
+        case .antigravity: return .antigravity
         case .pi: return .pi
         default: return nil
         }
@@ -937,7 +938,7 @@ enum LibraryFilter: String, Identifiable {
     func children(sources: Set<ActivitySource>, providers: Set<CodingProvider>) -> [Self] {
         switch self {
         case .activity: return [ActivitySource.coding, .recordings, .github].filter(sources.contains).compactMap(\.libraryFilter)
-        case .coding: return [Self.codex, .claudeCode, .pi].filter { $0.codingProvider.map(providers.contains) == true }
+        case .coding: return [Self.codex, .claudeCode, .pi, .antigravity].filter { $0.codingProvider.map(providers.contains) == true }
         case .recordings: return [.transcribed, .untranscribed, .needsSummary, .personal]
         default: return []
         }
@@ -945,7 +946,7 @@ enum LibraryFilter: String, Identifiable {
 
     var showsRecordings: Bool {
         switch self {
-        case .github, .coding, .codex, .claudeCode, .pi: return false
+        case .github, .coding, .codex, .claudeCode, .pi, .antigravity: return false
         default: return true
         }
     }
@@ -970,7 +971,7 @@ enum LibraryFilter: String, Identifiable {
         case .github: return "No GitHub activity"
         case .activity: return "No activity"
         case .coding: return "No coding sessions"
-        case .codex, .claudeCode, .pi: return "No \(rawValue) sessions"
+        case .codex, .claudeCode, .pi, .antigravity: return "No \(rawValue) sessions"
         case .recordings: return "No recordings"
         case .transcribed: return "No recordings with transcripts"
         case .untranscribed: return "No recordings need transcription"

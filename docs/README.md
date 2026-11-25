@@ -7,7 +7,7 @@ On first launch, choose **Recordings**, **Coding sessions**, **GitHub**, **Task 
 | Source | Where to start |
 | --- | --- |
 | Recordings | Choose a save folder during setup or when you start your first recording. Manage that destination and folders of existing calls in **Settings → Recording**. [Recording guide](recordings.md) |
-| Coding sessions | Enable Claude Code, Codex, or Pi and select project folders in **Settings → Coding**. |
+| Coding sessions | Enable Claude Code, Codex, Pi, or Google Antigravity and select project folders in **Settings → Coding**. |
 | GitHub | Connect your account in **Settings → GitHub** and choose repositories. The library shows issues, pull requests, and reviews you contributed to. [GitHub setup and sync](github-history.md) |
 | Task board | Choose **New ticket** to add a card. Use **Search tickets** to find related work by title, notes, or saved citation. Right-click **Task board** in the sidebar and choose **Open in New Window** to browse it independently. Click a card to read it in a pane over the right side of the board. Drag its left edge to resize it, or choose **Open in separate window** to keep the ticket visible while you work elsewhere. Click a source to read the cited passage. Choose **Edit** to make changes in the pane. You can switch cards and return to your draft while the board is open. **Save** or **Cancel** takes you back to reading. You can also drag cards between columns and swimlanes. Enable board management in **Settings → Agent Access** to share ticket titles and notes. Agents see citations only from shared sources. [Board tools](mcp.md#task-board) |
 
@@ -25,7 +25,7 @@ Keyword search works immediately. **Settings → Search** can add semantic match
 
 In **Settings → Coding**, select individual projects or select a parent folder to include its existing and future descendants. A dash means only some descendants are selected. Choose **Apply** to import in the background. Removing projects from the selection asks for confirmation before their saved sessions are removed. Disabling a provider leaves its imported conversations available in **Coding sessions** and search.
 
-Afterword uses Lookback to read local Claude Code projects, active or archived Codex threads (including user forks), and Pi v3 sessions. Codex discovery uses `$CODEX_HOME` or, by default, `~/.codex`. If several local Codex accounts have chats, select the account in Coding settings. [Lookback](https://github.com/jbonatakis/lookback)
+Afterword uses Lookback to read local Claude Code projects, active or archived Codex threads (including user forks), Pi v3 sessions, and Google Antigravity CLI transcripts under `~/.gemini/antigravity-cli`. Codex discovery uses `$CODEX_HOME` or, by default, `~/.codex`. If several local Codex accounts have chats, select the account in Coding settings. [Lookback](https://github.com/jbonatakis/lookback)
 
 Enable **Import Pi sessions** in **Settings → Coding** and select the projects to import. Automatic discovery uses `~/.pi/agent/sessions` and respects `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` in the app’s environment. Use **Pi session folder → Choose…** for a custom or shell-only location. Changing the store or pausing Pi keeps previously imported sessions. The transcript shows original turns on the selected branch across compaction. Search can also open replies from abandoned branches in recorded history.
 
