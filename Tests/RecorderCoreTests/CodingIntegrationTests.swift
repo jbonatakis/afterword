@@ -216,6 +216,92 @@ final class CodingIntegrationTests: XCTestCase {
         XCTAssertTrue(try store.embeddingChunks().isEmpty)
     }
 
+    func testClaudeFeedUsesMessagesAndToolActivityAcrossBackgroundWrites() throws {
+        let other = file.deletingLastPathComponent().appendingPathComponent("00000000-0000-4000-a000-000000000002.jsonl")
+        try Data(transcript.replacingOccurrences(of: "09:03:00", with: "09:05:00")
+            .replacingOccurrences(of: "Device reliability", with: "Other session").utf8).write(to: other)
+        let store = try imported()
+        let idle = try XCTUnwrap(store.sessions().first { $0.title == "Device reliability" })
+        XCTAssertEqual(AgentJSON.date(idle.updated), "2026-11-05T09:03:00Z")
+
+        var rows = transcript
+        var mtime = Date(timeIntervalSince1970: 1_800_000_000)
+        func append(_ extra: String) throws {
+            rows += "\n" + extra
+            try Data(rows.utf8).write(to: file)
+            mtime.addTimeInterval(60)
+            try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: file.path)
+            try store.synchronize(reader: reader)
+        }
+        try append(#"""
+        {"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-25T12:00:00Z"}
+        {"type":"user","uuid":"notice","parentUuid":"reply","origin":{"kind":"task-notification"},"timestamp":"2026-11-25T12:01:00Z","message":{"content":"<task-notification><status>completed</status></task-notification>"}}
+        {"type":"custom-title","customTitle":"Renamed while idle"}
+        """#)
+        let page = try CodingArchive.sessionPage(in: archived)
+        XCTAssertEqual(page.sessions.map(\.title), ["Other session", "Renamed while idle"])
+        XCTAssertEqual(page.sessions.last?.updated, idle.updated)
+        XCTAssertEqual(try store.history(id: idle.id).session.updated, idle.updated)
+        let revision = try store.revision
+        try append(#"{"type":"artifact-autoreact-ledger","v":1}"#)
+        XCTAssertEqual(try store.revision, revision)
+        try store.synchronize(reader: reader)
+        XCTAssertEqual(try store.revision, revision)
+
+        try append(#"{"type":"assistant","uuid":"call","parentUuid":"notice","timestamp":"2026-11-05T09:06:00Z","message":{"content":[{"type":"tool_use","id":"lookup","name":"Read"}]}}"#)
+        XCTAssertEqual(try CodingArchive.sessionPage(in: archived, limit: 1).sessions.first?.id, idle.id)
+        XCTAssertEqual(try AgentJSON.date(store.history(id: idle.id).session.updated), "2026-11-05T09:06:00Z")
+        try append(#"{"type":"user","uuid":"done","parentUuid":"call","timestamp":"2026-11-05T09:07:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"lookup","content":"Private result"}]}}"#)
+        XCTAssertEqual(try AgentJSON.date(store.history(id: idle.id).session.updated), "2026-11-05T09:07:00Z")
+        // A rotated transcript can lose the tool result that established the feed date.
+        rows = transcript
+        try append(#"{"type":"cost-state"}"#)
+        let history = try store.history(id: idle.id)
+        XCTAssertEqual(AgentJSON.date(history.session.updated), "2026-11-05T09:07:00Z")
+        XCTAssertFalse(history.messages.contains { $0.text.contains("Private result") })
+    }
+
+    func testUndatedClaudeSessionKeepsItsFirstDateUntilADatedMessageArrives() throws {
+        let prompt = #"{"type":"user","uuid":"prompt","cwd":"/projects/example","message":{"content":"Start work"}}"#
+        try Data(prompt.utf8).write(to: file)
+        let store = try imported()
+        let first = try XCTUnwrap(store.sessions().first)
+        let housekeeping = #"{"type":"queue-operation","operation":"enqueue","timestamp":"2027-01-01T00:00:00Z"}"#
+        let reply = #"{"type":"assistant","uuid":"reply","parentUuid":"prompt","timestamp":"2026-11-05T10:00:00Z","message":{"content":"Done"}}"#
+        for (rows, expected) in [([prompt, housekeeping], AgentJSON.date(first.updated)), ([prompt, housekeeping, reply], "2026-11-05T10:00:00Z")] {
+            try Data(rows.joined(separator: "\n").utf8).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: first.updated.addingTimeInterval(Double(rows.count) * 60)], ofItemAtPath: file.path)
+            try store.synchronize(reader: reader)
+            XCTAssertEqual(try AgentJSON.date(store.history(id: first.id).session.updated), expected)
+        }
+    }
+
+    func testClaudeFeedRepairsSavedHistoryWhenTheSourceIsGone() throws {
+        let store = try imported()
+        let id = try XCTUnwrap(store.sessions().first).id
+        let db = try SearchDatabase(url: archived.appendingPathComponent("History.sqlite"), durable: true)
+        // Legacy rows used the file mtime for the feed, details and title search.
+        try db.execute("""
+            UPDATE sessions SET modified='1800000000',
+              info=json_set(json_remove(info,'$.sourceModified'),'$.updated',821692800),
+              history=json_set(json_remove(history,'$.session.sourceModified'),'$.session.updated',821692800)
+            """)
+        try db.execute("UPDATE coding_text SET stamp='1800000000' WHERE message=''")
+        try db.execute("DELETE FROM settings WHERE key='claudeActivityDatesV1'")
+        try FileManager.default.removeItem(at: file)
+        let oldRevision = try store.revision
+        let migrated = try CodingArchive(directory: archived)
+        let session = try XCTUnwrap(CodingArchive.sessionPage(in: archived).sessions.first)
+        XCTAssertEqual(AgentJSON.date(session.updated), "2026-11-05T09:03:00Z")
+        XCTAssertEqual(try migrated.history(id: id).session.updated, session.updated)
+        let stamp = String(session.updated.timeIntervalSince1970)
+        XCTAssertEqual(try db.rows("SELECT modified FROM sessions WHERE id=?", [id]), [[stamp]])
+        XCTAssertEqual(try db.rows("SELECT stamp FROM coding_text WHERE session=? AND message=''", [id]), [[stamp]])
+        let revision = try migrated.revision
+        XCTAssertNotEqual(revision, oldRevision)
+        XCTAssertEqual(try CodingArchive(directory: archived).revision, revision)
+    }
+
     func testClaudeTaskNotificationsRepairAttributionAndKeepSearchCitations() throws {
         func event(_ id: String, parent: String, status: String, summary: String, result: String = "", generated: Bool = true) throws -> String {
             let payload = "<task-notification><status>\(status)</status><summary>\(summary)</summary><result>\(result)</result></task-notification>"

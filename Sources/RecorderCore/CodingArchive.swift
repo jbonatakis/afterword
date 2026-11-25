@@ -5,7 +5,9 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
     public let id, source, title, project: String
     public let branch: String?
     public let started: Date?
-    public let updated: Date
+    public fileprivate(set) var updated: Date
+    // Claude also writes bookkeeping to its transcript. Use this stamp only to detect source changes.
+    fileprivate var sourceModified: Date? = nil
     fileprivate var currentTranscriptVersion: Int { source == CodingProvider.codex.rawValue ? 4 : 3 }
     // Legacy archives gain tool evidence when their source is next available.
     var transcriptVersion: Int? = nil
@@ -14,7 +16,7 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
 
 public typealias CodingTaskNotification = SessionTaskNotification
 
-public struct CodingMessage: Codable, Identifiable, Sendable {
+public struct CodingMessage: Codable, Identifiable, Sendable, Equatable {
     public let id, role, text: String
     public let parentID: String?
     public let timestamp: Date?
@@ -34,10 +36,19 @@ public struct CodingMessage: Codable, Identifiable, Sendable {
     fileprivate var hasText: Bool { text.contains { !$0.isWhitespace } }
 }
 
-public struct CodingHistory: Codable, Sendable {
-    public let session: CodingSession
+public struct CodingHistory: Codable, Sendable, Equatable {
+    public fileprivate(set) var session: CodingSession
     public let messages: [CodingMessage]
     public let conversationIDs: [String]
+    // Tool evidence belongs to the call, but a later completion has its own activity time.
+    var latestToolResult: Date? = nil
+
+    fileprivate var latestClaudeActivity: Date? {
+        let latestMessage = messages.lazy.filter {
+            ($0.role == "User" || $0.role == "Assistant") && ($0.hasText || !$0.tools.isEmpty)
+        }.compactMap(\.timestamp).max()
+        return [latestMessage, latestToolResult].compactMap { $0 }.max()
+    }
 
     public var conversation: [CodingMessage] {
         let map = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
@@ -178,6 +189,34 @@ public final class CodingArchive {
             CREATE VIRTUAL TABLE IF NOT EXISTS coding_tool_text USING fts5(session UNINDEXED, message UNINDEXED,
               position UNINDEXED, event UNINDEXED, stamp UNINDEXED, archived UNINDEXED, body, tokenize="unicode61 remove_diacritics 2 tokenchars '_'")
             """)
+        try migrateClaudeActivityDates()
+    }
+
+    private func migrateClaudeActivityDates() throws {
+        let pending = "SELECT 1 FROM settings WHERE key='claudeActivityDatesV1'"
+        guard try db.rows(pending).isEmpty else { return }
+        try db.transaction {
+            guard try db.rows(pending).isEmpty else { return }
+            let sessions = try db.rows("SELECT id FROM sessions WHERE json_extract(info,'$.source')='claude-code'")
+            for row in sessions {
+                let history = try history(id: row[0])
+                let date = history.latestClaudeActivity ?? history.session.started ?? history.session.updated
+                // Preserve pending transcript repairs and allow the next import to recover raw tool result times.
+                try db.execute("""
+                    UPDATE sessions SET modified=?, info=json_set(info,'$.updated',CAST(? AS REAL)),
+                      history=json_set(history,'$.session.updated',CAST(? AS REAL)) WHERE id=?
+                    """, [String(date.timeIntervalSince1970), String(date.timeIntervalSinceReferenceDate),
+                          String(date.timeIntervalSinceReferenceDate), row[0]])
+            }
+            if !sessions.isEmpty {
+                try db.execute("""
+                    UPDATE coding_text SET stamp=(SELECT modified FROM sessions WHERE id=coding_text.session)
+                    WHERE message='' AND session IN (SELECT id FROM sessions WHERE json_extract(info,'$.source')='claude-code')
+                    """)
+                try bumpRevision()
+            }
+            try db.execute("INSERT INTO settings VALUES ('claudeActivityDatesV1','1')")
+        }
     }
 
     public func settings() throws -> CodingImportSettings {
@@ -318,12 +357,15 @@ public final class CodingArchive {
             try Task.checkCancellation()
             guard let project = info.workingDirectory, options.projectSelection.includes(project) else { continue }
             let id = AgentJSON.hash(info.id.source + "/" + info.id.value)
-            let stamp = String(info.modifiedAt.timeIntervalSince1970)
             do {
                 let old = try known[id].map { try JSONDecoder().decode(CodingSession.self, from: Data($0.utf8)) }
                 var session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
                                             branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
                 session.transcriptVersion = session.currentTranscriptVersion
+                if provider == .claudeCode {
+                    session.sourceModified = info.modifiedAt
+                    session.updated = old?.updated ?? info.createdAt ?? info.modifiedAt
+                }
                 // Codex can rename a thread in its index without modifying the rollout.
                 if old == session { continue }
                 let source = try reader.readSession(info.id)
@@ -338,20 +380,35 @@ public final class CodingArchive {
                     let previous = try db.rows("SELECT info FROM sessions WHERE id=?", [id]).first?.first
                     guard previous == known[id] else { return } // A newer import won the race.
                     var history = imported
-                    if previous != nil {
+                    let saved = previous == nil ? nil : try self.history(id: id)
+                    if let old = saved {
                         // Rotation can drop pre-compaction rows from the source file. Preserve the archived evidence.
-                        let old = try self.history(id: id)
                         let latest = Dictionary(uniqueKeysWithValues: imported.messages.map { ($0.id, $0) })
                         let oldIDs = Set(old.messages.map(\.id))
                         let merged = old.messages.map { latest[$0.id] ?? $0 } + imported.messages.filter { !oldIDs.contains($0.id) }
                         history = CodingHistory(session: session, messages: merged, conversationIDs: imported.conversationIDs)
+                        history.latestToolResult = [old.latestToolResult, imported.latestToolResult].compactMap { $0 }.max()
+                    }
+                    if provider == .claudeCode {
+                        if let activity = history.latestClaudeActivity { history.session.updated = activity }
+                        if var prior = saved, old?.transcriptVersion == session.transcriptVersion {
+                            prior.session.sourceModified = session.sourceModified
+                            if prior == history {
+                                // A bookkeeping write needs a new import stamp, but the feed and search index are current.
+                                let info = try Self.encode(history.session)
+                                try db.execute("UPDATE sessions SET info=?,history=json_set(history,'$.session',json(?)) WHERE id=?",
+                                               [info, info, id])
+                                return
+                            }
+                        }
                     }
                     if previous != nil {
                         try db.execute("DELETE FROM coding_text WHERE session=?", [id])
                         try db.execute("DELETE FROM coding_tool_text WHERE session=?", [id])
                     }
                     try db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?)",
-                                   [id, project, stamp, try Self.encode(session), try Self.encode(history)])
+                                   [id, project, String(history.session.updated.timeIntervalSince1970),
+                                    try Self.encode(history.session), try Self.encode(history)])
                     try index(history)
                     try bumpRevision()
                 }
@@ -454,7 +511,12 @@ public final class CodingArchive {
                               toolCalls: $0.toolCalls, taskNotification: $0.taskNotification)
             }
         }
-        return .init(session: session, messages: messages, conversationIDs: conversationIDs)
+        var history = CodingHistory(session: session, messages: messages, conversationIDs: conversationIDs)
+        if session.source == CodingProvider.claudeCode.rawValue {
+            history.latestToolResult = source.recordedMessages.lazy.filter { $0.role == .tool && $0.taskNotification == nil }
+                .compactMap(\.timestamp).max()
+        }
+        return history
     }
 
     private func index(_ history: CodingHistory) throws {
