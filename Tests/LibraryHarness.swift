@@ -1304,23 +1304,53 @@ import Lookback
             window.contentView = host
             window.orderBack(nil)
             defer { window.orderOut(nil) }
-            var visible = ""
-            for attempt in 0..<40 {
-                await pump(0.05)
-                host.layoutSubtreeIfNeeded()
-                let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
-                host.cacheDisplay(in: host.bounds, to: bitmap)
-                guard let image = bitmap.cgImage else { continue }
-                let request = VNRecognizeTextRequest()
-                try VNImageRequestHandler(cgImage: image).perform([request])
-                visible = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-                guard attempt == 39 || expected.allSatisfy(visible.contains) else { continue }
-                let url = URL(fileURLWithPath: "build/tool-activity-" + label + ".png")
-                try bitmap.representation(using: .png, properties: [:])?.write(to: url)
-                break
+            func rendered(_ expected: [String], diagnosticVisible: Bool?, screenshot: String? = nil) async throws -> [VNRecognizedText] {
+                var visible = ""
+                for _ in 0..<40 {
+                    await pump(0.05)
+                    host.layoutSubtreeIfNeeded()
+                    let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    guard let image = bitmap.cgImage else { continue }
+                    let request = VNRecognizeTextRequest()
+                    try VNImageRequestHandler(cgImage: image).perform([request])
+                    let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first }
+                    visible = lines.map(\.string).joined(separator: " ")
+                    guard expected.allSatisfy(visible.contains),
+                          diagnosticVisible.map({ visible.contains("expected 1 row") == $0 }) ?? true else { continue }
+                    if let screenshot {
+                        let url = URL(fileURLWithPath: "build/tool-activity-" + screenshot + ".png")
+                        try bitmap.representation(using: .png, properties: [:])?.write(to: url)
+                    }
+                    return lines
+                }
+                throw RecorderError.message("Unexpected tool disclosure for " + label + ": " + visible)
             }
-            require(expected.allSatisfy(visible.contains) && (label != "collapsed" || !visible.contains("expected 1 row")),
-                    "The native tool disclosure did not reflect the search selection: " + visible)
+            let lines = try await rendered(expected, diagnosticVisible: label == "collapsed" ? false : nil, screenshot: label)
+            if label == "collapsed" {
+                guard let line = lines.first(where: { $0.string.contains("test runs") }),
+                      let range = line.string.range(of: "1 read"),
+                      let firstWords = try line.boundingBox(for: range)?.boundingBox,
+                      let summary = try line.boundingBox(for: line.string.startIndex..<line.string.endIndex)?.boundingBox else {
+                    throw RecorderError.message("Could not locate the tool summary for the pointer check")
+                }
+                let y = (host.isFlipped ? 1 - summary.midY : summary.midY) * host.bounds.height
+                func click(_ x: CGFloat) {
+                    let location = host.convert(NSPoint(x: x, y: y), to: nil)
+                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                        window.sendEvent(event)
+                    }
+                }
+                let text = summary.midX * host.bounds.width
+                let trailingSpace = summary.maxX * host.bounds.width + 16
+                let chevron = firstWords.minX * host.bounds.width - 8
+                for (point, expanded) in [(text, true), (trailingSpace, false), (chevron, true), (text, false)] {
+                    click(point)
+                    _ = try await rendered(expected, diagnosticVisible: expanded)
+                }
+            }
         }
         // Force the second call below the fold in the same message. A scroll to its parent row
         // would still expand the disclosure but would leave the matching assertion offscreen.

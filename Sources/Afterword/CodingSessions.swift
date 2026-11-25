@@ -760,7 +760,12 @@ private struct CodingMessageBubble: View {
             .padding(.vertical, 5).padding(.leading, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
-            Text(verbatim: row.toolSummary).lineLimit(2).help(row.toolSummary)
+            Text(verbatim: row.toolSummary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { toolsExpanded.toggle() }
+                .help(row.toolSummary)
         }
         .font(.callout).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
