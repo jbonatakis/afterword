@@ -21,6 +21,20 @@ public struct SpeakerAnalysisStore: Sendable {
         return try await operation.perform { try analysis(for: audio, operation: operation) }
     }
 
+    /// Embed exactly the selected passage without changing the cached analysis of the call.
+    func voiceClip(for audio: URL, from start: Double, to end: Double, operation: LocalWorkerOperation) throws -> VoiceClip {
+        guard start.isFinite, end.isFinite, start >= 0, end - start >= VoiceClip.minimumDuration else {
+            throw RecorderError.message("Choose a passage at least 2.5 seconds long.")
+        }
+        let source = try Source(audio)
+        let result = try runWorker(audio: audio, span: start..<end, operation: operation)
+        guard try Source(audio) == source else { throw RecorderError.message("The system audio changed. Review the passage and try again.") }
+        guard result.clips.count == 1, let clip = result.clips.first, clip.interval.start == start, clip.interval.end == end else {
+            throw RecorderError.message("Couldn’t extract a voice from this passage. Try another clip.")
+        }
+        return clip
+    }
+
     private struct Source: Equatable {
         let key: String
         let revision: String
@@ -78,7 +92,7 @@ public struct SpeakerAnalysisStore: Sendable {
         return result
     }
 
-    private func runWorker(audio: URL, operation: LocalWorkerOperation) throws -> SpeakerAnalysis {
+    private func runWorker(audio: URL, span: Range<Double>? = nil, operation: LocalWorkerOperation) throws -> SpeakerAnalysis {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Afterword-Speakers-" + UUID().uuidString)
         try PrivateFiles.directory(folder)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -89,7 +103,9 @@ public struct SpeakerAnalysisStore: Sendable {
         defer { try? handle.close() }
         let child = Process()
         child.executableURL = worker
-        child.arguments = [models.path, audio.path, output.path]
+        var arguments = [models.path, audio.path, output.path]
+        if let span { arguments += [String(span.lowerBound), String(span.upperBound)] }
+        child.arguments = arguments
         child.environment = ProcessInfo.processInfo.environment.merging(["TMPDIR": folder.path]) { _, new in new }
         child.standardInput = FileHandle.nullDevice
         child.standardOutput = FileHandle.nullDevice

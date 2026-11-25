@@ -50,6 +50,7 @@ struct PersonVoiceClipsView: View {
     @State private var samples = true
     @State private var error: String?
     @State private var removal: PersonVoiceLibrary.Item?
+    @State private var pendingSample: PersonVoiceLibrary.Item?
     @State private var saving = false
     @State private var reloadID = 0
     @State private var loaded = false
@@ -82,7 +83,7 @@ struct PersonVoiceClipsView: View {
                 Text("Remembered samples").tag(true)
                 Text("Transcript passages").tag(false)
             }.pickerStyle(.segmented).labelsHidden()
-            Text(samples ? "These examples help Afterword recognize voices in future calls." : "Named passages from the latest transcript of each call. Changing a speaker saves a transcript version.")
+            Text(samples ? "These examples help Afterword recognize voices in future calls." : "Listen for a passage where only the named person is speaking, then use it for voice recognition.")
                 .font(.callout).foregroundStyle(.secondary)
             if let message = error ?? player.playbackError { Text(message).foregroundStyle(.red).textSelection(.enabled) }
             if !loaded {
@@ -105,7 +106,10 @@ struct PersonVoiceClipsView: View {
                             Text(item.recording?.name ?? "Source call unavailable").font(.headline)
                             Text("\(Transcript.timestamp(item.start)) – \(Transcript.timestamp(item.end))" + (owner.isEmpty ? " · " + (catalog.owners.first { $0.id == item.owner }?.name ?? "") : ""))
                                 .font(.caption).foregroundStyle(.secondary)
-                            if case let .passage(_, paragraph) = item.source { Text(paragraph.text).lineLimit(3).textSelection(.enabled) }
+                            if case let .passage(_, paragraph) = item.source {
+                                Text(paragraph.text).lineLimit(3).textSelection(.enabled)
+                                recognitionAction(for: item)
+                            }
                         }
                         Spacer()
                         Menu {
@@ -127,7 +131,7 @@ struct PersonVoiceClipsView: View {
                                 Button("Unassign passage") { assign(item, to: "") }
                             }
                         } label: { Image(systemName: "ellipsis.circle") }
-                            .fixedSize().accessibilityLabel("Clip actions").disabled(saving || library.managing)
+                            .fixedSize().accessibilityLabel("Clip actions").disabled(saving || pendingSample != nil || library.managing)
                     }.padding(.vertical, 4)
                 }
             }
@@ -137,14 +141,41 @@ struct PersonVoiceClipsView: View {
         .onReceive(NotificationCenter.default.publisher(for: VoiceProfiles.changed)) { _ in reloadID += 1 }
         .onChange(of: calendar.directory) { _, _ in reloadID += 1 }
         .task(id: reloadID) { await reload() }
+        .task(id: pendingSample?.id) {
+            guard let item = pendingSample else { return }
+            do { try await item.rememberPassage(in: calendar.directory) }
+            catch is CancellationError { return }
+            catch { self.error = error.localizedDescription; reloadID += 1 }
+            pendingSample = nil
+        }
         .onChange(of: owner) { _, _ in player.stop() }
         .onChange(of: samples) { _, _ in player.stop() }
-        .onChange(of: calendar.locked) { _, locked in if locked { player.stop() } }
+        .onChange(of: calendar.locked) { _, locked in if locked { player.stop(); pendingSample = nil } }
         .onDisappear { player.stop() }
         .alert("Forget this voice sample?", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } }), presenting: removal) { item in
             Button("Forget", role: .destructive) { if case .sample(let sample) = item.source { change(sample, to: nil) } }
             Button("Cancel", role: .cancel) {}
         } message: { _ in Text("Afterword will stop using this sample for speaker suggestions.") }
+    }
+
+    @ViewBuilder private func recognitionAction(for item: PersonVoiceLibrary.Item) -> some View {
+        if pendingSample?.id == item.id {
+            HStack { ProgressView().controlSize(.small); Text("Saving voice sample…") }
+                .font(.caption)
+        } else if let sample = item.rememberedSample, VoiceProfiles.resolvedKey(sample.person, in: calendar.directory) == item.owner {
+            Label("Used for voice recognition", systemImage: "checkmark.circle").font(.caption)
+        } else if item.audio == nil {
+            Text("System audio unavailable").font(.caption).foregroundStyle(.secondary)
+        } else if item.end - item.start < VoiceClip.minimumDuration {
+            Text("Voice samples need at least 2.5 seconds of audio.").font(.caption).foregroundStyle(.secondary)
+        } else {
+            let person = catalog.owners.first { $0.id == item.owner }?.name ?? "this person"
+            Button(item.rememberedSample == nil ? "Use for voice recognition" : "Reassign voice sample to " + person) {
+                player.stop(); error = nil; pendingSample = item
+            }
+            .buttonStyle(.link)
+            .disabled(saving || pendingSample != nil || library.managing || calendar.locked)
+        }
     }
 
     private func ownerLabel(_ person: PersonVoiceLibrary.Owner) -> String {
