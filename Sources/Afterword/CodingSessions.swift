@@ -725,7 +725,6 @@ struct CodingSessionDetail: View {
     var citedMessageID: String? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsJumpToTop = false
-    @State private var fitsViewport = false
     @State private var timeline: CodingConversationTimeline?
     @State private var recorded = false
     @State private var issue: String?
@@ -796,11 +795,18 @@ struct CodingSessionDetail: View {
                         Color.clear.frame(height: 0).id(VerticalEdge.top)
                         ForEach(rows) { row in
                             messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
+                                .background {
+                                    if row.id == rows.last?.id {
+                                        GeometryReader { message in
+                                            let frame = message.frame(in: .scrollView)
+                                            let bottom = geometry.size.height - margins.bottom
+                                            let visible = frame.height > 0 && frame.maxY > 0 && frame.maxY <= bottom + 1
+                                            Color.clear.preference(key: ConversationEndVisible.self, value: visible)
+                                        }
+                                    }
+                                }
                         }
                     }
-                    .onGeometryChange(for: Bool.self) { stack in
-                        stack.size.height + margins.top + margins.bottom <= geometry.size.height
-                    } action: { fitsViewport = $0 }
                     .onGeometryChange(for: Bool.self) { stack in
                         stack.frame(in: .scrollView).minY < -24
                     } action: { scrolledDown in
@@ -808,7 +814,7 @@ struct CodingSessionDetail: View {
                     }
                 }
                 .contentMargins(.all, margins, for: .scrollContent)
-                .defaultScrollAnchor(anchor == nil && !fitsViewport ? .bottom : nil)
+                .modifier(ConversationOpeningPosition(opensAtBottom: anchor == nil))
                 .task(id: anchor) {
                     guard let anchor else { return }
                     await Task.yield()
@@ -864,5 +870,25 @@ struct CodingSessionDetail: View {
             ConversationRowMarker(messageID: row.id) { proxy.scrollTo(row.id, anchor: .top) }
         }
         .id(row.id)
+    }
+}
+
+private struct ConversationEndVisible: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct ConversationOpeningPosition: ViewModifier {
+    let opensAtBottom: Bool
+    @State private var didShowEnd = false
+
+    func body(content: Content) -> some View {
+        // Lazy row estimates can change during scrolling. Release the bottom anchor
+        // once the final message's measured bottom edge has reached the viewport.
+        content
+            .defaultScrollAnchor(opensAtBottom && !didShowEnd ? .bottom : nil)
+            .onPreferenceChange(ConversationEndVisible.self) { visible in
+                if visible { didShowEnd = true }
+            }
     }
 }
