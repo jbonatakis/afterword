@@ -1392,9 +1392,7 @@ import Lookback
         }
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        let scroll = descendants(host).compactMap { $0 as? NSScrollView }.first {
-            ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 700 && $0.contentView.bounds.height > 100
-        }
+        let scroll = descendants(host).compactMap { $0 as? ConversationRowMarker.MarkerView }.first?.enclosingScrollView
         guard let scroll else { throw RecorderError.message("Missing conversation scroll view") }
         func captureViewport(_ phase: String) throws {
             host.layoutSubtreeIfNeeded()
@@ -1412,9 +1410,6 @@ import Lookback
             }
             try png.write(to: folder.appendingPathComponent(phase + ".png"))
         }
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        await pump()
         func visibleMessages() -> [(id: String, offset: CGFloat)] {
             guard let document = scroll.documentView else { return [] }
             let viewport = scroll.documentVisibleRect
@@ -1425,6 +1420,21 @@ import Lookback
                 return (row.messageID, frame.minY - viewport.minY)
             }
         }
+        // Page from measured rows. An absolute jump from the end uses estimated
+        // row heights and can land back at the beginning after SwiftUI lays them out.
+        func scrollTo(y: CGFloat) {
+            let clip = scroll.contentView
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+            scroll.reflectScrolledClipView(clip)
+        }
+        scrollTo(y: -scroll.contentInsets.top)
+        for _ in 0..<40 {
+            await pump(0.05)
+            if visibleMessages().contains(where: { $0.id == "first" }) { break }
+        }
+        require(visibleMessages().contains(where: { $0.id == "first" }), "Could not reach the first message before paging")
+        scrollTo(y: scroll.contentView.bounds.minY + scroll.contentView.bounds.height * 0.75)
+        await pump()
         guard let before = visibleMessages().min(by: { abs($0.offset) < abs($1.offset) }) else {
             throw RecorderError.message("Missing visible message before opening the calendar")
         }
@@ -1540,8 +1550,27 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         guard let session = library.selectedCoding else { throw RecorderError.message("Coding search failed to select a result") }
         require(library.codingHits[session.id]?.messageID == "answer", "Coding search lost the message citation")
-        try await checkSessionScrolling(session: session, directory: library.coding.directory)
         let history = try archive.history(id: session.id)
+        try await checkSessionScrolling(session: session, directory: library.coding.directory,
+                                        visibleOnOpen: ["End of reply 31."])
+        let lastTurns = [
+            CodingMessage(id: "follow-up", role: "User", text: "Any other changes?", parentID: "turn-31", timestamp: nil, tools: []),
+            CodingMessage(id: "done", role: "Assistant", text: "All done.", parentID: "follow-up", timestamp: nil, tools: [])
+        ]
+        let shortEnding = CodingHistory(session: session, messages: history.messages + lastTurns,
+                                        conversationIDs: history.conversationIDs + lastTurns.map(\.id))
+        try await checkSessionScrolling(session: session, directory: library.coding.directory, history: shortEnding,
+                                        visibleOnOpen: ["End of reply 31."] + lastTurns.map(\.text))
+        // Several short updates can fit in one viewport until the much taller final reply is measured.
+        let updates = history.conversation.prefix { $0.id != "review" }
+        let closingLine = "End of the detailed review."
+        let tallReply = CodingMessage(id: "detailed-review", role: "Assistant",
+                                      text: String(repeating: "Another paragraph in the final review.\n\n", count: 48) + closingLine,
+                                      parentID: updates.last?.id, timestamp: nil, tools: [])
+        let messages = updates + [tallReply]
+        let uneven = CodingHistory(session: session, messages: Array(messages), conversationIDs: messages.map(\.id))
+        try await checkSessionScrolling(session: session, directory: library.coding.directory, history: uneven,
+                                        visibleOnOpen: [closingLine], scrollWithWheel: true)
         for messages in [history.conversation, history.messages] {
             let rows = CodingConversationRow.group(messages)
             let calls = rows.filter { $0.toolCount > 0 }
@@ -1656,9 +1685,12 @@ import Lookback
         print("PASS Pi folder selection, import, and provider sidebar navigation")
     }
 
-    @MainActor static func checkSessionScrolling(session: CodingSession, directory: URL) async throws {
-        let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: nil))
-        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 540, height: 660),
+    @MainActor static func checkSessionScrolling(session: CodingSession, directory: URL, history: CodingHistory? = nil,
+                                                visibleOnOpen: [String], scrollWithWheel: Bool = false) async throws {
+        let detail = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: nil,
+                                                                 citedHistory: history))
+        let size = scrollWithWheel ? NSSize(width: 875, height: 810) : NSSize(width: 540, height: 660)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = detail
         window.orderBack(nil)
@@ -1674,23 +1706,42 @@ import Lookback
         }
         for _ in 0..<40 {
             await pump(0.05)
-            if isTextVisible("End of reply 31.") { break }
+            if visibleOnOpen.allSatisfy(isTextVisible) { break }
         }
-        require(isTextVisible("End of reply 31."), "The last paragraph must be visible when the chat opens")
+        let missing = visibleOnOpen.filter { !isTextVisible($0) }
+        require(missing.isEmpty, "Missing text in the viewport before any scrolling: \(missing)")
 
-        // Click the floating control through this window's event handler.
-        let location = NSPoint(x: detail.bounds.width - 65, y: 26)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
-            window.sendEvent(event)
+        if scrollWithWheel {
+            guard let scroll = descendants(detail).compactMap({ $0 as? NSScrollView }).first,
+                  let document = scroll.documentView,
+                  let cgEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                        wheel1: Int32(ceil(document.bounds.height)), wheel2: 0, wheel3: 0),
+                  let event = NSEvent(cgEvent: cgEvent) else { throw RecorderError.message("Could not create a scroll event") }
+            scroll.scrollWheel(with: event)
+        } else {
+            // Click the floating control through this window's event handler.
+            let location = NSPoint(x: detail.bounds.width - 65, y: 26)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                window.sendEvent(event)
+            }
         }
         for _ in 0..<60 {
             await pump(0.05)
             if isTextVisible("Document the retry behavior") { break }
         }
-        require(isTextVisible("Document the retry behavior"), "Jump to top must reveal the first message")
-        print("PASS last paragraph visible on open and first prompt visible after the floating Jump to top")
+        require(isTextVisible("Document the retry behavior"), "Scrolling to the top must reveal the first message")
+        if scrollWithWheel {
+            window.setContentSize(NSSize(width: size.width - 90, height: size.height))
+            for _ in 0..<10 {
+                await pump(0.05)
+                require(isTextVisible("Document the retry behavior"), "Layout pulled the reader away from the first message after scrolling")
+            }
+            print("PASS one upward wheel scroll stays at the first prompt through transcript reflow")
+        } else {
+            print("PASS chat opened showing \(visibleOnOpen.joined(separator: " / ")). Jump to top revealed the first prompt.")
+        }
     }
 
     static func checkQuestionReplies() throws {

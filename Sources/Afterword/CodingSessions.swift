@@ -787,19 +787,24 @@ struct CodingSessionDetail: View {
     private func transcript(_ rows: [CodingConversationRow], proxy: ScrollViewProxy) -> some View {
         let anchor = (citedMessageID ?? hit?.messageID).flatMap { id in rows.first { $0.contains(id) }?.id }
         return GeometryReader { geometry in
-            let maxWidth = min(680, max(0, geometry.size.width - 32) * 0.87)
+            let margins = EdgeInsets(top: 16, leading: 16, bottom: 54, trailing: 16)
+            let maxWidth = min(680, max(0, geometry.size.width - margins.leading - margins.trailing) * 0.87)
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         Color.clear.frame(height: 0).id(VerticalEdge.top)
-                        LazyVStack(spacing: 0) {
-                            ForEach(rows.dropLast()) { row in
-                                messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
-                            }
-                        }
-                        // Keep the final row measured while the lazy stack estimates earlier message heights.
-                        if let last = rows.last {
-                            messageRow(last, width: maxWidth, anchor: anchor, proxy: proxy)
+                        ForEach(rows) { row in
+                            messageRow(row, width: maxWidth, anchor: anchor, proxy: proxy)
+                                .background {
+                                    if #unavailable(macOS 15), row.id == rows.last?.id {
+                                        GeometryReader { message in
+                                            let frame = message.frame(in: .scrollView)
+                                            let bottom = geometry.size.height - margins.bottom
+                                            let visible = frame.height > 0 && frame.maxY > 0 && frame.maxY <= bottom + 1
+                                            Color.clear.preference(key: ConversationEndVisible.self, value: visible)
+                                        }
+                                    }
+                                }
                         }
                     }
                     .onGeometryChange(for: Bool.self) { stack in
@@ -808,17 +813,16 @@ struct CodingSessionDetail: View {
                         showsJumpToTop = scrolledDown
                     }
                 }
-                .contentMargins([.horizontal, .top], 16, for: .scrollContent)
-                .contentMargins(.bottom, 54, for: .scrollContent)
+                .contentMargins(.all, margins, for: .scrollContent)
+                .modifier(ConversationOpeningPosition(opensAtBottom: anchor == nil))
                 .task(id: anchor) {
+                    guard let anchor else { return }
                     await Task.yield()
                     guard !Task.isCancelled else { return }
-                    if let anchor {
-                        proxy.scrollTo(anchor, anchor: .top)
-                    } else if let last = rows.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+                    proxy.scrollTo(anchor, anchor: .top)
                 }
+                // Clearing a search or citation reopens the conversation at its default position.
+                .id(anchor == nil)
                 if showsJumpToTop {
                     jumpToTopButton(proxy: proxy)
                         .padding(.trailing, 20).padding(.bottom, 12)
@@ -866,5 +870,36 @@ struct CodingSessionDetail: View {
             ConversationRowMarker(messageID: row.id) { proxy.scrollTo(row.id, anchor: .top) }
         }
         .id(row.id)
+    }
+}
+
+private struct ConversationEndVisible: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct ConversationOpeningPosition: ViewModifier {
+    let opensAtBottom: Bool
+    @State private var releaseBottomAnchor = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            // Stay at the bottom while the lazy stack measures the last page.
+            // Once scrolling starts, size changes should preserve the reading position.
+            content
+                .defaultScrollAnchor(opensAtBottom ? .bottom : nil, for: .initialOffset)
+                .defaultScrollAnchor(opensAtBottom && !releaseBottomAnchor ? .bottom : nil, for: .sizeChanges)
+                .onScrollPhaseChange { _, phase in
+                    if phase != .idle { releaseBottomAnchor = true }
+                }
+        } else {
+            // macOS 14 uses one anchor for all roles. Release it when the measured
+            // bottom edge of the final message reaches the viewport.
+            content
+                .defaultScrollAnchor(opensAtBottom && !releaseBottomAnchor ? .bottom : nil)
+                .onPreferenceChange(ConversationEndVisible.self) { visible in
+                    if visible { releaseBottomAnchor = true }
+                }
+        }
     }
 }
