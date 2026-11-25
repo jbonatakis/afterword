@@ -1,17 +1,27 @@
 name: PR tests
 
-on: pull_request
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Test suite to run
+        type: choice
+        required: true
+        default: all
+        options: [all, swift, library-ui]
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-tests-${{ github.event.pull_request.number }}
+  group: pr-tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   swift:
     name: Swift tests
+    if: github.event_name == 'pull_request' || inputs.suite == 'all' || inputs.suite == 'swift'
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -23,6 +33,7 @@ jobs:
 
   library-ui:
     name: Library UI tests
+    if: github.event_name == 'pull_request' || inputs.suite == 'all' || inputs.suite == 'library-ui'
     runs-on: macos-26
     timeout-minutes: 30
     steps:
