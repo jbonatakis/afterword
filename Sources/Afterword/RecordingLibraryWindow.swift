@@ -17,6 +17,7 @@ import SwiftUI
         weak var view: NSScrollView?
         let bounds: NSRect
         let messages: [MessageAnchor]
+        var requestedReveal = false
     }
     private var positions: [ScrollPosition] = []
     private var savedWindowSize: NSSize = .zero
@@ -91,10 +92,10 @@ import SwiftUI
             positions = []; layoutObservation = nil
             return
         }
-        positions.removeAll { position in
-            guard let scroll = position.view, scroll.window === window else { return true }
+        positions = positions.compactMap { position in
+            guard let scroll = position.view, scroll.window === window else { return nil }
             let clip = scroll.contentView
-            guard savedWindowSize != window.frame.size || position.bounds.size == clip.bounds.size else { return false }
+            guard savedWindowSize != window.frame.size || position.bounds.size == clip.bounds.size else { return position }
             var bounds = clip.bounds
             bounds.origin = position.bounds.origin
             if let document = scroll.documentView, let first = position.messages.first {
@@ -102,21 +103,25 @@ import SwiftUI
                 let markers = Self.messageMarkers(in: document)
                 // Lazy rows can be remeasured while the calendar is showing. Restore a
                 // message's screen position even when its document coordinate changed.
-                for saved in position.messages {
-                    if let marker = markers.first(where: { $0.messageID == saved.id }) {
-                        bounds.origin.y = marker.convert(marker.bounds, to: document).minY - saved.offsetFromTop
-                        clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
-                        scroll.reflectScrolledClipView(clip)
-                        return true
-                    }
+                let anchorY = position.messages.lazy.compactMap { saved -> CGFloat? in
+                    guard let marker = markers.first(where: { $0.messageID == saved.id }) else { return nil }
+                    return marker.convert(marker.bounds, to: document).minY - saved.offsetFromTop
+                }.first
+                if let anchorY {
+                    bounds.origin.y = anchorY
+                } else if !position.requestedReveal {
+                    // The lazy stack may have recycled every saved row. Try to reveal one
+                    // once. A deleted message falls back to the original scroll offset.
+                    var pending = position
+                    pending.requestedReveal = true
+                    first.reveal()
+                    DispatchQueue.main.async { [weak self] in self?.restoreActivityPosition() }
+                    return pending
                 }
-                // No previously visible row is mounted. Ask SwiftUI to materialize one.
-                first.reveal()
-                return false
             }
             clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
             scroll.reflectScrolledClipView(clip)
-            return true
+            return nil
         }
         if positions.isEmpty { layoutObservation = nil }
     }

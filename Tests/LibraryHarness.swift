@@ -1398,16 +1398,10 @@ import Lookback
             host.cacheDisplay(in: rect, to: bitmap)
             let folder = URL(fileURLWithPath: "build/calendar-scroll", isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent(phase + ".png"))
-            if let doc = scroll.documentView {
-                let fields = descendants(doc).compactMap { view -> String? in
-                    guard let f = view as? NSTextField else { return nil }
-                    let frame = f.convert(f.bounds, to: doc)
-                    guard scroll.documentVisibleRect.intersects(frame) else { return nil }
-                    return "\(Int(frame.minY))=\(f.stringValue.prefix(40))"
-                }
-                print("Viewport \(phase) window=\(window.frame) clip=\(clip.bounds) hostRect=\(rect) document=\(doc.bounds) fields=\(fields)")
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                throw RecorderError.message("Could not encode the conversation viewport")
             }
+            try png.write(to: folder.appendingPathComponent(phase + ".png"))
         }
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
         scroll.reflectScrolledClipView(scroll.contentView)
