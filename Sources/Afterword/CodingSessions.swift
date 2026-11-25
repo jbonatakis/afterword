@@ -498,9 +498,18 @@ struct CodingToolLocation: Hashable {
 
 struct CodingToolEntry: Identifiable {
     let call: CodingToolCall
-    let date: Date?
+    var date: Date?
+    private(set) var lastDate: Date?
     let id: CodingToolLocation
     var locations: [CodingToolLocation]
+
+    var recordedTime: String? {
+        guard let date else { return nil }
+        let start = date.formatted(date: .omitted, time: .standard)
+        guard let lastDate else { return start }
+        let end = lastDate.formatted(date: .omitted, time: .standard)
+        return start == end ? start : "\(start) – \(end)"
+    }
 
     static func entries(_ messages: [CodingMessage]) -> [Self] {
         var entries: [Self] = []
@@ -510,6 +519,10 @@ struct CodingToolEntry: Identifiable {
                 if !call.hasDetails, let last = entries.indices.last,
                    !entries[last].call.hasDetails, entries[last].call.name == call.name {
                     entries[last].locations.append(location)
+                    if let date = message.timestamp {
+                        if entries[last].date == nil { entries[last].date = date }
+                        entries[last].lastDate = date
+                    }
                 } else {
                     entries.append(Self(call: call, date: message.timestamp, id: location, locations: [location]))
                 }
@@ -681,15 +694,11 @@ private struct CodingMessageBubble: View {
                             .overlay(alignment: .leading) { Capsule().fill(.tertiary).frame(width: 2) }
                     }
                 }
-                if row.hasToolDetails { tools }
-                else if row.toolCount > 0 {
-                    Text(verbatim: row.toolSummary).font(.callout).foregroundStyle(.secondary)
-                        .help("Only the tool names are available for these calls.")
-                }
+                if row.toolCount > 0 { tools }
             }
             .padding(.horizontal, 4)
             .overlay(alignment: edge) {
-                if matchedID != nil && (matchedTool == nil || !row.hasToolDetails) {
+                if matchedID != nil && matchedTool == nil {
                     Capsule().fill(Color.accentColor).frame(width: 2).accessibilityHidden(true)
                 }
             }
@@ -729,7 +738,7 @@ private struct CodingMessageBubble: View {
     }
 
     private var tools: some View {
-        DisclosureGroup(isExpanded: $toolsExpanded) {
+        CodingToolDisclosure(isExpanded: $toolsExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(row.toolEntries) { entry in
                     let call = entry.call
@@ -738,8 +747,12 @@ private struct CodingMessageBubble: View {
                         if call.hasDetails {
                             CodingToolDetail(call: call, matched: matchedTool == location, foldsPreview: call.events?.isEmpty == false)
                         } else {
-                            Text(verbatim: call.nameLabel(count: entry.locations.count) + " · Names only")
-                                .font(.caption).foregroundStyle(matchedTool == location ? Color.accentColor : Color.secondary)
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(verbatim: call.nameLabel(count: entry.locations.count))
+                                if let time = entry.recordedTime { Text(verbatim: time).monospacedDigit() }
+                                if row.hasToolDetails { Text("Name only") }
+                            }
+                            .font(.caption).foregroundStyle(matchedTool == location ? Color.accentColor : Color.secondary)
                         }
                     }
                     .help(entry.date?.formatted() ?? "")
@@ -756,19 +769,34 @@ private struct CodingMessageBubble: View {
                         .padding(.leading, 10)
                     }
                 }
+                if !row.hasToolDetails {
+                    Text("No arguments or results are available for these calls.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .padding(.vertical, 5).padding(.leading, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
-            Text(verbatim: row.toolSummary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture { toolsExpanded.toggle() }
-                .help(row.toolSummary)
+            Text(verbatim: row.toolSummary).lineLimit(2).help(row.toolSummary)
         }
         .font(.callout).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct CodingToolDisclosure<Content: View, Label: View>: View {
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: () -> Content
+    @ViewBuilder var label: () -> Label
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded, content: content) {
+            label()
+                .textSelection(.disabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { isExpanded.toggle() }
+        }
     }
 }
 
@@ -810,8 +838,10 @@ private struct CodingToolDetail: View {
                 Text(verbatim: subject).font(.system(.callout, design: .monospaced))
             }
             if let paths = call.additionalPaths {
-                DisclosureGroup("\(paths.count) more file\(paths.count == 1 ? "" : "s")", isExpanded: $showPaths) {
+                CodingToolDisclosure(isExpanded: $showPaths) {
                     Text(verbatim: paths.joined(separator: "\n")).font(.system(.caption, design: .monospaced))
+                } label: {
+                    Text("\(paths.count) more file\(paths.count == 1 ? "" : "s")")
                 }
                 .font(.caption)
                 .onChange(of: matched, initial: true) { _, value in if value { showPaths = true } }
@@ -821,7 +851,7 @@ private struct CodingToolDetail: View {
                     .padding(6).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
                 if foldsPreview {
-                    DisclosureGroup(isExpanded: $showScript) { snippet } label: {
+                    CodingToolDisclosure(isExpanded: $showScript) { snippet } label: {
                         if showScript { Text("Script") }
                         else {
                             Text(verbatim: preview).font(.system(.caption, design: .monospaced)).lineLimit(1)

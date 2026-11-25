@@ -1258,11 +1258,18 @@ import Lookback
               let hit = try archive.matches(query: "expected 1 row", semantic: [], from: nil, to: nil, project: nil, branch: nil).first
         else { throw RecorderError.message("The fixture did not produce a searchable test diagnostic") }
         let rows = CodingConversationRow.group(try archive.history(id: session.id).conversation)
-        let legacy = ["a", "b", "c"].map { CodingMessage(id: $0, role: "Assistant", text: "", parentID: nil, timestamp: nil, tools: ["exec"]) }
+        let firstTime = Date(timeIntervalSinceReferenceDate: 3600)
+        let legacy = (0..<3).map { index in
+            CodingMessage(id: "legacy-\(index)", role: "Assistant", text: "", parentID: nil,
+                          timestamp: firstTime.addingTimeInterval(Double(index)), tools: ["exec"])
+        }
         let legacyRow = CodingConversationRow.group(legacy)[0]
-        require(!legacyRow.hasToolDetails && legacyRow.toolSummary == "exec ×3 · Names only",
-                "Name-only history offered an empty disclosure")
-        let mixed = CodingConversationRow.group(rows.flatMap(\.toolMessages) + legacy)[0]
+        require(!legacyRow.hasToolDetails && legacyRow.toolSummary == "exec ×3 · Names only" &&
+                legacyRow.toolEntries.count == 1 && legacyRow.toolEntries[0].date == firstTime &&
+                legacyRow.toolEntries[0].lastDate == firstTime.addingTimeInterval(2),
+                "Repeated name-only calls should retain their count and recorded time range")
+        let undated = legacy.map { CodingMessage(id: $0.id, role: $0.role, text: "", parentID: nil, timestamp: nil, tools: $0.tools) }
+        let mixed = CodingConversationRow.group(rows.flatMap(\.toolMessages) + undated)[0]
         require(mixed.hasToolDetails && mixed.toolEntries.last?.locations.count == 3 && mixed.toolEntries.count == 5,
                 "Consecutive bare calls should share one entry and retain all three search anchors")
         let summary = "1 read · 2 test runs (failed → passed) · 1 edit"
@@ -1276,7 +1283,7 @@ import Lookback
         let codexLog = #"""
         {"type":"session_meta","payload":{"id":"\#(id)","cwd":"/work/afterword"}}
         {"type":"event_msg","payload":{"type":"user_message","id":"prompt","message":"Check the local build"}}
-        {"type":"response_item","payload":{"type":"custom_tool_call","id":"first","call_id":"a","name":"exec","input":"await tools.exec_command({cmd: 'swift build'})"}}
+        {"type":"response_item","payload":{"type":"custom_tool_call","id":"first","call_id":"a","name":"exec","input":"// Local build\n// Expanded script body\nawait tools.exec_command({cmd: 'swift build'})"}}
         {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"child","command":["zsh","-lc","swift build"],"exit_code":0}}}
         {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"a","output":"ok"}}
         {"type":"response_item","payload":{"type":"custom_tool_call","id":"second","call_id":"b","name":"exec","input":"const report = 'Build artifacts verified'"}}
@@ -1290,13 +1297,20 @@ import Lookback
             throw RecorderError.message("Missing Codex script citation")
         }
 
+        var patch = CodingMessage(id: "patch", role: "Assistant", text: "Edited files", parentID: nil, timestamp: nil, tools: ["apply_patch"])
+        patch.toolCalls = [try JSONDecoder().decode(CodingToolCall.self, from: Data(
+            #"{"name":"apply_patch","action":"edit","subject":"First.swift","additionalPaths":["Second.swift"]}"#.utf8))]
+        let saved = legacy + [patch]
+        let archived = CodingHistory(session: session, messages: saved, conversationIDs: saved.map(\.id))
         let examples: [(String, CodingSession, CodingHit?, [String])] = [
             ("collapsed", session, nil, ["test runs"]),
+            ("archive", session, nil, ["Names only", "1 edit"]),
             ("expanded", session, hit, ["test runs", "expected 1 row"]),
             ("codex", scriptHit.session, scriptHit, ["3 scripts", "swift build", "Build artifacts verified", "Finished checks"])
         ]
         for (label, example, selection, expected) in examples {
-            let host = NSHostingView(rootView: CodingSessionDetail(session: example, directory: directory, hit: selection)
+            let host = NSHostingView(rootView: CodingSessionDetail(session: example, directory: directory, hit: selection,
+                                                                   citedHistory: label == "archive" ? archived : nil)
                 .background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 660),
                                   styleMask: [.titled], backing: .buffered, defer: false)
@@ -1304,7 +1318,7 @@ import Lookback
             window.contentView = host
             window.orderBack(nil)
             defer { window.orderOut(nil) }
-            func rendered(_ expected: [String], diagnosticVisible: Bool?, screenshot: String? = nil) async throws -> [VNRecognizedText] {
+            func rendered(_ expected: [String], hiding: String? = nil, screenshot: String? = nil) async throws -> [VNRecognizedText] {
                 var visible = ""
                 for _ in 0..<40 {
                     await pump(0.05)
@@ -1317,7 +1331,7 @@ import Lookback
                     let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first }
                     visible = lines.map(\.string).joined(separator: " ")
                     guard expected.allSatisfy(visible.contains),
-                          diagnosticVisible.map({ visible.contains("expected 1 row") == $0 }) ?? true else { continue }
+                          hiding.map({ !visible.contains($0) }) ?? true else { continue }
                     if let screenshot {
                         let url = URL(fileURLWithPath: "build/tool-activity-" + screenshot + ".png")
                         try bitmap.representation(using: .png, properties: [:])?.write(to: url)
@@ -1326,30 +1340,46 @@ import Lookback
                 }
                 throw RecorderError.message("Unexpected tool disclosure for " + label + ": " + visible)
             }
-            let lines = try await rendered(expected, diagnosticVisible: label == "collapsed" ? false : nil, screenshot: label)
-            if label == "collapsed" {
-                guard let line = lines.first(where: { $0.string.contains("test runs") }),
-                      let range = line.string.range(of: "1 read"),
-                      let firstWords = try line.boundingBox(for: range)?.boundingBox,
-                      let summary = try line.boundingBox(for: line.string.startIndex..<line.string.endIndex)?.boundingBox else {
-                    throw RecorderError.message("Could not locate the tool summary for the pointer check")
+            func click(_ text: String, in lines: [VNRecognizedText], alignment: UnitPoint = .center, offset: CGFloat = 0) throws {
+                guard let line = lines.first(where: { $0.string.contains(text) }), let range = line.string.range(of: text),
+                      let box = try line.boundingBox(for: range)?.boundingBox else {
+                    throw RecorderError.message("Could not locate " + text + " for the pointer check")
                 }
-                let y = (host.isFlipped ? 1 - summary.midY : summary.midY) * host.bounds.height
-                func click(_ x: CGFloat) {
-                    let location = host.convert(NSPoint(x: x, y: y), to: nil)
-                    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                        let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
-                        window.sendEvent(event)
-                    }
+                let x = (box.minX + alignment.x * box.width) * host.bounds.width + offset
+                let y = (host.isFlipped ? 1 - box.midY : box.midY) * host.bounds.height
+                let location = host.convert(NSPoint(x: x, y: y), to: nil)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                    window.sendEvent(event)
                 }
-                let text = summary.midX * host.bounds.width
-                let trailingSpace = summary.maxX * host.bounds.width + 16
-                let chevron = firstWords.minX * host.bounds.width - 8
-                for (point, expanded) in [(text, true), (trailingSpace, false), (chevron, true), (text, false)] {
-                    click(point)
-                    _ = try await rendered(expected, diagnosticVisible: expanded)
+            }
+            var lines = try await rendered(expected, hiding: label == "collapsed" ? "expected 1 row" : nil, screenshot: label)
+            switch label {
+            case "collapsed":
+                for (words, alignment, offset, expanded) in [("test runs", UnitPoint.center, 0.0, true), ("1 edit", .trailing, 16, false),
+                                                            ("1 read", .leading, -8, true), ("test runs", .center, 0, false)] {
+                    try click(words, in: lines, alignment: alignment, offset: offset)
+                    lines = try await rendered(expanded ? expected + ["expected 1 row"] : expected, hiding: expanded ? nil : "expected 1 row")
                 }
+            case "archive":
+                let note = "No arguments or results"
+                try click("Names only", in: lines)
+                lines = try await rendered(expected + [note])
+                try click("Names only", in: lines)
+                lines = try await rendered(expected, hiding: note)
+                try click("1 edit", in: lines)
+                lines = try await rendered(["1 more file"], hiding: "Second")
+                try click("more file", in: lines)
+                lines = try await rendered(["1 more file", "Second"])
+                try click("more file", in: lines)
+                _ = try await rendered(["1 more file"], hiding: "Second")
+            case "codex":
+                try click("Local build", in: lines)
+                lines = try await rendered(["Expanded script body"])
+                try click("Script", in: lines)
+                _ = try await rendered(["Local build"], hiding: "Expanded script body")
+            default: break
             }
         }
         // Force the second call below the fold in the same message. A scroll to its parent row
