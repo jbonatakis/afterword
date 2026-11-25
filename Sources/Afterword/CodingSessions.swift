@@ -698,6 +698,25 @@ private struct AssistantThreadConnector: Shape {
     }
 }
 
+/// Gives the library window a stable message identity and the row's actual layout bounds.
+struct ConversationRowMarker: NSViewRepresentable {
+    final class MarkerView: NSView {
+        var messageID = ""
+        var reveal: () -> Void = {}
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    let messageID: String
+    let reveal: () -> Void
+
+    func makeNSView(context: Context) -> MarkerView { MarkerView() }
+
+    func updateNSView(_ view: MarkerView, context: Context) {
+        view.messageID = messageID
+        view.reveal = reveal
+    }
+}
+
 struct CodingSessionDetail: View {
     let session: CodingSession
     let directory: URL
@@ -842,6 +861,10 @@ struct CodingSessionDetail: View {
                     proxy.scrollTo(questionID, anchor: .top)
                 }
             }
-        }.id(row.id)
+        }
+        .background {
+            ConversationRowMarker(messageID: row.id) { proxy.scrollTo(row.id, anchor: .top) }
+        }
+        .id(row.id)
     }
 }

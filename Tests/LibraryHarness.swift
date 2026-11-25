@@ -1079,7 +1079,9 @@ import Lookback
         await library.updateSearch(debounce: false)?.value
         guard let hit = library.selectedGitHub else { throw RecorderError.message("Scoped item number did not find the pull request") }
         let citation = BoardReference(source: .github, itemID: hit.id, anchor: passage.id, label: "Review comment")
-        let view = NSHostingView(rootView: BoardCitationView(reference: citation, library: library))
+        // Include the window surface in the offscreen image so OCR sees the same contrast as the reader.
+        let view = NSHostingView(rootView: BoardCitationView(reference: citation, library: library)
+            .background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 680, height: 650),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view
@@ -1106,7 +1108,14 @@ import Lookback
         let ocr = VNRecognizeTextRequest()
         try VNImageRequestHandler(cgImage: image).perform([ocr])
         let labels = (ocr.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(labels.localizedCaseInsensitiveContains("private to Afterword"), "Missing private citation status in \(labels)")
+        if !labels.localizedCaseInsensitiveContains("private to Afterword") {
+            let file = URL(fileURLWithPath: "build/private-citation.png")
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                throw RecorderError.message("Could not encode the failing citation screenshot")
+            }
+            try png.write(to: file)
+            throw RecorderError.message("Missing private citation status in \(labels). Screenshot: \(file.path)")
+        }
         try archive.disconnect()
         library.githubRepository = ""
         library.githubAction = ""
@@ -1387,19 +1396,39 @@ import Lookback
             ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 700 && $0.contentView.bounds.height > 100
         }
         guard let scroll else { throw RecorderError.message("Missing conversation scroll view") }
+        func captureViewport(_ phase: String) throws {
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            let clip = scroll.contentView
+            let rect = clip.convert(clip.bounds, to: host)
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: rect) else {
+                throw RecorderError.message("Could not capture the conversation viewport")
+            }
+            host.cacheDisplay(in: rect, to: bitmap)
+            let folder = URL(fileURLWithPath: "build/calendar-scroll", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                throw RecorderError.message("Could not encode the conversation viewport")
+            }
+            try png.write(to: folder.appendingPathComponent(phase + ".png"))
+        }
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
         scroll.reflectScrolledClipView(scroll.contentView)
         await pump()
-        func firstVisibleParagraph() -> String? {
-            guard let document = scroll.documentView else { return nil }
-            return descendants(document).compactMap { view -> (String, CGFloat)? in
-                guard let field = view as? NSTextField, !field.stringValue.isEmpty else { return nil }
-                let rect = field.convert(field.bounds, to: document)
-                guard scroll.documentVisibleRect.contains(rect) else { return nil }
-                return (field.stringValue, rect.minY - scroll.documentVisibleRect.minY)
-            }.min { $0.1 < $1.1 }?.0
+        func visibleMessages() -> [(id: String, offset: CGFloat)] {
+            guard let document = scroll.documentView else { return [] }
+            let viewport = scroll.documentVisibleRect
+            return descendants(document).compactMap { view in
+                guard let row = view as? ConversationRowMarker.MarkerView else { return nil }
+                let frame = row.convert(row.bounds, to: document)
+                guard frame.intersects(viewport) else { return nil }
+                return (row.messageID, frame.minY - viewport.minY)
+            }
         }
-        let paragraphAtTop = firstVisibleParagraph()
+        guard let before = visibleMessages().min(by: { abs($0.offset) < abs($1.offset) }) else {
+            throw RecorderError.message("Missing visible message before opening the calendar")
+        }
+        try captureViewport("before-calendar")
         let offset = scroll.contentView.bounds.origin.y
         let saved = library.selection
         let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
@@ -1432,8 +1461,13 @@ import Lookback
         }
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         require(library.destination == .activity(.claudeCode) && library.selection == saved && hasLibrarySearch(), "Returning to activity lost selection or search")
-        require(scroll.window === window && abs(scroll.contentView.bounds.origin.y - offset) < 2 &&
-                paragraphAtTop != nil && firstVisibleParagraph() == paragraphAtTop, "Returning to activity lost the conversation scroll position: wanted \(offset), got \(scroll.contentView.bounds.origin.y), attached \(scroll.window === window)")
+        try captureViewport("after-calendar")
+        guard let after = visibleMessages().first(where: { $0.id == before.id }) else {
+            throw RecorderError.message("Message \(before.id) disappeared after returning from the calendar")
+        }
+        require(scroll.window === window && abs(after.offset - before.offset) < 2,
+                "Returning to activity moved message \(before.id) from \(before.offset) to \(after.offset) points")
+        print("PASS calendar round trip: message \(before.id) at \(before.offset) points before, \(after.offset) points after")
         library.destination = .activity(.transcribed)
         library.search = "clear transcript"
         await library.updateSearch(debounce: false)?.value
