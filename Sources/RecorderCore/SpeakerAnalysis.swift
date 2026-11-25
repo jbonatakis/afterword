@@ -7,6 +7,7 @@ public struct SpeakerInterval: Codable, Equatable, Sendable {
 }
 
 public struct VoiceClip: Codable, Sendable {
+    public static let minimumDuration = 2.5
     public let interval: SpeakerInterval
     public let vector: [Float]
 }
@@ -28,7 +29,7 @@ public struct SpeakerAnalysis: Codable, Sendable {
             var cursor = turn.start
             func add(until end: Double) {
                 let duration = min(7, end - cursor - 0.5)
-                guard duration >= 2.5 else { return }
+                guard duration >= VoiceClip.minimumDuration else { return }
                 let start = (cursor + end - duration) / 2
                 candidates[turn.speaker, default: []].append(.init(speaker: turn.speaker, start: start, end: start + duration))
             }

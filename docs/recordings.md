@@ -39,7 +39,9 @@ The transcript merges the separate tracks by timestamp. Microphone speech is lab
 
 Click a paragraph timestamp to listen from that point. Switch between the mix and the source tracks to hear either side at the same position. The pencil opens inline editing. **Save** creates a transcript version and keeps the original. Choose a speaker on a passage to save an assignment immediately, or include it with an open text draft. **Copy** uses the readable paragraphs and current speaker labels. The library keeps unsaved drafts while you switch calls or close the window.
 
-Use **Transcript → Speakers…** to hear samples and assign remote voices to participants. **Remember this clip** saves a local voice embedding for future calls. A **Suggested** label can be confirmed for the voice or for a single passage. In the sidebar's **People & groups**, use **All voice clips…** for the full collection or select a person and choose **Voice clips…**. The **Transcript passages** tab shows assigned passages. Use **Forget voice…** in speaker review to remove remembered examples.
+Use **Transcript → Speakers…** to hear samples and assign remote voices to participants. **Remember this clip** saves a local voice embedding for future calls. A **Suggested** label can be confirmed for the voice or for a single passage.
+
+To choose your own sample, open **People & groups → All voice clips… → Transcript passages**. You can also open **Voice clips…** from a person’s profile. Play a passage to check the speaker, then choose **Use for voice recognition**. Pick a passage with at least 2.5 seconds of system audio. The saved clip appears under **Remembered samples**, where you can reassign or forget it.
 
 ## Summaries
 

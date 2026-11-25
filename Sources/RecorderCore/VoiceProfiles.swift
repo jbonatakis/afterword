@@ -46,8 +46,8 @@ public struct VoiceReference: Codable, Identifiable, Sendable {
     public var id: String { "\(call):\(start.bitPattern):\(end.bitPattern)" }
     let vector: [Float]
 
-    fileprivate func matches(_ clip: VoiceClip, call: String) -> Bool {
-        self.call == call && abs(start - clip.interval.start) < 0.05 && abs(end - clip.interval.end) < 0.05
+    func matches(start: Double, end: Double) -> Bool {
+        abs(self.start - start) < 0.05 && abs(self.end - end) < 0.05
     }
 }
 
@@ -87,7 +87,7 @@ public struct VoiceProfiles: Codable, Sendable {
     public var people: [String: String] { names(in: .init()) }
 
     public func reference(for clip: VoiceClip, call: String) -> VoiceReference? {
-        references.first { $0.matches(clip, call: call) }
+        references.first { $0.call == call && $0.matches(start: clip.interval.start, end: clip.interval.end) }
     }
 
     public func count(for person: CallAttendee, in directory: PeopleDirectory = .init()) -> Int {
@@ -110,12 +110,12 @@ public struct VoiceProfiles: Codable, Sendable {
 
     public mutating func remember(_ clip: VoiceClip, as person: CallAttendee, call: String, directory: PeopleDirectory = .init()) throws {
         guard person.active, let vector = Self.normalized(clip.vector), clip.interval.start.isFinite,
-              clip.interval.end.isFinite, clip.interval.end - clip.interval.start >= 2.5 else {
+              clip.interval.end.isFinite, clip.interval.end - clip.interval.start >= VoiceClip.minimumDuration else {
             throw RecorderError.message("Choose a clean voice clip and an active participant.")
         }
         let key = Self.key(for: person, in: directory)
         // Re-confirming or correcting the same clip replaces its old identity.
-        references.removeAll { $0.matches(clip, call: call) }
+        references.removeAll { $0.call == call && $0.matches(start: clip.interval.start, end: clip.interval.end) }
         let displayName = directory.identity(for: person)?.name ?? person.name
         references.append(.init(person: key, displayName: displayName, call: call, start: clip.interval.start, end: clip.interval.end, vector: vector))
         if references.filter({ Self.resolvedKey($0.person, in: directory) == key && $0.call == call }).count > 6,

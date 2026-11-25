@@ -8,8 +8,8 @@ public struct PersonVoiceLibrary {
         public let attendee: CallAttendee?
     }
 
-    public struct Item: Identifiable {
-        public enum Source {
+    public struct Item: Identifiable, Sendable {
+        public enum Source: Sendable {
             case sample(VoiceReference)
             case passage(LibraryTranscript, TranscriptParagraph)
         }
@@ -19,7 +19,53 @@ public struct PersonVoiceLibrary {
         public let source: Source
         public let start: Double
         public let end: Double
+        public let rememberedSample: VoiceReference?
+        fileprivate let callID: String?
         public var audio: URL? { recording?.tracks.first { $0.source == .system }?.url }
+
+        public func rememberPassage(in directory: PeopleDirectory) async throws {
+            let operation = LocalWorkerOperation()
+            try await operation.perform {
+                try rememberPassage(in: directory, store: .bundled, profilesDirectory: VoiceProfiles.directory, operation: operation)
+            }
+        }
+
+        func rememberPassage(in directory: PeopleDirectory, store: SpeakerAnalysisStore, profilesDirectory: URL,
+                             operation: LocalWorkerOperation) throws {
+            guard case let .passage(version, paragraph) = source, let recording, let audio, let callID else {
+                throw RecorderError.message("The system audio for this passage is unavailable.")
+            }
+            // Reassigning a remembered passage can reuse its original embedding.
+            let clip = try rememberedSample == nil ? store.voiceClip(for: audio, from: start, to: end, operation: operation) : nil
+            guard try VoiceProfiles.callID(for: recording) == callID,
+                  let latest = RecordingLibraryScanner.transcripts(in: recording.url).first, latest.id == version.id,
+                  latest.document?.paragraphs.first(where: { $0.id == paragraph.id })?.segments == paragraph.segments else {
+                throw RecorderError.message("The transcript changed. Review the latest passages and try again.")
+            }
+            let details = try CallDetailsStore.load(for: recording.url, isDirectory: recording.isDirectory)
+            let name = details.participantName(paragraph.participant, for: latest) ?? details.automaticParticipant(for: latest)
+            let originalName = recording.details.participantName(paragraph.participant, for: version) ?? recording.automaticParticipant(for: version)
+            guard let person = details.callAttendees.first(where: { $0.active && $0.name == name }),
+                  recording.details.callAttendees.contains(where: { $0.id == person.id && $0.name == originalName }),
+                  VoiceProfiles.key(for: person, in: directory) == owner else {
+                throw RecorderError.message("The speaker changed. Review the passage before saving it.")
+            }
+            _ = try operation.publish {
+                try VoiceProfiles.update(in: profilesDirectory) { profiles in
+                    if let rememberedSample {
+                        try profiles.change(rememberedSample, to: person, in: directory)
+                    } else if let clip {
+                        if let existing = profiles.reference(for: clip, call: callID) {
+                            guard VoiceProfiles.resolvedKey(existing.person, in: directory) == owner else {
+                                throw RecorderError.message("This sample was assigned to another person. Review the current list and try again.")
+                            }
+                            return
+                        }
+                        try profiles.remember(clip, as: person, call: callID, directory: directory)
+                    }
+                }
+            }
+        }
     }
     public let owners: [Owner]
     public let items: [Item]
@@ -28,8 +74,11 @@ public struct PersonVoiceLibrary {
         var owners: [String: Owner] = [:]
         var calls: [String: LibraryRecording] = [:]
         var entries: [Item] = []
+        let samplesByCall = Dictionary(grouping: profiles.references, by: \.call)
         for recording in recordings {
-            if let id = try? VoiceProfiles.callID(for: recording) { calls[id] = recording }
+            let callID = try? VoiceProfiles.callID(for: recording)
+            if let callID { calls[callID] = recording }
+            let samples = callID.flatMap { samplesByCall[$0] } ?? []
             var keys: [String: String] = [:]
             for person in recording.details.callAttendees where person.active {
                 let key = VoiceProfiles.key(for: person, in: directory)
@@ -42,7 +91,8 @@ public struct PersonVoiceLibrary {
                 let name = recording.details.participantName(paragraph.participant, for: version) ?? automatic
                 guard let name, let key = keys[name] else { continue }
                 entries.append(.init(id: "passage:\(version.id):\(paragraph.id)", owner: key, recording: recording,
-                                     source: .passage(version, paragraph), start: paragraph.start, end: paragraph.end))
+                                     source: .passage(version, paragraph), start: paragraph.start, end: paragraph.end,
+                                     rememberedSample: samples.first { $0.matches(start: paragraph.start, end: paragraph.end) }, callID: callID))
             }
         }
         let profileNames = profiles.names(in: directory)
@@ -50,7 +100,7 @@ public struct PersonVoiceLibrary {
             let key = VoiceProfiles.resolvedKey(sample.person, in: directory)
             if owners[key] == nil { owners[key] = .init(id: key, name: profileNames[key] ?? sample.displayName, attendee: nil) }
             entries.append(.init(id: "sample:" + sample.id, owner: key, recording: calls[sample.call],
-                                 source: .sample(sample), start: sample.start, end: sample.end))
+                                 source: .sample(sample), start: sample.start, end: sample.end, rememberedSample: sample, callID: sample.call))
         }
         for person in directory.people where person.kind == .person && !person.emails.contains(where: directory.selfEmails.contains) {
             let key = "person:" + person.id
