@@ -1814,9 +1814,10 @@ import Lookback
                 } else {
                     CodingSessionDetail(session: session, directory: library.coding.directory, hit: hit)
                 }
-            })
+            }.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 640, height: 600),
                                   styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .aqua)
             window.contentView = detail; window.orderBack(nil); window.displayIfNeeded()
             var toolText = ""
             var text = ""
