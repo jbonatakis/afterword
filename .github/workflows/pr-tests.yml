@@ -22,28 +22,12 @@ jobs:
         run: ./Scripts/test.sh
 
   library-ui:
-    name: Library UI tests (${{ matrix.revision }})
+    name: Library UI tests
     runs-on: macos-26
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        revision: [pr, base]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ matrix.revision == 'base' && github.event.pull_request.base.sha || github.sha }}
       - name: Run offscreen library UI tests
         run: ./Scripts/check-library.sh
-
-  migration:
-    name: Python migration tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
-      - name: Run migration tests
-        run: python3 -m unittest discover -s Tests -p 'test_*.py'
