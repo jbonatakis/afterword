@@ -1392,9 +1392,7 @@ import Lookback
         }
         tree.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false); await pump()
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        let scroll = descendants(host).compactMap { $0 as? NSScrollView }.first {
-            ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 700 && $0.contentView.bounds.height > 100
-        }
+        let scroll = descendants(host).compactMap { $0 as? ConversationRowMarker.MarkerView }.first?.enclosingScrollView
         guard let scroll else { throw RecorderError.message("Missing conversation scroll view") }
         func captureViewport(_ phase: String) throws {
             host.layoutSubtreeIfNeeded()
@@ -1412,9 +1410,6 @@ import Lookback
             }
             try png.write(to: folder.appendingPathComponent(phase + ".png"))
         }
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: 400))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        await pump()
         func visibleMessages() -> [(id: String, offset: CGFloat)] {
             guard let document = scroll.documentView else { return [] }
             let viewport = scroll.documentVisibleRect
@@ -1425,6 +1420,21 @@ import Lookback
                 return (row.messageID, frame.minY - viewport.minY)
             }
         }
+        // Page from measured rows. An absolute jump from the end uses estimated
+        // row heights and can land back at the beginning after SwiftUI lays them out.
+        func scrollTo(y: CGFloat) {
+            let clip = scroll.contentView
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+            scroll.reflectScrolledClipView(clip)
+        }
+        scrollTo(y: -scroll.contentInsets.top)
+        for _ in 0..<40 {
+            await pump(0.05)
+            if visibleMessages().contains(where: { $0.id == "first" }) { break }
+        }
+        require(visibleMessages().contains(where: { $0.id == "first" }), "Could not reach the first message before paging")
+        scrollTo(y: scroll.contentView.bounds.minY + scroll.contentView.bounds.height * 0.75)
+        await pump()
         guard let before = visibleMessages().min(by: { abs($0.offset) < abs($1.offset) }) else {
             throw RecorderError.message("Missing visible message before opening the calendar")
         }
