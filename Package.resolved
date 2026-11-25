@@ -1,0 +1,13 @@
+{
+  "pins" : [
+    {
+      "identity" : "lookback",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jbonatakis/lookback.git",
+      "state" : {
+        "revision" : "4a253d15e7ee29f3bbcf6c0f33bdfb416d182b88"
+      }
+    }
+  ],
+  "version" : 2
+}

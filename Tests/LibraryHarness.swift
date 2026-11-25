@@ -100,7 +100,11 @@ import Lookback
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
         checkMarkdownListLayout()
         checkRecordingTelemetry(root)
-        if CommandLine.arguments.contains("--tool-activity") { try await checkToolActivity(root); return }
+        let toolActivityOnly = CommandLine.arguments.contains("--tool-activity")
+        if toolActivityOnly || CommandLine.arguments.count == 1 {
+            try await checkToolActivity(root.appendingPathComponent("ToolActivity"))
+            if toolActivityOnly { return }
+        }
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
         if checkBoardDrag { try await checkSourceSelection(root); return }
         if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }

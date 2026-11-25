@@ -14,8 +14,12 @@
 			"productName" = "KeyboardShortcuts";
 		};
 		"E1734E61339CC348CE1C5496" = {
-			"isa" = "XCLocalSwiftPackageReference";
-			"relativePath" = "../lookback";
+			"isa" = "XCRemoteSwiftPackageReference";
+			"repositoryURL" = "https://github.com/jbonatakis/lookback.git";
+			"requirement" = {
+				"kind" = "revision";
+				"revision" = "4a253d15e7ee29f3bbcf6c0f33bdfb416d182b88";
+			};
 		};
 		"375BC5E7FF94B877A9021F8F" = {
 			"isa" = "XCSwiftPackageProductDependency";
