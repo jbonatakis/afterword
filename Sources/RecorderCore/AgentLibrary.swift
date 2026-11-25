@@ -377,7 +377,7 @@ public final class AgentLibrary {
             if browse {
                 hits = try archive.browse(from: from, to: to, project: args.string("project"), branch: args.string("branch"))
             } else {
-                let result = try index.codingSearch(query, keywordOnly: keyword, from: from, to: to, project: args.string("project"), branch: args.string("branch"))
+                let result = try index.codingSearch(query, keywordOnly: keyword, from: from, to: to, project: args.string("project"), branch: args.string("branch"), includeToolEvidence: false)
                 if codingOnly { status = result.status }
                 hits = result.hits
             }
