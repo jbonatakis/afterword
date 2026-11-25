@@ -31,7 +31,7 @@ Enable **Import Pi sessions** in **Settings → Coding** and select the projects
 
 At launch the library loads the most recent 200 saved sessions. Scroll for older sessions. Search and the provider, project, and Git branch filters cover the full saved archive. Afterword checks for new sessions every minute while running and when you refresh the library. Imported sessions survive source-log rotation in `~/Library/Application Support/Afterword/CodingSessions/`.
 
-**Conversation** follows the current conversation branch and preserves replies across Codex context compactions. **Recorded history** also shows superseded branches and earlier model context. Search opens the matching message in the appropriate view. Expand a tool-call group to see tool names. The archive omits tool arguments and result payloads.
+**Conversation** follows the current conversation branch and preserves replies across Codex context compactions. **Recorded history** also shows superseded branches and earlier model context. Tool groups list actions in first-seen order. Expand a group for project-relative paths, search patterns, commands, short edit or script excerpts, and reported test results. Codex scripts also show command and file-change completions recorded while a single script was in flight. Local keyword searches open the matching call or completion in either view. Unknown tools retain their original names. Older sessions gain details the next time their source is available for import.
 
 ## Connect an agent
 

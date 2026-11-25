@@ -100,6 +100,7 @@ import Lookback
         defer { try? FileManager.default.removeItem(at: root); UserDefaults.standard.removePersistentDomain(forName: name) }
         checkMarkdownListLayout()
         checkRecordingTelemetry(root)
+        if CommandLine.arguments.contains("--tool-activity") { try await checkToolActivity(root); return }
         if CommandLine.arguments.contains("--coding-pages") { try await checkCodingPages(root); return }
         if checkBoardDrag { try await checkSourceSelection(root); return }
         if CommandLine.arguments.contains("--sources") { try await checkSourceSelection(root) }
@@ -1234,6 +1235,96 @@ import Lookback
         require(library.resultQuery == library.search && library.visibleRecordings.isEmpty,
                 "A search entered during startup did not finish")
         print("PASS recording startup during blocked indexing, saved selection, current scope, and queued search")
+    }
+
+    @MainActor static func checkToolActivity(_ root: URL) async throws {
+        let source = root.appendingPathComponent("Claude")
+        let folder = source.appendingPathComponent("afterword")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let log = #"""
+        {"type":"user","uuid":"prompt","cwd":"/work/afterword","timestamp":"2026-11-20T15:00:00Z","message":{"content":"Why does the conversation show the same tool call twice?"}}
+        {"type":"assistant","uuid":"work","parentUuid":"prompt","message":{"id":"work","content":[{"type":"text","text":"I’ll trace the grouping logic and run the focused test."},{"type":"tool_use","id":"r","name":"Read","input":{"file_path":"/work/afterword/Sources/CodingSessions.swift"}},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"swift test --filter ConversationRowTests"}},{"type":"tool_use","id":"edit","name":"Edit","input":{"file_path":"/work/afterword/Sources/CodingSessions.swift","old_string":"rows.append(row)","new_string":"if seen.insert(row.id).inserted { rows.append(row) }"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"swift test --filter ConversationRowTests"}}]}}
+        {"type":"user","uuid":"results","parentUuid":"work","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"ConversationRowTests.swift:42: error: expected 1 row, got 2\nTest Suite 'All tests' failed at 10:00"},{"type":"tool_result","tool_use_id":"t2","content":"Test Suite 'All tests' passed at 10:01"}]}}
+        {"type":"assistant","uuid":"reply","parentUuid":"results","message":{"content":"The same row ID appeared twice. The grouping code now keeps its first occurrence."}}
+        {"type":"custom-title","customTitle":"Duplicate rows in the conversation"}
+        """#
+        try Data(log.utf8).write(to: folder.appendingPathComponent("00000000-0000-4000-a000-000000000001.jsonl"))
+        let directory = root.appendingPathComponent("CodingSessions")
+        let archive = try CodingArchive(directory: directory)
+        try archive.addProject("/work/afterword")
+        try archive.setEnabled(true)
+        try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: source))
+        guard let session = try archive.sessions().first,
+              let hit = try archive.matches(query: "expected 1 row", semantic: [], from: nil, to: nil, project: nil, branch: nil).first
+        else { throw RecorderError.message("The fixture did not produce a searchable test diagnostic") }
+        let rows = CodingConversationRow.group(try archive.history(id: session.id).conversation)
+        let summary = "1 read · 2 test runs (failed → passed) · 1 edit"
+        require(rows.first(where: { $0.id == "work" })?.toolSummary == summary, "Action groups lost their order or reported outcomes")
+        require(hit.messageID == "work" && hit.toolIndex == 1, "Search missed the second call in a message containing prose")
+
+        for expanded in [false, true] {
+            let host = NSHostingView(rootView: CodingSessionDetail(session: session, directory: directory, hit: expanded ? hit : nil)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 700, height: 660),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .aqua)
+            window.contentView = host
+            window.orderBack(nil)
+            defer { window.orderOut(nil) }
+            var visible = ""
+            for attempt in 0..<40 {
+                await pump(0.05)
+                host.layoutSubtreeIfNeeded()
+                let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                guard let image = bitmap.cgImage else { continue }
+                let request = VNRecognizeTextRequest()
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                visible = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                guard attempt == 39 || (visible.contains("test runs") && (!expanded || visible.contains("expected 1 row"))) else { continue }
+                let url = URL(fileURLWithPath: "build/tool-activity-" + (expanded ? "expanded" : "collapsed") + ".png")
+                try bitmap.representation(using: .png, properties: [:])?.write(to: url)
+                break
+            }
+            require(visible.contains("test runs") && visible.contains("expected 1 row") == expanded,
+                    "The native tool disclosure did not reflect the search selection: " + visible)
+        }
+        // Force the second call below the fold in the same message. A scroll to its parent row
+        // would still expand the disclosure but would leave the matching assertion offscreen.
+        let filler = (0..<36).map { index in
+            #"{"type":"tool_use","id":"extra-\#(index)","name":"Read","input":{"file_path":"Sources/Extra\#(index).swift"}},"#
+        }.joined()
+        let longer = log.replacingOccurrences(of: #"{"type":"tool_use","id":"t1""#,
+                                               with: filler + #"{"type":"tool_use","id":"t1""#)
+        let file = folder.appendingPathComponent("00000000-0000-4000-a000-000000000001.jsonl")
+        try Data(longer.utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: file.path)
+        try archive.synchronize(reader: ClaudeCodeReader(projectsDirectory: source))
+        guard let target = try archive.matches(query: "expected 1 row", semantic: [], from: nil, to: nil, project: nil, branch: nil).first,
+              target.toolIndex == 37 else { throw RecorderError.message("Long tool group did not import") }
+        let host = NSHostingView(rootView: CodingSessionDetail(session: target.session, directory: directory, hit: target)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 660, height: 460),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        var revealed = false
+        for _ in 0..<15 {
+            await pump(0.1)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            if let image = bitmap.cgImage {
+                let request = VNRecognizeTextRequest()
+                try VNImageRequestHandler(cgImage: image).perform([request])
+                revealed = (request.results ?? []).contains { $0.topCandidates(1).first?.string.contains("expected 1 row") == true }
+            }
+            if revealed { break }
+        }
+        require(revealed, "Selecting a result in a long group must scroll to the matching call")
+        print("PASS deterministic action groups, exact test citation, and native collapsed and expanded previews")
     }
 
     @MainActor static func checkCodingPages(_ root: URL) async throws {

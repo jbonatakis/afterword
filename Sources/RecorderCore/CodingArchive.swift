@@ -6,7 +6,7 @@ public struct CodingSession: Codable, Identifiable, Sendable, Equatable {
     public let branch: String?
     public let started: Date?
     public let updated: Date
-    // Legacy sessions omit this field. Zero marks a session queued for replay.
+    // Version 2 adds tool evidence. Older versions replay through the scoped importer.
     var transcriptVersion: Int? = nil
     public var providerName: String { CodingProvider(rawValue: source)?.name ?? source }
 }
@@ -18,6 +18,9 @@ public struct CodingMessage: Codable, Identifiable, Sendable {
     public let parentID: String?
     public let timestamp: Date?
     public let tools: [String]
+
+    public internal(set) var toolCalls: [CodingToolCall]? = nil
+    public var displayedToolCalls: [CodingToolCall] { toolCalls ?? tools.map(CodingToolCall.init(name:)) }
 
     public internal(set) var taskNotification: CodingTaskNotification? = nil
 
@@ -104,6 +107,10 @@ struct CodingPassage: Sendable {
     let messageID, text: String
     let timestamp: Date?
     let archived: Bool
+    var toolIndex: Int? = nil
+    var eventIndex: Int? = nil
+
+    func sameAnchor(as other: Self) -> Bool { messageID == other.messageID && toolIndex == other.toolIndex && eventIndex == other.eventIndex }
 }
 
 public struct CodingHit: Sendable {
@@ -113,6 +120,8 @@ public struct CodingHit: Sendable {
     var toolOnlyMessageCount: Int?
 
     public var messageID: String? { passages.first?.messageID }
+    public var toolIndex: Int? { passages.first?.toolIndex }
+    public var eventIndex: Int? { passages.first?.eventIndex }
     public var text: String { passages.first?.text ?? session.title }
     public var timestamp: Date? {
         if let passage = passages.first { return passage.timestamp }
@@ -162,6 +171,11 @@ public final class CodingArchive {
         try db.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS coding_text USING fts5(session UNINDEXED, message UNINDEXED, stamp UNINDEXED,
               archived UNINDEXED, title, project, branch, body, embed UNINDEXED, tokenize="unicode61 remove_diacritics 2 tokenchars '_'")
+            """)
+        // Local tool evidence has its own index. Existing MCP readers and embedding jobs only see coding_text.
+        try db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS coding_tool_text USING fts5(session UNINDEXED, message UNINDEXED,
+              position UNINDEXED, event UNINDEXED, stamp UNINDEXED, archived UNINDEXED, body, tokenize="unicode61 remove_diacritics 2 tokenchars '_'")
             """)
     }
 
@@ -246,6 +260,7 @@ public final class CodingArchive {
     private func removeHistory(where excluded: (String) -> Bool) throws {
         for row in try db.rows("SELECT DISTINCT project FROM sessions") {
             guard let path = CodingProjectSelection.path(row[0]), excluded(path) else { continue }
+            try db.execute("DELETE FROM coding_tool_text WHERE session IN (SELECT id FROM sessions WHERE project=?)", [row[0]])
             try db.execute("DELETE FROM coding_text WHERE session IN (SELECT id FROM sessions WHERE project=?)", [row[0]])
             try db.execute("DELETE FROM sessions WHERE project=?", [row[0]])
         }
@@ -294,7 +309,6 @@ public final class CodingArchive {
 
     private func synchronize(_ infos: [SessionInfo], reader: any SessionReader, provider: CodingProvider, options: CodingImportSettings) throws {
         guard !infos.isEmpty else { return }
-        try scheduleTranscriptRepairs(for: provider)
         let rows = try db.rows("SELECT id,info FROM sessions WHERE json_extract(info,'$.source')=?", [provider.rawValue])
         let known = Dictionary(uniqueKeysWithValues: rows.map { ($0[0], $0[1]) })
         var failures = 0
@@ -307,10 +321,9 @@ public final class CodingArchive {
                 let old = try known[id].map { try JSONDecoder().decode(CodingSession.self, from: Data($0.utf8)) }
                 var session = CodingSession(id: id, source: info.id.source, title: info.title, project: project,
                                             branch: info.gitBranch, started: info.createdAt, updated: info.modifiedAt)
-                session.transcriptVersion = old?.transcriptVersion
+                session.transcriptVersion = 2
                 // Codex can rename a thread in its index without modifying the rollout.
-                if old == session && session.transcriptVersion != 0 { continue }
-                session.transcriptVersion = 1
+                if old == session { continue }
                 let source = try reader.readSession(info.id)
                 if let metadata = source.info, metadata.workingDirectory != project { continue }
                 let imported = Self.project(source, session: session)
@@ -331,7 +344,10 @@ public final class CodingArchive {
                         let merged = old.messages.map { latest[$0.id] ?? $0 } + imported.messages.filter { !oldIDs.contains($0.id) }
                         history = CodingHistory(session: session, messages: merged, conversationIDs: imported.conversationIDs)
                     }
-                    if previous != nil { try db.execute("DELETE FROM coding_text WHERE session=?", [id]) }
+                    if previous != nil {
+                        try db.execute("DELETE FROM coding_text WHERE session=?", [id])
+                        try db.execute("DELETE FROM coding_tool_text WHERE session=?", [id])
+                    }
                     try db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?)",
                                    [id, project, stamp, try Self.encode(session), try Self.encode(history)])
                     try index(history)
@@ -344,46 +360,57 @@ public final class CodingArchive {
         if failures > 0 { throw RecorderError.message("Could not import \(failures) coding session(s). Afterword will retry.") }
     }
 
-    private func scheduleTranscriptRepairs(for provider: CodingProvider) throws {
-        let flag: String, candidates: String
-        switch provider {
-        case .codex:
-            flag = "codexBranchTranscriptV1"
-            candidates = "id IN (SELECT DISTINCT session FROM coding_text WHERE archived='1')"
-        case .claudeCode:
-            flag = "claudeTaskNotificationsV1"
-            candidates = "instr(history, '<task-notification>') > 0"
-        case .pi, .antigravity: return
-        }
-        guard try db.rows("SELECT 1 FROM settings WHERE key=?", [flag]).isEmpty else { return }
-        try db.transaction {
-            // Replay only candidate sessions, through the scoped importer, when their source is available.
-            try db.execute("""
-                UPDATE sessions SET info=json_set(info,'$.transcriptVersion',0)
-                WHERE json_extract(info,'$.source')=? AND json_extract(info,'$.transcriptVersion') IS NULL
-                  AND \(candidates)
-                """, [provider.rawValue])
-            try db.execute("INSERT OR IGNORE INTO settings VALUES (?, '1')", [flag])
-        }
-    }
-
     private static func project(_ source: SessionHistory, session: CodingSession) -> CodingHistory {
         let nativeIDs = Set(source.recordedMessages.map(\.id))
         var nearestVisible: [String: String] = [:]
         var occurrences: [String: Int] = [:]
         var idsByPosition: [Int: String] = [:]
         var messages: [CodingMessage] = []
+        // Resolve by provider call ID, independent of completion order. Replayed branches can reuse
+        // IDs; an ambiguous result is less trustworthy than showing the invocation alone.
+        var callIDs = Set<String>(), ambiguous = Set<String>()
+        var results: [String: (Data?, Bool)] = [:]
+        for message in source.recordedMessages {
+            for block in message.blocks {
+                switch block {
+                case let .toolCall(id, _, _):
+                    if !callIDs.insert(id).inserted { ambiguous.insert(id) }
+                case let .toolResult(id, content, error):
+                    if results.updateValue((content, error), forKey: id) != nil { ambiguous.insert(id) }
+                default: break
+                }
+            }
+        }
         for (position, message) in source.recordedMessages.enumerated() {
-            var text: [String] = [], tools: [String] = []
+            var text: [String] = [], calls: [CodingToolCall] = []
             for block in message.blocks {
                 switch block {
                 case .text(let value) where message.role != .tool: text.append(value)
-                case .toolCall(_, let name, _): tools.append(name)
+                case let .toolCall(id, name, input):
+                    let unique = !id.isEmpty && !ambiguous.contains(id)
+                    let completion = unique ? message.toolEvents.first {
+                        $0.id == id && (name == $0.name || name == "functions." + $0.name)
+                    } : nil
+                    // The completed command includes Codex's parsed file/search target and exact argv.
+                    let arguments = completion?.name == "exec_command" ? completion?.inputJSON ?? input : input
+                    var call = CodingToolCall(name: name, input: arguments, project: session.project, provider: session.source)
+                    let reply = unique ? results[id] : nil
+                    if reply != nil || completion != nil {
+                        call.receive(output: reply?.0 ?? completion?.outputJSON, isError: reply?.1 == true || completion?.isError == true,
+                                     reportedExit: completion?.exitCode)
+                    }
+                    if call.action == .script {
+                        let events = message.toolEvents.filter { $0.id != id }
+                        if !events.isEmpty {
+                            call.events = events.map { CodingToolCall(event: $0, project: session.project, provider: session.source) }
+                        }
+                    }
+                    calls.append(call)
                 default: break
                 }
             }
             let parent = message.parentID.flatMap { nearestVisible[$0] }
-            guard !text.isEmpty || !tools.isEmpty || message.taskNotification != nil else {
+            guard !text.isEmpty || !calls.isEmpty || message.taskNotification != nil else {
                 nearestVisible[message.id] = parent
                 continue
             }
@@ -404,7 +431,8 @@ public final class CodingArchive {
             case .system: role = message.isCompactionSummary ? "Compaction summary" : "System"
             case .tool: role = "Tool"
             }
-            messages.append(.init(id: id, role: role, text: text.joined(separator: "\n\n"), parentID: parent, timestamp: message.timestamp, tools: tools,
+            messages.append(.init(id: id, role: role, text: text.joined(separator: "\n\n"), parentID: parent, timestamp: message.timestamp, tools: calls.map(\.name),
+                                  toolCalls: calls.isEmpty ? nil : calls,
                                   taskNotification: message.taskNotification))
         }
         var conversationIDs: [String] = []
@@ -421,7 +449,8 @@ public final class CodingArchive {
         // Codex supplies an ordered active branch without parent IDs. Use that order for search context.
         if session.source == CodingProvider.codex.rawValue {
             messages = messages.map {
-                CodingMessage(id: $0.id, role: $0.role, text: $0.text, parentID: activeParents[$0.id], timestamp: $0.timestamp, tools: $0.tools)
+                CodingMessage(id: $0.id, role: $0.role, text: $0.text, parentID: activeParents[$0.id], timestamp: $0.timestamp, tools: $0.tools,
+                              toolCalls: $0.toolCalls, taskNotification: $0.taskNotification)
             }
         }
         return .init(session: session, messages: messages, conversationIDs: conversationIDs)
@@ -451,6 +480,17 @@ public final class CodingArchive {
                 context = String(prompt.text.prefix(220))
             } else if message.role == "User", message.text.count < 60, let proposal = previous(message, role: "Assistant") {
                 context = String(proposal.text.suffix(220))
+            }
+            for (index, call) in (message.toolCalls ?? []).enumerated() {
+                func insert(_ evidence: CodingToolCall, event: String) throws {
+                    try db.execute("INSERT INTO coding_tool_text VALUES (?,?,?,?,?,?,?)", [
+                        info.id, message.id, String(index), event, message.timestamp.map { String($0.timeIntervalSince1970) } ?? "",
+                        current.contains(message.id) ? "0" : "1", evidence.searchText])
+                }
+                try insert(call, event: "")
+                for (position, event) in (call.events ?? []).enumerated() {
+                    try insert(event, event: String(position))
+                }
             }
             var pieces = SemanticChunker.split(message.searchText)
             if pieces.isEmpty && !message.tools.isEmpty { pieces = [""] }
@@ -563,7 +603,7 @@ public final class CodingArchive {
         }
     }
 
-    func matches(query: String, semantic: [(SemanticChunk, Float)], from: Date?, to: Date?, project: String?, branch: String?) throws -> [CodingHit] {
+    func matches(query: String, semantic: [(SemanticChunk, Float)], from: Date?, to: Date?, project: String?, branch: String?, includeToolEvidence: Bool = true) throws -> [CodingHit] {
         let parsed = LibrarySearchQuery(query)
         guard let expression = parsed.expression else { return [] }
         let selected = try sessions().filter { (project == nil || project == $0.project) && (branch == nil || branch == $0.branch) }
@@ -577,13 +617,18 @@ public final class CodingArchive {
 
         var matches: [String: CodingSessionMatches] = [:]
         var keywordCount = 0
-        let rows = try db.rows("""
-            SELECT session,message,stamp,archived,CASE WHEN message='' THEN title ELSE snippet(coding_text,7,'','','…',35) END
+        let prose = try db.rows("""
+            SELECT session,message,stamp,archived,CASE WHEN message='' THEN title ELSE snippet(coding_text,7,'','','…',35) END,'',''
             FROM coding_text WHERE coding_text MATCH ? ORDER BY bm25(coding_text,0,0,0,0,4,1,1,1),rowid
             """, [expression])
-        for row in rows {
+        let tools = includeToolEvidence ? try db.rows("""
+            SELECT session,message,stamp,archived,snippet(coding_tool_text,6,'','','…',35),position,event
+            FROM coding_tool_text WHERE coding_tool_text MATCH ? ORDER BY bm25(coding_tool_text),rowid
+            """, [expression]) : []
+        // Interleave the two ranked lists. BM25 scores from separate corpora aren't comparable.
+        func record(_ row: [String]) {
             let id = row[0], date = Double(row[2]).map(Date.init(timeIntervalSince1970:))
-            guard eligible(id, date) else { continue }
+            guard eligible(id, date) else { return }
             if matches[id]?.keywordRank == nil {
                 matches[id, default: .init()].keywordRank = keywordCount
                 keywordCount += 1
@@ -591,9 +636,14 @@ public final class CodingArchive {
             if row[1].isEmpty {
                 matches[id]?.titleMatch = parsed.matches(row[4], allowPrefixes: false)
             } else {
-                let passage = CodingPassage(messageID: row[1], text: String(row[4].prefix(450)), timestamp: date, archived: row[3] == "1")
+                let passage = CodingPassage(messageID: row[1], text: String(row[4].prefix(450)), timestamp: date, archived: row[3] == "1", toolIndex: Int(row[5]), eventIndex: Int(row[6]))
                 matches[id]?.addKeyword(passage)
             }
+        }
+
+        for rank in 0..<max(prose.count, tools.count) {
+            if tools.indices.contains(rank) { record(tools[rank]) }
+            if prose.indices.contains(rank) { record(prose[rank]) }
         }
 
         for (chunk, weight) in semantic {
@@ -633,7 +683,7 @@ private struct CodingSessionMatches {
     private static let excerptLimit = 3
 
     mutating func addKeyword(_ passage: CodingPassage) {
-        if keywords.count < Self.excerptLimit && !keywords.contains(where: { $0.messageID == passage.messageID }) {
+        if keywords.count < Self.excerptLimit && !keywords.contains(where: { $0.sameAnchor(as: passage) }) {
             keywords.append(passage)
         }
     }
@@ -655,11 +705,10 @@ private struct CodingSessionMatches {
     var score: Double { Self.score(keyword: keywordRank, semantic: semanticRank) }
     var passages: [CodingPassage] {
         let semantic = semanticRank == nil ? [] : concepts
-        var seen = Set<String>()
-        let unique = (keywords + semantic).filter { seen.insert($0.messageID).inserted }
+        let unique = keywords + semantic.filter { concept in !keywords.contains { $0.sameAnchor(as: concept) } }
         func rank(_ passage: CodingPassage) -> Double {
-            Self.score(keyword: keywords.firstIndex { $0.messageID == passage.messageID },
-                       semantic: semantic.firstIndex { $0.messageID == passage.messageID })
+            Self.score(keyword: keywords.firstIndex { $0.sameAnchor(as: passage) },
+                       semantic: semantic.firstIndex { $0.sameAnchor(as: passage) })
         }
         return Array(unique.sorted { rank($0) > rank($1) }.prefix(Self.excerptLimit))
     }

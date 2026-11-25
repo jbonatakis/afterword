@@ -331,7 +331,7 @@ struct CodingSettingsView: View {
                         }
                     }.controlSize(.small)
                 }
-                Text("Folder selections apply to every enabled source and include future projects beneath each checked folder. Afterword saves prompts, replies, and tool names locally. Pausing a source keeps its saved sessions available.")
+                Text("Folder selections apply to every enabled source and include future projects beneath each checked folder. Afterword saves prompts, replies, and tool activity locally, including paths, commands, and excerpts from edits, scripts, and test results. Pausing a source keeps its saved sessions available.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
@@ -490,6 +490,40 @@ private struct ProjectFolderCheckbox: NSViewRepresentable {
     }
 }
 
+struct CodingToolLocation: Hashable {
+    let messageID: String
+    let index: Int
+    var event: Int? = nil
+}
+
+private struct CodingToolGroup {
+    let first: CodingToolCall
+    var count = 0
+    var testOutcomes: [String?] = []
+    var events: [CodingToolCall] = []
+
+    static func labels(_ calls: [CodingToolCall]) -> [String] {
+        var groups: [Self] = [], indices: [String: Int] = [:]
+        for call in calls {
+            let key = call.action == .other ? "other/" + call.name : call.action.rawValue
+            let index = indices[key] ?? groups.count
+            if index == groups.count {
+                indices[key] = index
+                groups.append(Self(first: call))
+            }
+            groups[index].count += 1
+            if let events = call.events { groups[index].events += events }
+            if call.action == .test { groups[index].testOutcomes.append(call.testOutcome) }
+        }
+        return groups.map { group in
+            let title = group.first.groupLabel(count: group.count)
+            if !group.events.isEmpty { return title + " (reported " + labels(group.events).joined(separator: ", ") + ")" }
+            guard group.testOutcomes.contains(where: { $0 != nil }) else { return title }
+            return title + " (" + group.testOutcomes.map { $0 ?? "unreported" }.joined(separator: " → ") + ")"
+        }
+    }
+}
+
 /// A display row starts at a message and may include the assistant's following tool-only messages.
 struct CodingConversationRow: Identifiable, Sendable {
     struct AssistantThread: Equatable, Sendable {
@@ -504,6 +538,7 @@ struct CodingConversationRow: Identifiable, Sendable {
     let taskReport: CodingTaskReport?
     private(set) var toolMessages: [CodingMessage] = []
     private(set) var toolCount = 0
+    private(set) var toolSummary = ""
     private(set) var thread: AssistantThread?
     var questionReply: CodexQuestionReply?
     var id: String { message.id }
@@ -529,10 +564,15 @@ struct CodingConversationRow: Identifiable, Sendable {
                 rows[index].toolCount += message.tools.count
             }
         }
-        for i in rows.indices where rows[i].message.role == "Assistant" {
+        for i in rows.indices {
             let connectsAbove = i > 0 && rows[i - 1].message.role == "Assistant" && rows[i].dayHeading == nil
             let precedesAgent = i + 1 < rows.count && rows[i + 1].message.role == "Assistant"
             let hasTools = rows[i].toolCount > 0
+            if hasTools {
+                let calls = rows[i].toolMessages.flatMap(\.displayedToolCalls)
+                rows[i].toolSummary = CodingToolGroup.labels(calls).joined(separator: " · ")
+            }
+            guard rows[i].message.role == "Assistant" else { continue }
             if connectsAbove || precedesAgent || hasTools {
                 // A date heading breaks the line on screen, but doesn't turn an update into a reply.
                 rows[i].thread = AssistantThread(connectsAbove: connectsAbove,
@@ -567,6 +607,8 @@ private struct CodingMessageBubble: View {
     let providerName: String
     let maxWidth: CGFloat
     let matchedID: String?
+    let matchedTool: CodingToolLocation?
+    let revealTool: (CodingToolLocation) -> Void
     let jumpToQuestion: (String) -> Void
     @State private var toolsExpanded = false
 
@@ -614,7 +656,7 @@ private struct CodingMessageBubble: View {
             }
             .padding(.horizontal, 4)
             .overlay(alignment: edge) {
-                if matchedID != nil {
+                if matchedID != nil && matchedTool == nil {
                     Capsule().fill(Color.accentColor).frame(width: 2).accessibilityHidden(true)
                 }
             }
@@ -632,6 +674,9 @@ private struct CodingMessageBubble: View {
         .padding(.top, thread?.connectsAbove == true ? 0 : 12)
         .frame(maxWidth: maxWidth, alignment: edge)
         .frame(maxWidth: .infinity, alignment: edge)
+        .onChange(of: matchedTool, initial: true) { _, match in
+            if match != nil { toolsExpanded = true }
+        }
         .onChange(of: matchedID, initial: true) { _, id in
             if let id, row.toolMessages.contains(where: { $0.id == id && $0.text.allSatisfy(\.isWhitespace) }) {
                 toolsExpanded = true
@@ -652,22 +697,104 @@ private struct CodingMessageBubble: View {
 
     private var tools: some View {
         DisclosureGroup(isExpanded: $toolsExpanded) {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(row.toolMessages) { message in
-                    ForEach(message.tools.indices, id: \.self) { index in
-                        Text(verbatim: message.tools[index])
+                    let calls = message.displayedToolCalls
+                    ForEach(calls.indices, id: \.self) { index in
+                        let location = CodingToolLocation(messageID: message.id, index: index)
+                        let call = calls[index]
+                        CodingToolDetail(call: call, matched: matchedTool == location, foldsPreview: call.events != nil)
                             .help(message.timestamp?.formatted() ?? "")
+                            .modifier(CodingToolCitation(location: location, match: matchedTool, reveal: revealTool))
+                        if let events = call.events {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Reported during this script").font(.caption).foregroundStyle(.secondary)
+                                ForEach(events.indices, id: \.self) { position in
+                                    let event = CodingToolLocation(messageID: message.id, index: index, event: position)
+                                    CodingToolDetail(call: events[position], matched: matchedTool == event)
+                                        .modifier(CodingToolCitation(location: event, match: matchedTool, reveal: revealTool))
+                                }
+                            }
+                            .padding(.leading, 10)
+                        }
                     }
                 }
             }
-            .textSelection(.enabled).font(.system(.caption, design: .monospaced))
-            .padding(.vertical, 4).padding(.leading, 12)
+            .padding(.vertical, 5).padding(.leading, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
-            Text("\(row.toolCount) tool call\(row.toolCount == 1 ? "" : "s")")
+            Text(verbatim: row.toolSummary).lineLimit(2).help(row.toolSummary)
         }
         .font(.callout).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct CodingToolCitation: ViewModifier {
+    let location: CodingToolLocation
+    let match: CodingToolLocation?
+    let reveal: (CodingToolLocation) -> Void
+
+    func body(content: Content) -> some View {
+        content.id(location)
+            .task(id: match == location) {
+                guard match == location else { return }
+                await Task.yield()
+                if !Task.isCancelled { reveal(location) }
+            }
+    }
+}
+
+private struct CodingToolDetail: View {
+    let call: CodingToolCall
+    let matched: Bool
+    var foldsPreview = false
+    @State private var showScript = false
+    @State private var showPaths = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(verbatim: call.name).font(.caption.weight(.semibold))
+                if let outcome = call.testOutcome {
+                    Label(outcome.capitalized, systemImage: outcome == "passed" ? "checkmark.circle" : "xmark.circle")
+                        .font(.caption).foregroundStyle(outcome == "passed" ? Color.green : Color.red)
+                }
+                if let result = call.result, !(call.testOutcome == "failed" && result == "Tool reported an error") {
+                    Text(verbatim: result).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let subject = call.subject {
+                Text(verbatim: subject).font(.system(.callout, design: .monospaced))
+            }
+            if let paths = call.additionalPaths {
+                DisclosureGroup("\(paths.count) more file\(paths.count == 1 ? "" : "s")", isExpanded: $showPaths) {
+                    Text(verbatim: paths.joined(separator: "\n")).font(.system(.caption, design: .monospaced))
+                }
+                .font(.caption)
+                .onChange(of: matched, initial: true) { _, value in if value { showPaths = true } }
+            }
+            if let preview = call.preview {
+                let snippet = Text(verbatim: preview).font(.system(.caption, design: .monospaced))
+                    .padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+                if foldsPreview {
+                    DisclosureGroup("Script", isExpanded: $showScript) { snippet }
+                        .font(.caption)
+                        .onChange(of: matched, initial: true) { _, value in if value { showScript = true } }
+                } else { snippet }
+            }
+            if let diagnostic = call.diagnostic {
+                Text(verbatim: diagnostic).font(.system(.caption, design: .monospaced))
+            }
+        }
+        .textSelection(.enabled)
+        .foregroundStyle(.primary)
+        .padding(.leading, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(matched ? Color.accentColor : Color.secondary.opacity(0.25)).frame(width: 2)
+        }
     }
 }
 
@@ -784,6 +911,11 @@ struct CodingSessionDetail: View {
         }
     }
 
+    private var matchedTool: CodingToolLocation? {
+        guard let id = hit?.messageID, let index = hit?.toolIndex else { return nil }
+        return CodingToolLocation(messageID: id, index: index, event: hit?.eventIndex)
+    }
+
     private func transcript(_ rows: [CodingConversationRow], proxy: ScrollViewProxy) -> some View {
         let anchor = (citedMessageID ?? hit?.messageID).flatMap { id in rows.first { $0.contains(id) }?.id }
         return GeometryReader { geometry in
@@ -861,7 +993,9 @@ struct CodingSessionDetail: View {
                     .frame(maxWidth: width, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 CodingMessageBubble(row: row, thread: recorded ? nil : row.thread, providerName: session.providerName,
-                                    maxWidth: width, matchedID: row.id == anchor ? (citedMessageID ?? hit?.messageID) : nil) { questionID in
+                                    maxWidth: width, matchedID: row.id == anchor ? (citedMessageID ?? hit?.messageID) : nil,
+                                    matchedTool: row.id == anchor && citedMessageID == nil ? matchedTool : nil,
+                                    revealTool: { proxy.scrollTo($0, anchor: .top) }) { questionID in
                     proxy.scrollTo(questionID, anchor: .top)
                 }
             }
